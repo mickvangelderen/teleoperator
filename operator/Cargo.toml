@@ -1,0 +1,32 @@
+[package]
+name = "xr-operator"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "xr_operator"
+crate-type = ["cdylib"]
+
+[dependencies]
+android-activity = { version = "0.6.1", features = ["native-activity"] }
+android_logger = { version = "0.15.1", default-features = false }
+log = "0.4"
+
+[package.metadata.android]
+package = "dev.xroperator.quest"
+apk_name = "xr-operator"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 32
+target_sdk_version = 32
+
+[package.metadata.android.application]
+label = "XR Operator"
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+
+[package.metadata.android.application.activity]
+name = "android.app.NativeActivity"
+exported = true
+config_changes = "orientation|keyboardHidden|screenSize|screenLayout"
