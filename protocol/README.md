@@ -1,9 +1,11 @@
 # FlatBuffers wire-format proposal
 
-[wire.fbs](wire.fbs) is a compilable draft of protocol version **1**, based on
-[PROTOCOL.md](PROTOCOL.md). It specifies both data channels. It does not yet
-connect the Android app to OpenXR or WebRTC. The choices below are proposals for
-discussion, not claims about tested Quest capabilities or performance.
+[wire.fbs](wire.fbs) is the protocol version **1** schema, based on
+[PROTOCOL.md](PROTOCOL.md). The [operator](../operator/README.md) and
+[Viewer](../viewer/README.md) implement hello negotiation, empty discovery, and
+clock probes over WebRTC. Tracking acquisition and subscription fulfillment
+remain a draft; their descriptions below do not claim tested Quest capabilities
+or performance.
 
 ## Framing and negotiation
 
@@ -259,13 +261,21 @@ follow [FlatBuffers schema evolution](https://flatbuffers.dev/evolution/).
 
 ## Generate and check
 
-The draft has been compiled with `flatc 25.12.19` for Rust and TypeScript. Generated
-files belong in build output; none are checked in. Pin the compiler and matching
-language runtimes when integrating the endpoints. From the repository root:
+Both applications pin **flatc 25.9.23** and matching Rust/TypeScript runtimes.
+Install the compiler from the [official release](https://github.com/google/flatbuffers/releases/tag/v25.9.23)
+for your platform, put `flatc` on PATH, or set `FLATC` to its absolute path.
+The builds reject a different compiler version. Generated files are ignored:
+Rust writes to Cargo's `OUT_DIR`, and `pnpm generate` writes to `viewer/src/generated`.
+Nothing generated is checked in. To check the schema directly from the repository root:
 
 ```sh
 flatc --rust --ts -o .artifacts/protocol/generated protocol/wire.fbs
 ```
+
+The implemented signaling contract, channel labels, and connection limits are
+documented in [operator/README.md](../operator/README.md#transport). The Viewer
+currently rejects nonempty tracking discovery as unsupported, rather than
+interpreting unimplemented fields or displaying fabricated poses.
 
 ## Choices to discuss before implementation
 

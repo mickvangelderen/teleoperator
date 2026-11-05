@@ -3,13 +3,19 @@
 Rust Android application for Meta Quest 3. The roadmap is in [IDEA.md](../IDEA.md).
 
 The application is built as an ARM64 shared library and packaged with
-`cargo-apk`. This bootstrap only runs the Android
-lifecycle loop and writes to logcat. It opens an empty Android panel; OpenXR,
-passthrough, networking, and tracking belong to later steps.
+`cargo-apk`. It runs an HTTP signaling endpoint on **port 8080** and a WebRTC
+data-channel server alongside the Android lifecycle loop. It opens an empty
+Android panel. OpenXR, passthrough, and tracking acquisition are not implemented.
+
+The implemented protocol is `ClientHello` / `ServerHello`, an empty
+`Capabilities` snapshot, and `ClockProbe` / `ClockReply`. Unsupported stream
+requests receive `RequestRejected`. The [Viewer](../viewer/README.md) displays
+this real state and does not substitute sample tracking data.
 
 ## Build
 
-Install Rust through rustup, a JDK (tested with OpenJDK 21), and the Android SDK
+Install [flatc 25.9.23](../protocol/README.md#generate-and-check), Rust through rustup,
+a JDK (tested with OpenJDK 21), and the Android SDK
 with Platform 32, Build Tools 36.1.0, Platform Tools, and NDK 29.0.14206865.
 With the Android SDK command-line tools on your PATH:
 
@@ -25,7 +31,7 @@ installation, then build:
 ```sh
 export ANDROID_HOME="$HOME/Android/Sdk"
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
-cargo apk build
+cargo apk build --lib
 ```
 
 The APK is `target/debug/apk/xr-operator.apk`. `cargo-apk` signs debug builds
@@ -62,3 +68,44 @@ To stream the app's logs:
 ```sh
 adb -s YOUR_QUEST_SERIAL logcat 'xr-operator:I' '*:S'
 ```
+
+## Desktop development and tests
+
+The same server runs on the host, without Android or hardware:
+
+```sh
+cargo run
+cargo test
+cargo clippy --all-targets -- -D warnings
+```
+
+It binds `127.0.0.1:8080` by default. Override with `XR_OPERATOR_BIND=IP:PORT`
+when needed. Ctrl+C closes the listener and peers. The Quest binds `0.0.0.0:8080`
+and closes networking when the activity is destroyed. Pausing the Android panel
+does not itself shut down networking.
+
+## Transport
+
+- `GET /health` reports service availability, separately from protocol negotiation.
+- `POST /offer` takes JSON `{ "type": "offer", "sdp": "..." }` and returns an
+  answer with gathered host ICE candidates. Both endpoints gather completely;
+  there is no trickle endpoint. Requests and protocol packets are limited to 64 KiB.
+- The browser opens in-band channels named `control` (reliable, ordered) and
+  `tracking` (unordered, `maxRetransmits: 0`), both with subprotocol `xrop`.
+  The server verifies delivery settings and rejects extra/duplicate channels.
+- Each peer negotiates independently. The random 128-bit server session ID is
+  shared across peers and changes when the application server restarts.
+- At most four peers are retained. Incomplete handshakes expire after 20 seconds;
+  malformed control, channel closure, and failed/disconnected ICE close the peer.
+  Control request and clock probe deduplication each have a 65,536-ID budget per
+  connection. The Viewer requests reconnect after exhausting its probe budget.
+- This is a trusted-LAN development endpoint: no authentication, TLS signaling,
+  STUN, or TURN. Keep port 8080 private. The Viewer proxies signaling on its own
+  origin; the device rejects direct requests carrying an Origin header.
+  WebRTC encrypts the established data channels, but HTTP signaling does not
+  authenticate the remote endpoint.
+
+The transport is pinned to webrtc-rs **0.17.2**. Quest/Chromium tests of 0.21.1
+found missing remote DCEP retransmission metadata, and intermittent loss of the
+first message with pre-negotiated channels. Recheck these behaviors before
+changing the dependency. No upstream source is vendored or modified.
