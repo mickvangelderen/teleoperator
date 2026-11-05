@@ -16,11 +16,16 @@ OpenXR body set, confidence, activity, versioned skeleton geometry, and actual
 fidelity/calibration status when the runtime supplies them. Body capability is
 advertised only after the runtime has returned a valid skeleton.
 
-The protocol implements hello, capability discovery, clock probes, protocol v2 tracking subscribe,
-publication changes, and unsubscribe. A stream's acquisition selection is immutable. All clients share one
-200 Hz acquisition history and physical input counters; publication filters each
-stream's selected sources independently. See
-[tracking validation](TRACKING.md) for the supported settings and test results.
+The server implements hello, capability discovery, clock probes, protocol v2 tracking
+subscribe, publication changes, and unsubscribe. A stream's selection is immutable.
+All clients currently share one 200 Hz acquisition history and physical input
+counters; publication filters each stream's selected sources independently. This is
+the current implementation, not a universal acquisition boundary for XR devices.
+The [protocol design](../protocol/PROTOCOL.md) defines the device-independent
+requirements; [wire status](../protocol/README.md#design-and-implementation-status)
+records the acquisition-group work still needed. See
+[supported settings](#body-permission-and-supported-settings) for current choices
+and [tracking validation](TRACKING.md) for historical measurements.
 
 ## Build
 
@@ -160,8 +165,9 @@ starts another reference-space version.
   The server verifies delivery settings and rejects extra/duplicate channels.
 - Each peer negotiates independently. The random 128-bit server session ID is
   shared across peers and changes when the application server restarts.
-- At most four peers are retained. Incomplete handshakes expire after 20 seconds;
-  malformed control, channel closure, and failed/disconnected ICE close the peer.
+- At most four peers and three streams per peer are supported. Incomplete handshakes
+  expire after 20 seconds; malformed control, channel closure, and failed/disconnected
+  ICE close the peer.
   Control request IDs must increase. Probes are matched by the client; neither
   namespace has a lifetime request budget.
 - This is a trusted-LAN development endpoint: no authentication, TLS signaling,
@@ -184,15 +190,32 @@ succeed. Revoking permission closes body streams without closing pose/input stre
 The Viewer resubscribes on restored capability discovery in the same connection.
 Explicitly unsubscribed streams remain stopped until reconnect.
 
-The current implementation advertises 200 Hz acquisition, one runtime reference space, acquisition-time
-targeting, the default 70-joint body set (upper body and hands), and the runtime's
-default fidelity preference. Full 84-joint tracking, selectable fidelity, velocity
-channels, application hysteresis and Touch Plus extras are not advertised. Consumers
+OpenXR actions and bindings are prepared at startup; network selections do not
+create new actions. The current implementation uses 200 Hz acquisition, one runtime
+reference space (Local Floor when supported, otherwise Local), acquisition-time
+targeting, the default 70-joint FB body set (upper body and hands), and the runtime's
+default fidelity preference. Capabilities reports the acquisition rate, actual space
+kind, and available sources/joint set. Full 84-joint tracking, selectable fidelity,
+velocity channels, application hysteresis and Touch Plus extras are not advertised. Consumers
 can choose 1–200 Hz publication and 1–8 historical samples independently for each
 stream. The default is 100 Hz publication with up to two samples per message;
 publication never waits to fill history. The 200 Hz sampler polls the OpenXR
 runtime every 5 ms; this does not imply that each sensor or body estimate updates
 at that frequency. The spatial Viewer uses attributed Meta models and an optional received-joint overlay.
+
+Hub retains eight complete ticks even with no subscribers. Each tick contains pose,
+input, and optional body data with one sample number and acquisition timestamp.
+Streams filter that history rather than owning acquisition buffers. Body history
+stops at the latest gap in body availability. These storage and scheduling choices
+must change to support independently acquired groups; lowering a stream's publication
+rate currently does not reduce acquisition work.
+
+The current wire uses reference-space ID 1 and skeleton ID 2. Recenter increments
+the reference version without transmitting a continuity transform. The body backend
+validates 70 joints and finite rest geometry, and refetches/reversions the skeleton
+on runtime skeleton changes or recenter. The recorded rest geometry's exact headset
+space convention still needs physical validation. These are backend choices and
+validation status, not requirements on other devices.
 
 Runtime target, returned-body and input-change timestamps are currently absent,
 not raw `XrTime` values mislabeled as server time. Acquisition timestamps and clock

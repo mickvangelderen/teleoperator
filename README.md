@@ -31,5 +31,8 @@ Open `http://127.0.0.1:5173` and select **Connect**. The browser and Quest must
 have direct network connectivity. A desktop server using the same implementation
 is available for development: `cargo run --manifest-path operator/Cargo.toml`.
 
-The [protocol design](protocol/PROTOCOL.md), [wire-format description](protocol/README.md),
-and [FlatBuffers schema](protocol/wire.fbs) are in `protocol/`.
+The device-independent [protocol design](protocol/PROTOCOL.md),
+[current wire contract and implementation status](protocol/README.md), and
+[FlatBuffers schema](protocol/wire.fbs) are in `protocol/`. The implemented v2
+contract still uses one global acquisition sequence; independent acquisition groups
+are design requirements pending coordinated schema, server, and client changes.

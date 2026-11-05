@@ -2,8 +2,10 @@
 
 The Viewer and operator negotiate protocol v2; update both together. Lost
 capabilities resubscribe when discovery restores them, while explicit unsubscribe
-stays stopped until reconnect. Clock offset uses the lowest RTT in the last eight
-replies and expires after five seconds without replies.
+stays stopped until reconnect. This README describes client behavior and tuning;
+the [protocol design](../protocol/PROTOCOL.md) defines device-independent requirements.
+The current wire still assumes one global acquisition sequence; see
+[implementation status](../protocol/README.md#design-and-implementation-status).
 
 Read-only TypeScript interface for XR Operator. It displays the live hello
 exchange, full-width session identity, advertised capabilities, channel state,
@@ -80,9 +82,27 @@ Received buffers are bounds-checked before field access; generated TypeScript
 accessors alone are not used as a verifier. Tracking packets before negotiation
 or malformed tracking replies are discarded. Invalid control fails the connection.
 All 64-bit fields stay `bigint`; the inspector renders them as decimal strings.
-RTT subtracts server processing time from the local round trip. The lowest-RTT
-probe estimates a clock offset for the displayed sample age; this is approximate,
-not a calibrated one-way latency measurement. Resume clears the estimate.
+
+## Clock mapping and freshness
+
+The Viewer sends clock probes once per second. RTT subtracts server processing time
+from the local round trip; the midpoint calculation estimates clock offset. The
+Viewer chooses the lowest-delay exchange among its last eight valid replies and
+expires the mapping after five seconds without a valid reply, checked by the
+one-second probe timer. Resume invalidates it immediately; reconnect clears the
+old connection's state. Probe loss does not block tracking.
+
+Displayed acquisition age uses that mapping and remains unknown without it. It is
+an estimate affected by path asymmetry, scheduling, and clock drift, not a calibrated
+one-way latency measurement. The current filter estimates offset without a separate
+clock-drift fit or numerical uncertainty bound.
+
+A stream is marked stale after 500 ms without receipt of a newer accepted sample,
+evaluated when the consumer runs. Repeated sample identities do not reset that timer.
+This receive-silence timeout differs from mapped acquisition age: an already delayed
+sample can arrive recently. Invalid/inactive data retains its status. Filter size,
+probe cadence, expiry, stale timeout, and rendering cadence are Viewer policies,
+not protocol constants.
 
 ## Recording and performance
 
