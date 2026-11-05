@@ -151,7 +151,7 @@ test("tracking validates nested histories and preserves pose validity and option
       return PoseSample.createPoseSample(b, number, 0n, 0n, version, poses);
     });
     const history = PoseSamples.createPoseSamples(b, PoseSamples.createSamplesVector(b, samples));
-    const tracking = Tracking.createTracking(b, 1n, 2n, 3n, Samples.PoseSamples, history);
+    const tracking = Tracking.createTracking(b, 1n, 3n, Samples.PoseSamples, history);
     return finish(b, Message.Tracking, tracking);
   }
   const data = tracking(), result = decode(data, "tracking");
@@ -178,7 +178,7 @@ test("controller snapshots preserve cumulative counters and reject invalid activ
     const analogInput = ControllerValue.createControllerValue(b, true, null, InputValue.ScalarValue, analog);
     const sample = ControllerSample.createControllerSample(b, 1n, 0n, ControllerSample.createValuesVector(b, [boolInput, analogInput]));
     const history = ControllerSamples.createControllerSamples(b, ControllerSamples.createSamplesVector(b, [sample]));
-    return finish(b, Message.Tracking, Tracking.createTracking(b, 1n, 2n, 1n, Samples.ControllerSamples, history));
+    return finish(b, Message.Tracking, Tracking.createTracking(b, 1n, 1n, Samples.ControllerSamples, history));
   }
   const data = snapshot(), result = decode(data, "tracking");
   assert.equal(result.kind, "Tracking");
@@ -197,7 +197,7 @@ test("body packets retain metadata versions, quality and fixed-size joint geomet
     BodySample.startJointsVector(b, 1); JointPose.createJointPose(b, 1, 2, 3, 0, 0, 0, 1, LocationFlags.OrientationValid | LocationFlags.PositionValid | LocationFlags.OrientationTracked | LocationFlags.PositionTracked); const joints = b.endVector();
     const sample = BodySample.createBodySample(b, 99n, 123n, 0n, 0n, 4, 7, true, confidence, fidelity, 1, joints);
     const history = BodySamples.createBodySamples(b, BodySamples.createSamplesVector(b, [sample]));
-    return finish(b, Message.Tracking, Tracking.createTracking(b, 1n, 2n, 3n, Samples.BodySamples, history));
+    return finish(b, Message.Tracking, Tracking.createTracking(b, 1n, 3n, Samples.BodySamples, history));
   }
   const result = decode(snapshot(), "tracking"); assert.equal(result.kind, "Tracking");
   if (result.kind !== "Tracking") throw new Error("Expected tracking");
@@ -265,7 +265,7 @@ test("v2 acceptance preserves selected definitions and publication values", asyn
   const { PoseSettings } = await import("../src/generated/xr-operator/wire/pose-settings");
   const { PoseSelection } = await import("../src/generated/xr-operator/wire/pose-selection");
   const { PoseSource } = await import("../src/generated/xr-operator/wire/pose-source");
-  const { SubscriptionDescriptor: Descriptor } = await import("../src/generated/xr-operator/wire/subscription-descriptor");
+  const { StreamDescriptor: Descriptor } = await import("../src/generated/xr-operator/wire/stream-descriptor");
   const { StreamAccepted } = await import("../src/generated/xr-operator/wire/stream-accepted");
   const { Acquisition } = await import("../src/generated/xr-operator/wire/acquisition");
   const b = new Builder(512);
@@ -273,9 +273,9 @@ test("v2 acceptance preserves selected definitions and publication values", asyn
   const acquisition = PoseSettings.createPoseSettings(b, PoseSettings.createSourcesVector(b, [selection]));
   const source = PoseSource.createPoseSource(b, b.createString("head"), b.createString("Head"), false);
   const sources = Descriptor.createPoseSourcesVector(b, [source]);
-  Descriptor.startSubscriptionDescriptor(b); Descriptor.addSubscriptionId(b, 9n); Descriptor.addAcquisitionType(b, Acquisition.PoseSettings); Descriptor.addAcquisition(b, acquisition); Descriptor.addPoseSources(b, sources);
+  Descriptor.startStreamDescriptor(b); Descriptor.addAcquisitionType(b, Acquisition.PoseSettings); Descriptor.addAcquisition(b, acquisition); Descriptor.addPoseSources(b, sources);
   Descriptor.addInitialReferenceSpace(b, MetadataRef.createMetadataRef(b, 1n, 3));
-  const descriptor = Descriptor.endSubscriptionDescriptor(b);
+  const descriptor = Descriptor.endStreamDescriptor(b);
   const publication = PublicationSettings.createPublicationSettings(b, 30, 4);
   StreamAccepted.startStreamAccepted(b); StreamAccepted.addRequestId(b, 2n); StreamAccepted.addStreamId(b, 7n); StreamAccepted.addDescriptor(b, descriptor); StreamAccepted.addPublication(b, publication);
   const data = finish(b, Message.StreamAccepted, StreamAccepted.endStreamAccepted(b));

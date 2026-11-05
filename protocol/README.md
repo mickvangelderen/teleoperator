@@ -13,7 +13,7 @@ layouts are incompatible with v1; do not infer a version from a payload shape.
 
 | Channel | Client sends | Server sends |
 | --- | --- | --- |
-| reliable ordered control | ClientHello, Subscribe, UpdatePublication, Unsubscribe | ServerHello, Capabilities, StreamAccepted, RequestRejected, StreamClosed, SubscriptionRetired, reference/skeleton definitions, ServerResumed |
+| reliable ordered control | ClientHello, Subscribe, UpdatePublication, Unsubscribe | ServerHello, Capabilities, StreamAccepted, RequestRejected, StreamClosed, SkeletonDefinition, ServerResumed |
 | unordered zero-retry tracking | ClockProbe | ClockReply, Tracking |
 
 Reject packets larger than 65,536 bytes before parsing. Rust uses the generated

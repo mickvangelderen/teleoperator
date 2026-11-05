@@ -1,4 +1,10 @@
-# Tracking checkpoint
+# Historical tracking checkpoint (protocol v1)
+
+These measurements and behaviors describe protocol v1 through `d87ffd5`, before
+the v2 simplification.
+They are retained as historical evidence, not validation of the current revision.
+See [current semantics](../protocol/PROTOCOL.md) for the updated behavior.
+Physical Quest checks must be repeated before deployment.
 
 Implemented: OpenXR passthrough, head + left/right grip/aim poses, 27 controller
 inputs, and the default 70-joint body set; shared 200 Hz acquisition; independent

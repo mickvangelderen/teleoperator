@@ -17,8 +17,9 @@ fidelity/calibration status when the runtime supplies them. Body capability is
 advertised only after the runtime has returned a valid skeleton.
 
 The protocol implements hello, capability discovery, clock probes, protocol v2 tracking subscribe,
-publication changes, and unsubscribe. A stream's acquisition selection is immutable. Identical acquisition requests
-share a subscription; publication is independent per client. See
+publication changes, and unsubscribe. A stream's acquisition selection is immutable. All clients share one
+200 Hz acquisition history and physical input counters; publication filters each
+stream's selected sources independently. See
 [tracking validation](TRACKING.md) for the supported settings and test results.
 
 ## Build

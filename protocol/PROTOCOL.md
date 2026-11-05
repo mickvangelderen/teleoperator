@@ -63,11 +63,13 @@ separate nonzero namespaces; responses echo them. Neither consumes tracking coun
 Control requests cannot reuse IDs; the current implementation bounds each request
 and probe namespace to 65,536 entries.
 
-Identical kind/selection requests share acquisition subscriptions. Each subscription
-has an eight-sample history, a sample sequence starting at one and per-input counters.
-Publication rates do not affect acquisition or counts. SubscriptionRetired announces
-unused identities. A stream's message number increments only on accepted transport
-sends; skipped publication consumes no message number. Counters do not wrap.
+One complete acquisition tick supplies pose, input and optional body data. Its
+session-wide sample number starts at one and the last eight ticks are retained,
+even with no subscribers. Every selection and peer sees the same tick numbers and
+physical input counters. Streams only filter that history; there are no subscription
+identities or retirement messages. Body histories stop at the latest gap in body
+availability. A stream's message number increments only on accepted transport sends;
+skipped publication consumes no message number. Counters do not wrap.
 
 Every Tracking packet contains a nonempty, complete history of one kind, oldest to
 newest, ending at its latest sample. Sample numbers are consecutive within a history,
@@ -97,16 +99,21 @@ Body confidence is absent or finite in [0,1]. Actual fidelity (Low/High) and cal
 status are included whenever supplied, independently of client selection. Body joints
 carry validity flags, without per-joint confidence or velocity.
 
-Reference space 1 and skeleton 2 have immutable nonzero, increasing versions.
-Descriptors fix metadata IDs; samples carry versions. The server sends definitions
-before their associated data, but channels may race; discard samples with unknown
-metadata. Retain definitions needed by retained history. Reference definitions contain
-space kind; unsupported continuity transforms and change times remain absent.
-Skeleton rest geometry is absolute within its recorded reference version, not
-parent-relative. Joint IDs are unique signed-32-bit-compatible values, parents are
-existing IDs or -1 and the parent graph must be acyclic. The operator validates 70
-joints and finite rest geometry. It refetches on runtime skeleton changes and recenter;
-the headset's exact rest-space convention still needs physical validation.
+Reference space 1 has a fixed advertised kind. Nonzero sample reference versions
+are recenter counters; they do not require a definition message or a client lookup.
+The initial descriptor reference records the counter at acceptance. No continuity
+transform is promised across recenter. This removes a cross-channel race that used
+to discard samples until a content-free definition arrived.
+
+Skeleton 2 has immutable nonzero increasing versions. Samples reference the exact
+skeleton used at acquisition, retained with their history. The server sends skeleton
+definitions before data, but channels can race: discard body samples with unknown
+skeletons. Skeleton rest geometry is absolute within its recorded reference version,
+not parent-relative. Joint IDs are unique signed-32-bit-compatible values, parents
+are existing IDs or -1 and the graph must be acyclic. The operator validates 70 joints
+and finite rest geometry. It refetches on runtime skeleton changes and recenter; the
+headset's exact rest-space convention still needs physical validation. The recorded
+reference counter does not depend on a second metadata message.
 
 ## Time and freshness
 

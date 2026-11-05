@@ -95,7 +95,7 @@ test("transfer rate is an exact rolling second, expires during silence and survi
   assert.equal(rate.rate(4999), 0);
 });
 
-test("arrival intervals are per stream, measured at reception and reset on a new subscription", context => {
+test("arrival intervals are per stream, measured at reception and reset on a new stream", context => {
   context.mock.method(performance, "now", () => 1000);
   profiler.start();
   profiler.trackingArrival("pose", "session:1:1", 100, 100);

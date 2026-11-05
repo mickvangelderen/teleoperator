@@ -1,9 +1,9 @@
 use crate::body::{self, Body, Skeleton};
 use crate::inputs::{self, Input};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
     },
     time::Instant,
@@ -40,14 +40,6 @@ pub struct Sample {
     pub body: Option<Body>,
 }
 
-pub struct Subscription {
-    pub kind: Kind,
-    pub id: u64,
-    pub sources: Vec<usize>,
-    pub samples: Mutex<VecDeque<Sample>>,
-    number: AtomicU64,
-}
-
 #[derive(Default)]
 pub struct StreamStats {
     pub id: u64,
@@ -57,8 +49,6 @@ pub struct StreamStats {
     pub bytes: AtomicU64,
     pub peak_buffer: AtomicU64,
 }
-
-type SubscriptionKey = (Kind, Vec<usize>);
 
 pub struct Hub {
     pub started: Instant,
@@ -72,8 +62,7 @@ pub struct Hub {
     pub local_floor: AtomicBool,
     next_skeleton: AtomicU32,
     pub reference_version: Mutex<u32>,
-    subscriptions: Mutex<HashMap<SubscriptionKey, Weak<Subscription>>>,
-    next_subscription: AtomicU64,
+    pub samples: Mutex<VecDeque<Sample>>,
     next_stream: AtomicU64,
     pub updates: watch::Sender<u64>,
     pub stats: Mutex<VecDeque<Arc<StreamStats>>>,
@@ -92,8 +81,7 @@ impl Hub {
             local_floor: AtomicBool::new(false),
             next_skeleton: AtomicU32::new(1),
             reference_version: Mutex::new(1),
-            subscriptions: Mutex::new(HashMap::new()),
-            next_subscription: AtomicU64::new(1),
+            samples: Mutex::new(VecDeque::new()),
             next_stream: AtomicU64::new(1),
             updates: watch::channel(0).0,
             stats: Mutex::new(VecDeque::new()),
@@ -136,25 +124,6 @@ impl Hub {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
             .expect("Session identity exhausted")
     }
-    pub fn subscribe(&self, kind: Kind, sources: Vec<usize>) -> Arc<Subscription> {
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-        subscriptions.retain(|_, weak| weak.strong_count() > 0);
-        if let Some(existing) = subscriptions
-            .get(&(kind, sources.clone()))
-            .and_then(Weak::upgrade)
-        {
-            return existing;
-        }
-        let subscription = Arc::new(Subscription {
-            kind,
-            id: Self::id(&self.next_subscription),
-            sources: sources.clone(),
-            samples: Mutex::new(VecDeque::new()),
-            number: AtomicU64::new(0),
-        });
-        subscriptions.insert((kind, sources), Arc::downgrade(&subscription));
-        subscription
-    }
     pub fn stream_stats(&self) -> Arc<StreamStats> {
         let result = Arc::new(StreamStats {
             id: Self::id(&self.next_stream),
@@ -178,57 +147,29 @@ impl Hub {
     ) {
         *self.skeleton.lock().unwrap() = body.map(|b| b.skeleton.clone());
         let version = *self.reference_version.lock().unwrap();
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-        subscriptions.retain(|_, weak| {
-            let Some(subscription) = weak.upgrade() else {
-                return false;
-            };
-            if subscription.kind == Kind::Body && body.is_none() {
-                return true;
-            }
-            let number = Self::id(&subscription.number)
-                .checked_add(1)
-                .expect("Sample counter exhausted");
-            let mut samples = subscription.samples.lock().unwrap();
-            let selected_inputs = if subscription.kind == Kind::Controller {
-                subscription
-                    .sources
-                    .iter()
-                    .enumerate()
-                    .map(|(slot, &i)| {
-                        let mut value = inputs[i].clone();
-                        if let Some(previous) = samples.back() {
-                            value.count_from(&previous.inputs[slot]);
-                        }
-                        value
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            samples.push_back(Sample {
-                number,
-                acquired_at,
-                target_at,
-                reference_version: version,
-                poses: if subscription.kind == Kind::Pose {
-                    subscription
-                        .sources
-                        .iter()
-                        .map(|&i| poses[i].clone())
-                        .collect()
-                } else {
-                    Vec::new()
-                },
-                inputs: selected_inputs,
-                body: (subscription.kind == Kind::Body).then(|| body.unwrap().clone()),
-            });
-            if samples.len() > HISTORY {
-                samples.pop_front();
-            }
-            true
+        let mut samples = self.samples.lock().unwrap();
+        let number = samples.back().map_or(1, |s| {
+            s.number.checked_add(1).expect("Sample counter exhausted")
         });
-        drop(subscriptions);
+        let mut inputs = inputs.to_vec();
+        if let Some(previous) = samples.back() {
+            for (input, old) in inputs.iter_mut().zip(&previous.inputs) {
+                input.count_from(old);
+            }
+        }
+        samples.push_back(Sample {
+            number,
+            acquired_at,
+            target_at,
+            reference_version: version,
+            poses: poses.to_vec(),
+            inputs,
+            body: body.cloned(),
+        });
+        if samples.len() > HISTORY {
+            samples.pop_front();
+        }
+        drop(samples);
         self.notify();
     }
     pub fn diagnostics(&self) -> serde_json::Value {
@@ -268,16 +209,13 @@ pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
 mod tests {
     use super::*;
     #[test]
-    fn shared_acquisition_retains_history_and_retires_identity() {
+    fn acquisition_retains_one_complete_bounded_history_without_subscribers() {
         let hub = Hub::new("test");
-        let a = hub.subscribe(Kind::Pose, vec![0, 2]);
-        let b = hub.subscribe(Kind::Pose, vec![0, 2]);
-        assert_eq!(a.id, b.id);
         let poses = std::array::from_fn(|_| Pose::default());
         for i in 0..12 {
             hub.acquire(&poses, &[], None, i, Some(0));
         }
-        let samples = a.samples.lock().unwrap();
+        let samples = hub.samples.lock().unwrap();
         assert_eq!(samples.len(), 8);
         assert_eq!(
             (
@@ -286,11 +224,6 @@ mod tests {
             ),
             (5, 12)
         );
-        assert_eq!(samples.back().unwrap().poses.len(), 2);
-        drop(samples);
-        let old = a.id;
-        drop(a);
-        drop(b);
-        assert_ne!(hub.subscribe(Kind::Pose, vec![0, 2]).id, old);
+        assert_eq!(samples.back().unwrap().poses.len(), 5);
     }
 }

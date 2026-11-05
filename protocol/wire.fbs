@@ -129,7 +129,7 @@ table Capabilities {
   controller:ControllerCapabilities;
   pose:PoseCapabilities;
   body:BodyCapabilities;
-  reference_spaces:[ReferenceSpaceDefinition] (required);
+  reference_spaces:[ReferenceSpace] (required);
   publication_defaults:PublicationSettings (required);
   limits:Limits (required);
   // Read-only acquisition cadence, shared by all stream kinds.
@@ -167,8 +167,7 @@ table UpdatePublication {
 
 table Unsubscribe { request_id:ulong; stream_id:ulong; }
 
-table SubscriptionDescriptor {
-  subscription_id:ulong;
+table StreamDescriptor {
   acquisition:Acquisition (required);
   // Controller definitions or pose definitions in exactly the sample order.
   inputs:[InputDefinition];
@@ -181,7 +180,7 @@ table StreamAccepted {
   // Echoes a Subscribe or UpdatePublication request.
   request_id:ulong;
   stream_id:ulong;
-  descriptor:SubscriptionDescriptor (required);
+  descriptor:StreamDescriptor (required);
   publication:PublicationSettings (required);
 }
 
@@ -198,17 +197,8 @@ table StreamClosed {
   detail:string;
 }
 
-table SubscriptionRetired { subscription_id:ulong; }
-
-table ReferenceSpaceDefinition {
-  reference:MetadataRef (required);
-  kind:ReferenceSpaceKind;
-  // Null if the runtime cannot provide a valid converted change time.
-  effective_at:long = null;
-  previous:MetadataRef;
-  // New origin expressed in the previous space; absent if unknown.
-  pose_in_previous:Transform;
-}
+// Fixed space identity/kind; sample versions count recenter events.
+table ReferenceSpace { id:ulong; kind:ReferenceSpaceKind; }
 
 table SkeletonJoint {
   joint_id:uint;
@@ -256,7 +246,7 @@ table PoseSample {
   sample_number:ulong;
   acquired_at:long;
   target_at:long = null;
-  // Nonzero; the subscription descriptor supplies the fixed metadata ID.
+  // Nonzero recenter counter for the fixed reference space.
   reference_space_version:uint;
   poses:[PoseValue] (required);
 }
@@ -266,7 +256,7 @@ table BodySample {
   acquired_at:long;
   target_at:long = null;
   returned_at:long = null;
-  // Nonzero; the subscription descriptor supplies the fixed metadata IDs.
+  // Nonzero recenter counter and exact skeleton version.
   reference_space_version:uint;
   skeleton_version:uint;
   is_active:bool;
@@ -286,7 +276,6 @@ union Samples { ControllerSamples = 1, PoseSamples = 2, BodySamples = 3 }
 
 table Tracking {
   stream_id:ulong;
-  subscription_id:ulong;
   message_number:ulong;
   history:Samples (required);
 }
@@ -305,8 +294,6 @@ union Message {
   StreamAccepted = 7,
   RequestRejected = 8,
   StreamClosed = 9,
-  SubscriptionRetired = 10,
-  ReferenceSpaceDefinition = 11,
   SkeletonDefinition = 12,
   ServerResumed = 13,
   Tracking = 14,

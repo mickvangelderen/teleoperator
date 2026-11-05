@@ -1,7 +1,7 @@
 use crate::{body, inputs};
 use crate::{
     protocol::{Connection, MAX_PACKET, finish, wire},
-    tracking::{HISTORY, Hub, Kind, RATE, SOURCES, StreamStats, Subscription},
+    tracking::{HISTORY, Hub, Kind, RATE, SOURCES, StreamStats},
 };
 use flatbuffers::{FlatBufferBuilder as Builder, WIPOffset};
 use std::{
@@ -14,12 +14,13 @@ const DEFAULT_HISTORY: u32 = 2;
 
 pub struct Publication {
     pub bytes: Vec<u8>,
-    pub references: Vec<u32>,
     pub skeletons: Vec<Arc<body::Skeleton>>,
 }
 
 pub struct Stream {
-    pub subscription: Arc<Subscription>,
+    pub hub: Arc<Hub>,
+    pub kind: Kind,
+    pub sources: Vec<usize>,
     pub stats: Arc<StreamStats>,
     pub rate: f32,
     pub history: u32,
@@ -79,29 +80,6 @@ fn publication<'a>(
         },
     )
 }
-fn reference<'a>(
-    b: &mut Builder<'a>,
-    version: u32,
-    kind: wire::ReferenceSpaceKind,
-) -> WIPOffset<wire::ReferenceSpaceDefinition<'a>> {
-    wire::ReferenceSpaceDefinition::create(
-        b,
-        &wire::ReferenceSpaceDefinitionArgs {
-            reference: Some(&wire::MetadataRef::new(1, version)),
-            kind,
-            ..Default::default()
-        },
-    )
-}
-pub fn reference_packet(version: u32, kind: wire::ReferenceSpaceKind) -> Vec<u8> {
-    let mut b = Builder::new();
-    let m = reference(&mut b, version, kind);
-    finish(
-        b,
-        wire::Message::ReferenceSpaceDefinition,
-        m.as_union_value(),
-    )
-}
 pub fn capabilities(hub: &Hub) -> Vec<u8> {
     let mut b = Builder::new();
     let available = hub.available.load(Ordering::SeqCst);
@@ -117,10 +95,12 @@ pub fn capabilities(hub: &Hub) -> Vec<u8> {
     } else {
         None
     };
-    let space = reference(
+    let space = wire::ReferenceSpace::create(
         &mut b,
-        *hub.reference_version.lock().unwrap(),
-        hub.reference_kind(),
+        &wire::ReferenceSpaceArgs {
+            id: 1,
+            kind: hub.reference_kind(),
+        },
     );
     let spaces = b.create_vector(if available {
         std::slice::from_ref(&space)
@@ -215,24 +195,6 @@ impl Connection {
         let available = self.hub.available.load(Ordering::SeqCst);
         let resumed = self.hub.resumed_at.load(Ordering::SeqCst);
         let mut messages = vec![];
-        self.known_subscriptions.retain(|id, subscription| {
-            if subscription.strong_count() != 0 {
-                return true;
-            }
-            let mut b = Builder::new();
-            let m = wire::SubscriptionRetired::create(
-                &mut b,
-                &wire::SubscriptionRetiredArgs {
-                    subscription_id: *id,
-                },
-            );
-            messages.push(finish(
-                b,
-                wire::Message::SubscriptionRetired,
-                m.as_union_value(),
-            ));
-            false
-        });
         if resumed != self.resumed_at {
             self.resumed_at = resumed;
             let mut b = Builder::new();
@@ -252,7 +214,7 @@ impl Connection {
         self.advertised_body = body_available;
         messages.push(capabilities(&self.hub));
         self.streams.retain(|stream| {
-            let keep = available && (stream.subscription.kind != Kind::Body || body_available);
+            let keep = available && (stream.kind != Kind::Body || body_available);
             if !keep {
                 messages.push(closed(
                     0,
@@ -395,12 +357,11 @@ impl Connection {
             }
             sources.sort_unstable();
             let (rate, history) = resolve_publication(request.publication())?;
-            let subscription = self.hub.subscribe(kind, sources);
-            self.known_subscriptions
-                .insert(subscription.id, Arc::downgrade(&subscription));
             let stats = self.hub.stream_stats();
             let stream = Stream {
-                subscription,
+                hub: self.hub.clone(),
+                kind,
+                sources,
                 stats,
                 rate,
                 history,
@@ -421,8 +382,8 @@ impl Connection {
         }
         let stream = &self.streams[index];
         let version = *self.hub.reference_version.lock().unwrap();
-        let mut replies = vec![reference_packet(version, self.hub.reference_kind())];
-        if stream.subscription.kind == Kind::Body {
+        let mut replies = Vec::new();
+        if stream.kind == Kind::Body {
             replies.push(body::definition(skeleton.as_ref().ok_or((
                 wire::RejectionCode::UnsupportedCapability,
                 "Body tracker unavailable",
@@ -436,7 +397,7 @@ impl Connection {
 impl Stream {
     fn accepted(&self, request: u64, version: u32, skeleton: Option<&body::Skeleton>) -> Vec<u8> {
         let mut b = Builder::new();
-        let (acquisition_type, acquisition, sources, inputs) = match self.subscription.kind {
+        let (acquisition_type, acquisition, sources, inputs) = match self.kind {
             Kind::Body => (
                 wire::Acquisition::BodySettings,
                 body::settings(&mut b).as_union_value(),
@@ -444,13 +405,8 @@ impl Stream {
                 None,
             ),
             Kind::Pose => {
-                let acquisition = settings(&mut b, &self.subscription.sources).as_union_value();
-                let sources: Vec<_> = self
-                    .subscription
-                    .sources
-                    .iter()
-                    .map(|&i| source(&mut b, i))
-                    .collect();
+                let acquisition = settings(&mut b, &self.sources).as_union_value();
+                let sources: Vec<_> = self.sources.iter().map(|&i| source(&mut b, i)).collect();
                 (
                     wire::Acquisition::PoseSettings,
                     acquisition,
@@ -459,11 +415,9 @@ impl Stream {
                 )
             }
             Kind::Controller => {
-                let acquisition =
-                    inputs::settings(&mut b, &self.subscription.sources).as_union_value();
+                let acquisition = inputs::settings(&mut b, &self.sources).as_union_value();
                 let definitions = inputs::definitions();
                 let inputs: Vec<_> = self
-                    .subscription
                     .sources
                     .iter()
                     .map(|&i| inputs::definition(&mut b, &definitions[i]))
@@ -476,17 +430,16 @@ impl Stream {
                 )
             }
         };
-        let descriptor = wire::SubscriptionDescriptor::create(
+        let descriptor = wire::StreamDescriptor::create(
             &mut b,
-            &wire::SubscriptionDescriptorArgs {
-                subscription_id: self.subscription.id,
+            &wire::StreamDescriptorArgs {
                 acquisition_type,
                 acquisition: Some(acquisition),
                 pose_sources: sources,
                 inputs,
-                initial_reference_space: (self.subscription.kind != Kind::Controller)
+                initial_reference_space: (self.kind != Kind::Controller)
                     .then_some(&wire::MetadataRef::new(1, version)),
-                initial_skeleton: (self.subscription.kind == Kind::Body)
+                initial_skeleton: (self.kind == Kind::Body)
                     .then(|| wire::MetadataRef::new(2, skeleton.unwrap().version))
                     .as_ref(),
             },
@@ -509,14 +462,9 @@ impl Stream {
             return false;
         }
         // Acquisition may finish just after this tick; keep this slot until a new sample exists.
-        if self
-            .subscription
-            .samples
-            .lock()
-            .unwrap()
-            .back()
-            .is_none_or(|s| s.number == self.last_sample)
-        {
+        if self.hub.samples.lock().unwrap().back().is_none_or(|s| {
+            s.number == self.last_sample || self.kind == Kind::Body && s.body.is_none()
+        }) {
             return false;
         }
         let period = Duration::from_secs_f32(1.0 / self.rate);
@@ -527,24 +475,29 @@ impl Stream {
         true
     }
     pub fn packet(&mut self) -> Option<Publication> {
-        let samples = self.subscription.samples.lock().unwrap();
+        let samples = self.hub.samples.lock().unwrap();
         let latest = samples.back()?;
-        if latest.number == self.last_sample {
+        if latest.number == self.last_sample || self.kind == Kind::Body && latest.body.is_none() {
             return None;
         }
         self.last_sample = latest.number;
         let mut b = Builder::new();
-        let mut versions = Vec::new();
+        let count = samples
+            .iter()
+            .rev()
+            .take(self.history as usize)
+            .take_while(|s| self.kind != Kind::Body || s.body.is_some())
+            .count();
+        let samples: Vec<_> = samples.iter().skip(samples.len() - count).collect();
         let mut skeletons = Vec::new();
-        let (history_type, history) = if self.subscription.kind == Kind::Controller {
+        let (history_type, history) = if self.kind == Kind::Controller {
             let history: Vec<_> = samples
                 .iter()
-                .skip(samples.len().saturating_sub(self.history as usize))
                 .map(|s| {
-                    let values: Vec<_> = s
-                        .inputs
+                    let values: Vec<_> = self
+                        .sources
                         .iter()
-                        .map(|input| inputs::value(&mut b, input))
+                        .map(|&i| inputs::value(&mut b, &s.inputs[i]))
                         .collect();
                     let values = b.create_vector(&values);
                     wire::ControllerSample::create(
@@ -568,18 +521,11 @@ impl Stream {
                 )
                 .as_union_value(),
             )
-        } else if self.subscription.kind == Kind::Body {
+        } else if self.kind == Kind::Body {
             let history: Vec<_> = samples
                 .iter()
-                .skip(samples.len().saturating_sub(self.history as usize))
                 .map(|s| {
                     let body = s.body.as_ref().unwrap();
-                    if !versions.contains(&s.reference_version) {
-                        versions.push(s.reference_version);
-                    }
-                    if !versions.contains(&body.skeleton.reference_version) {
-                        versions.push(body.skeleton.reference_version);
-                    }
                     if !skeletons
                         .iter()
                         .any(|old: &Arc<body::Skeleton>| old.version == body.skeleton.version)
@@ -629,25 +575,14 @@ impl Stream {
         } else {
             let history: Vec<_> = samples
                 .iter()
-                .skip(samples.len().saturating_sub(self.history as usize))
                 .map(|s| {
-                    if !versions.contains(&s.reference_version) {
-                        versions.push(s.reference_version);
-                    }
-                    let poses: Vec<_> = s
-                        .poses
+                    let poses: Vec<_> = self
+                        .sources
                         .iter()
-                        .map(|p| {
+                        .map(|&i| {
+                            let p = &s.poses[i];
                             let location = wire::JointPose::new(
-                                &wire::Transform::new(
-                                    &wire::Vec3::new(p.position[0], p.position[1], p.position[2]),
-                                    &wire::Quaternion::new(
-                                        p.orientation[0],
-                                        p.orientation[1],
-                                        p.orientation[2],
-                                        p.orientation[3],
-                                    ),
-                                ),
+                                &body::transform(p),
                                 wire::LocationFlags::from_bits_retain(p.flags),
                             );
                             wire::PoseValue::create(
@@ -685,7 +620,6 @@ impl Stream {
             &mut b,
             &wire::TrackingArgs {
                 stream_id: self.stats.id,
-                subscription_id: self.subscription.id,
                 message_number: self
                     .stats
                     .sent
@@ -698,7 +632,6 @@ impl Stream {
         );
         Some(Publication {
             bytes: finish(b, wire::Message::Tracking, m.as_union_value()),
-            references: versions,
             skeletons,
         })
     }
@@ -725,14 +658,7 @@ mod tests {
                 .reference_spaces()
                 .get(0);
             assert_eq!(space.kind(), kind);
-            assert_eq!(space.reference().id(), 1);
-            hub.reset_reference();
-            let bytes =
-                reference_packet(*hub.reference_version.lock().unwrap(), hub.reference_kind());
-            let p = packet(&bytes).unwrap();
-            let space = p.message_as_reference_space_definition().unwrap();
-            assert_eq!(space.kind(), kind);
-            assert_eq!(space.reference().version(), 2);
+            assert_eq!(space.id(), 1);
         }
     }
 
@@ -808,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn subscription_validation_preserves_previous_stream_and_shares_acquisition() {
+    fn selection_validation_preserves_previous_stream() {
         let hub = Hub::new("test");
         hub.set_available(true);
         let mut a = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
@@ -834,8 +760,8 @@ mod tests {
         b.control(&request(1, &["head", "right/grip"], None, 1))
             .unwrap();
         assert_eq!(
-            a.streams.first().unwrap().subscription.id,
-            b.streams.first().unwrap().subscription.id
+            a.streams.first().unwrap().sources,
+            b.streams.first().unwrap().sources
         );
         for (sources, rate, history) in [
             (vec!["head", "head"], 100., 1),
@@ -867,7 +793,7 @@ mod tests {
         let original = c.streams[0].stats.id;
         c.control(&request(2, &["left/aim"], None, 1)).unwrap();
         assert_ne!(original, c.streams[1].stats.id);
-        assert_eq!(c.streams[0].subscription.sources, [0]);
+        assert_eq!(c.streams[0].sources, [0]);
         let mut b = Builder::new();
         let p = wire::PublicationSettings::create(&mut b, &Default::default());
         let update = wire::UpdatePublication::create(
@@ -1017,7 +943,7 @@ mod tests {
         a.control(&subscribe).unwrap();
         b.control(&subscribe).unwrap();
         assert_eq!(a.streams.len(), 2);
-        assert_eq!(a.streams[1].subscription.id, b.streams[0].subscription.id);
+        assert!(Arc::ptr_eq(&a.streams[1].hub, &b.streams[0].hub));
         let mut values: Vec<_> = definitions
             .iter()
             .map(|d| inputs::Input::inactive(d.kind))
@@ -1048,6 +974,102 @@ mod tests {
             assert_eq!(input.last_change_at(), Some(0));
             assert_eq!(sample.sample_number(), 5);
         }
+    }
+
+    #[test]
+    fn late_joining_selections_share_tick_and_physical_counters() {
+        let hub = Hub::new("test");
+        let definitions = inputs::definitions();
+        let index = definitions
+            .iter()
+            .position(|d| d.id == "primary/click")
+            .unwrap();
+        let poses = std::array::from_fn(|i| Pose {
+            position: [i as f32, 0., 0.],
+            ..Default::default()
+        });
+        let mut values: Vec<_> = definitions
+            .iter()
+            .map(|d| inputs::Input::inactive(d.kind))
+            .collect();
+        for (n, value) in [false, true, false, true].into_iter().enumerate() {
+            values[index] = inputs::Input {
+                active: true,
+                changed_at: None,
+                value: inputs::Value::Boolean {
+                    value,
+                    presses: 0,
+                    releases: 0,
+                },
+            };
+            hub.acquire(&poses, &values, None, n as i64, None);
+        }
+        let stream = |kind, sources| Stream {
+            hub: hub.clone(),
+            kind,
+            sources,
+            stats: hub.stream_stats(),
+            rate: RATE,
+            history: 1,
+            next_send: Instant::now(),
+            last_sample: 0,
+        };
+        for sources in [vec![index], vec![index, index + 1]] {
+            let bytes = stream(Kind::Controller, sources).packet().unwrap().bytes;
+            let packet = packet(&bytes).unwrap().message_as_tracking().unwrap();
+            let sample = packet
+                .history_as_controller_samples()
+                .unwrap()
+                .samples()
+                .get(0);
+            let value = sample.values().get(0).value_as_boolean_value().unwrap();
+            assert_eq!((sample.sample_number(), sample.acquired_at()), (4, 3));
+            assert_eq!((value.press_count(), value.release_count()), (2, 1));
+        }
+        let bytes = stream(Kind::Pose, vec![4]).packet().unwrap().bytes;
+        let packet = packet(&bytes).unwrap().message_as_tracking().unwrap();
+        let pose = packet.history_as_pose_samples().unwrap().samples().get(0);
+        assert_eq!(pose.sample_number(), 4);
+        assert_eq!(
+            pose.poses().get(0).location().transform().position().x(),
+            4.
+        );
+    }
+
+    #[test]
+    fn body_history_stops_at_capability_gaps() {
+        let hub = Hub::new("test");
+        let poses = std::array::from_fn(|_| Pose::default());
+        let body = body::Body::inactive(body::synthetic_skeleton());
+        for (n, sample) in [Some(&body), None, Some(&body), Some(&body)]
+            .into_iter()
+            .enumerate()
+        {
+            hub.acquire(&poses, &[], sample, n as i64, None);
+        }
+        let mut stream = Stream {
+            hub: hub.clone(),
+            kind: Kind::Body,
+            sources: vec![],
+            stats: hub.stream_stats(),
+            rate: RATE,
+            history: 8,
+            next_send: Instant::now(),
+            last_sample: 0,
+        };
+        let bytes = stream.packet().unwrap().bytes;
+        let packet = packet(&bytes).unwrap().message_as_tracking().unwrap();
+        let samples = packet.history_as_body_samples().unwrap().samples();
+        assert_eq!(
+            samples
+                .iter()
+                .map(|s| s.sample_number())
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        hub.acquire(&poses, &[], None, 4, None);
+        assert!(!stream.due());
+        assert!(stream.packet().is_none());
     }
 
     #[test]
@@ -1105,23 +1127,16 @@ mod tests {
             .message_as_tracking()
             .unwrap();
         let samples = p.history_as_body_samples().unwrap().samples();
-        assert_eq!(samples.len(), 2);
-        assert_eq!(samples.get(0).target_at(), Some(0));
-        assert_eq!(samples.get(1).skeleton_version(), 2);
+        assert_eq!(samples.len(), 3);
+        assert_eq!(samples.get(1).target_at(), Some(0));
+        assert_eq!(samples.get(2).skeleton_version(), 2);
         assert_eq!(samples.get(1).joints().len(), 70);
         c.advertised = true;
         c.advertised_body = true;
         hub.acquire(&poses, &[], None, 3, None);
         assert_eq!(c.refresh().len(), 2);
         assert_eq!(c.streams.len(), 1);
-        assert_eq!(c.streams[0].subscription.kind, Kind::Pose);
-        let retired = c.refresh();
-        assert_eq!(retired.len(), 1);
-        assert!(
-            packet(&retired[0])
-                .unwrap()
-                .message_as_subscription_retired()
-                .is_some()
-        );
+        assert_eq!(c.streams[0].kind, Kind::Pose);
+        assert!(c.refresh().is_empty());
     }
 }

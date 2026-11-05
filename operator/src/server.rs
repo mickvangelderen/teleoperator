@@ -1,5 +1,5 @@
 use crate::protocol::{self, Connection, wire};
-use crate::{streams::reference_packet, tracking::Hub};
+use crate::tracking::Hub;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
@@ -152,7 +152,6 @@ impl Peer {
         let mut interval = tokio::time::interval(Duration::from_millis(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut known_skeletons = std::collections::HashSet::new();
-        let mut known_versions = std::collections::HashSet::new();
         loop {
             interval.tick().await;
             if !self.negotiated.load(Ordering::SeqCst) {
@@ -172,7 +171,6 @@ impl Peer {
                 }
             }
             let buffered = tracking.buffered_amount().await;
-            let reference_kind = self.protocol.lock().unwrap().hub.reference_kind();
             let prepared = {
                 let mut protocol = self.protocol.lock().unwrap();
                 protocol
@@ -198,18 +196,6 @@ impl Peer {
                     .collect::<Vec<_>>()
             };
             for (publication, _) in &prepared {
-                for &version in &publication.references {
-                    if known_versions.insert(version)
-                        && control
-                            .send(&Bytes::from(reference_packet(version, reference_kind)))
-                            .await
-                            .is_err()
-                    {
-                        return;
-                    }
-                }
-            }
-            for (publication, _) in &prepared {
                 for skeleton in &publication.skeletons {
                     if known_skeletons.insert(skeleton.version)
                         && control
@@ -223,9 +209,6 @@ impl Peer {
             }
             if let Some(latest) = known_skeletons.iter().copied().max() {
                 known_skeletons.retain(|v| latest.saturating_sub(*v) < 32);
-            }
-            if let Some(latest) = known_versions.iter().copied().max() {
-                known_versions.retain(|v| latest.saturating_sub(*v) < 32);
             }
             drop(gate);
             for (publication, stats) in prepared {

@@ -49,19 +49,18 @@ export type ClockReply = {
   receivedAt: bigint;
   sentAt: bigint;
 };
-export type Reference = { kind: "ReferenceSpaceDefinition"; id: bigint; version: number; spaceKind: number; effectiveAt: bigint | null; previous: {id: bigint; version: number} | null; poseInPrevious: Pose | null };
+export type Reference = { id: bigint; spaceKind: number };
 export type InputDefinition = { source: string; id: string; type: number; label: string };
 export type Input = { active: boolean; changedAt: bigint | null; type: number; value: boolean | number | number[]; presses: bigint; releases: bigint };
-export type Accepted = { kind: "StreamAccepted"; type: "pose" | "controller" | "body"; requestId: bigint; streamId: bigint; subscriptionId: bigint; sources: string[]; inputs: InputDefinition[]; reference: { id: bigint; version: number } | null; skeleton: {id: bigint; version: number} | null; jointSet: string | null; rate: number; history: number };
+export type Accepted = { kind: "StreamAccepted"; type: "pose" | "controller" | "body"; requestId: bigint; streamId: bigint; sources: string[]; inputs: InputDefinition[]; reference: { id: bigint; version: number } | null; skeleton: {id: bigint; version: number} | null; jointSet: string | null; rate: number; history: number };
 export type Pose = { position: number[]; orientation: number[]; flags: number; active: boolean | null };
 export type Body = { active: boolean; confidence: number | null; returnedAt: bigint | null; skeletonVersion: number; fidelity: number | null; calibration: number | null };
 export type Sample = { type: "pose" | "controller" | "body"; number: bigint; acquiredAt: bigint; targetAt: bigint | null; referenceVersion: number; poses: Pose[]; inputs: Input[]; body: Body | null };
 export type Skeleton = { kind: "SkeletonDefinition"; id: bigint; version: number; reference: {id: bigint; version: number}; jointSet: string; joints: {id: number; parent: number; name: string; rest: Pose}[] };
-export type Tracking = { kind: "Tracking"; streamId: bigint; subscriptionId: bigint; messageNumber: bigint; samples: Sample[] };
-export type Received = Hello | Capabilities | ClockReply | Reference | Accepted | Tracking | Skeleton
+export type Tracking = { kind: "Tracking"; streamId: bigint; messageNumber: bigint; samples: Sample[] };
+export type Received = Hello | Capabilities | ClockReply | Accepted | Tracking | Skeleton
   | { kind: "RequestRejected"; requestId: bigint; reason: string }
   | { kind: "StreamClosed"; streamId: bigint; requestId: bigint }
-  | { kind: "SubscriptionRetired"; subscriptionId: bigint }
   | { kind: "ServerResumed" };
 
 export function subscribe(id: bigint, sources: string[], rate?: number, history = 1): Uint8Array<ArrayBuffer> {
@@ -301,13 +300,6 @@ function input(t: Table): Input {
   return { active: !!active, changedAt: t.field(1, 8) ? t.integer(1, true) : null, type: kind - 1, value, presses: kind === 1 ? v.integer(1) : 0n, releases: kind === 1 ? v.integer(2) : 0n };
 }
 
-function reference(table: Table): Reference {
-  requireValue(table.number(1, "u8") <= 4);
-  const previous = table.field(3, 16) ? table.metadata(3) : null;
-  const poseInPrevious = table.field(4, 28) ? table.transform(4) : null;
-  requireValue(!poseInPrevious || previous);
-  return { kind: "ReferenceSpaceDefinition", ...table.metadata(0), spaceKind: table.number(1, "u8"), effectiveAt: table.field(2, 8) ? table.integer(2, true) : null, previous, poseInPrevious };
-}
 function sources(table: Table, field: number): string[] {
   const result = table.tables(field, 64).map(s => s.string(0));
   requireValue(result.length > 0 && result.every(s => s.length > 0 && s.length <= 256) && new Set(result).size === result.length);
@@ -336,8 +328,8 @@ export function decode(
   const message = packet.child(1);
   if (channel === "tracking") {
     if (kind === Message.Tracking) {
-      const type = message.number(3, "u8"); requireValue(type >= 1 && type <= 3);
-      const samples: Sample[] = message.child(4).tables(0, 8).map(s => {
+      const type = message.number(2, "u8"); requireValue(type >= 1 && type <= 3);
+      const samples: Sample[] = message.child(3).tables(0, 8).map(s => {
         const base = { number: s.integer(0), acquiredAt: s.integer(1, true) };
         if (type === 1) return { ...base, type: "controller", targetAt: null, referenceVersion: 0, poses: [], inputs: s.tables(2, 128).map(input), body: null };
         const targetAt = s.field(2, 8) ? s.integer(2, true) : null;
@@ -351,8 +343,8 @@ export function decode(
         const s = samples[i]; requireValue(s.number > 0n && (s.type !== "controller" ? s.referenceVersion > 0 && s.poses.length > 0 : s.inputs.length > 0));
         if (i) requireValue(s.number === samples[i - 1].number + 1n && s.acquiredAt >= samples[i - 1].acquiredAt);
       }
-      const result: Tracking = { kind: "Tracking", streamId: message.integer(0), subscriptionId: message.integer(1), messageNumber: message.integer(2), samples };
-      requireValue(result.streamId > 0n && result.subscriptionId > 0n && result.messageNumber > 0n);
+      const result: Tracking = { kind: "Tracking", streamId: message.integer(0), messageNumber: message.integer(1), samples };
+      requireValue(result.streamId > 0n && result.messageNumber > 0n);
       return result;
     }
     requireValue(kind === Message.ClockReply, "Unexpected tracking message");
@@ -396,9 +388,7 @@ export function decode(
       );
     return hello;
   }
-  if (kind === Message.ReferenceSpaceDefinition) return reference(message);
   if (kind === Message.ServerResumed) return { kind: "ServerResumed" };
-  if (kind === Message.SubscriptionRetired) return { kind: "SubscriptionRetired", subscriptionId: message.integer(0) };
   if (kind === Message.RequestRejected) return { kind: "RequestRejected", requestId: message.integer(0), reason: message.string(2) };
   if (kind === Message.StreamClosed) return { kind: "StreamClosed", requestId: message.integer(0), streamId: message.integer(1) };
   if (kind === Message.SkeletonDefinition) {
@@ -414,14 +404,14 @@ export function decode(
   }
   if (kind === Message.StreamAccepted) {
     const d = message.child(2), p = message.child(3);
-    const type = d.number(1, "u8"); requireValue(type >= 1 && type <= 3);
-    const definitions = type === 1 ? d.tables(3, 128).map(inputDefinition) : [];
-    const settings = d.child(2);
-    const names = type === 2 ? sources(d, 4) : type === 3 ? [settings.string(0)] : definitions.map(d => `${d.source}/${d.id}`);
+    const type = d.number(0, "u8"); requireValue(type >= 1 && type <= 3);
+    const definitions = type === 1 ? d.tables(2, 128).map(inputDefinition) : [];
+    const settings = d.child(1);
+    const names = type === 2 ? sources(d, 3) : type === 3 ? [settings.string(0)] : definitions.map(d => `${d.source}/${d.id}`);
     const selected = type === 2 ? sources(settings, 0) : type === 3 ? names : settings.tables(0, 128).map(s => `${s.string(0)}/${s.string(1)}`);
     requireValue(names.length > 0 && names.every(Boolean) && new Set(names).size === names.length && JSON.stringify(names) === JSON.stringify(selected));
-    const result: Accepted = { kind: "StreamAccepted", type: type === 1 ? "controller" : type === 2 ? "pose" : "body", requestId: message.integer(0), streamId: message.integer(1), subscriptionId: d.integer(0), sources: names, inputs: definitions, reference: type !== 1 ? d.metadata(5) : null, skeleton: type === 3 ? d.metadata(6) : null, jointSet: type === 3 ? settings.string(1) : null, rate: p.number(0, "f32"), history: p.number(1, "u32", 1) };
-    requireValue(result.streamId > 0n && result.subscriptionId > 0n && Number.isFinite(result.rate) && result.rate > 0 && result.history >= 1);
+    const result: Accepted = { kind: "StreamAccepted", type: type === 1 ? "controller" : type === 2 ? "pose" : "body", requestId: message.integer(0), streamId: message.integer(1), sources: names, inputs: definitions, reference: type !== 1 ? d.metadata(4) : null, skeleton: type === 3 ? d.metadata(5) : null, jointSet: type === 3 ? settings.string(1) : null, rate: p.number(0, "f32"), history: p.number(1, "u32", 1) };
+    requireValue(result.streamId > 0n && Number.isFinite(result.rate) && result.rate > 0 && result.history >= 1);
     return result;
   }
   requireValue(kind === Message.Capabilities, "Unexpected control message");
@@ -433,7 +423,7 @@ export function decode(
     controller: message.field(0, 4) ? { inputs: message.child(0).tables(1, 128).map(inputDefinition) } : false,
     pose: message.field(1, 4) ? { sources: sources(message.child(1), 0) } : false,
     body: message.field(2, 4) ? { source: message.child(2).tables(0, 1)[0].string(0), jointSet: message.child(2).tables(0, 1)[0].string(1) } : false,
-    spaces: message.tables(3, 64).map(reference),
+    spaces: message.tables(3, 1).map(t => { const id = t.integer(0), spaceKind = t.number(1, "u8"); requireValue(id === 1n && [1, 3].includes(spaceKind)); return { id, spaceKind }; }),
     limits: {
       minSendRateHz: limits.number(0, "f32"),
       maxSendRateHz: limits.number(1, "f32"),

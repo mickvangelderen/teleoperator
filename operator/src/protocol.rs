@@ -1,7 +1,7 @@
 use crate::{streams::Stream, tracking::Hub};
 use flatbuffers::{FlatBufferBuilder, UnionWIPOffset, WIPOffset};
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Weak};
+use std::collections::HashSet;
+use std::sync::Arc;
 
 #[allow(unused_imports, dead_code, clippy::all, mismatched_lifetime_syntaxes)]
 mod generated {
@@ -16,7 +16,6 @@ const MAX_REQUESTS: usize = 65_536;
 pub struct Connection {
     pub hub: Arc<Hub>,
     pub streams: Vec<Stream>,
-    pub known_subscriptions: HashMap<u64, Weak<crate::tracking::Subscription>>,
     pub advertised: bool,
     pub advertised_body: bool,
     pub resumed_at: i64,
@@ -58,7 +57,6 @@ impl Connection {
         Self {
             hub,
             streams: Vec::new(),
-            known_subscriptions: HashMap::new(),
             advertised: false,
             advertised_body: false,
             resumed_at: 0,

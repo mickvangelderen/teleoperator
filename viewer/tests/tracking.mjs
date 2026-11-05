@@ -30,7 +30,7 @@ async function snapshot(page, type = "pose") {
     const live = window.client.state.streams.find(s => s.descriptor.type === type);
     const s = live.statistics, stream = live.descriptor;
     const latest = s.consumer.pending ?? live.sample;
-    return { at: performance.now(), stream: String(stream.streamId), subscription: String(stream.subscriptionId), sample: Number(latest.number), acquiredAt: Number(latest.acquiredAt) / 1e6, received: Number(s.messages.unique), missing: Number(s.messages.missing), reordered: Number(s.messages.reordered), duplicates: Number(s.messages.duplicates), sampleGaps: Number(s.samples.missing), coalesced: s.consumer.coalesced, consumed: s.consumer.consumed, discarded: s.discarded, ageMs: s.age, pending: s.consumer.pending ? 1 : 0 };
+    return { at: performance.now(), stream: String(stream.streamId), sample: Number(latest.number), acquiredAt: Number(latest.acquiredAt) / 1e6, received: Number(s.messages.unique), missing: Number(s.messages.missing), reordered: Number(s.messages.reordered), duplicates: Number(s.messages.duplicates), sampleGaps: Number(s.samples.missing), coalesced: s.consumer.coalesced, consumed: s.consumer.consumed, discarded: s.discarded, ageMs: s.age, pending: s.consumer.pending ? 1 : 0 };
   }, type);
 }
 function delta(before, after) {
@@ -41,7 +41,6 @@ try {
   const fast = await client(60), slow = await client(5);
   const start = await Promise.all([snapshot(fast), snapshot(slow)]);
   const otherStart = await Promise.all([snapshot(fast, "controller"), snapshot(fast, "body"), snapshot(slow, "body")]);
-  assert.equal(start[0].subscription, start[1].subscription, "Identical requests share acquisition");
   await new Promise(r => setTimeout(r, 10_000));
   const end = await Promise.all([snapshot(fast), snapshot(slow)]);
   const otherEnd = await Promise.all([snapshot(fast, "controller"), snapshot(fast, "body"), snapshot(slow, "body")]);
@@ -78,19 +77,19 @@ try {
   const limitedEnd = await snapshot(slow);
   const limited = delta(limitedStart, limitedEnd);
   assert.ok(limited.messagesPerSecond > 8 && limited.messagesPerSecond < 12);
-  assert.equal(limitedStart.subscription, limitedEnd.subscription, "Publication changes retain acquisition identity");
+  assert.equal(limitedStart.stream, limitedEnd.stream, "Publication changes retain stream identity");
 
   await slow.evaluate(() => window.client.setPublication(1, 1, "controller"));
   await slow.waitForFunction(() => window.client.state.streams.find(s => s.descriptor.type === "controller")?.descriptor.rate === 1);
   const counterSnapshot = page => page.evaluate(() => {
     const s = window.client.state.streams.find(s => s.descriptor.type === "controller");
     const input = s.sample.inputs.find(i => i.type === 0);
-    return { presses: Number(input.presses), releases: Number(input.releases), messages: Number(s.statistics.messages.unique), subscription: String(s.descriptor.subscriptionId) };
+    return { presses: Number(input.presses), releases: Number(input.releases), messages: Number(s.statistics.messages.unique), sample: String(s.sample.number) };
   });
   const counterStart = await counterSnapshot(slow);
   await new Promise(r => setTimeout(r, 3200));
   const counterEnd = await counterSnapshot(slow);
-  assert.equal(counterStart.subscription, counterEnd.subscription);
+  assert.ok(BigInt(counterEnd.sample) > BigInt(counterStart.sample));
   assert.ok(counterEnd.presses - counterStart.presses >= 2 && counterEnd.releases - counterStart.releases >= 2);
   assert.ok(counterEnd.messages - counterStart.messages <= 5);
 
