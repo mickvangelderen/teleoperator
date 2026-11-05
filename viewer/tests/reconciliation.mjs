@@ -79,7 +79,7 @@ try {
   await page.waitForFunction(before => document.querySelector("#received").textContent !== before, before);
 
   await page.getByRole("button", { name: /Inspect ServerHello/ }).click();
-  await page.waitForFunction(() => document.querySelector("#payload").textContent.includes('"selectedVersion": 1'));
+  await page.waitForFunction(() => document.querySelector("#payload").textContent.includes('"selectedVersion": 2'));
   await page.getByRole("button", { name: "Disconnect" }).click();
   await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected" && !document.querySelector("#input-values").children.length && !document.querySelector("#pose-values").children.length);
   const final = await page.evaluate(() => ({ ...window.audit }));

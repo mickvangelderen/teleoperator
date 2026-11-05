@@ -1,4 +1,4 @@
-import { decode, encode, subscribe, subscribeInputs, subscribeBody, updatePublication, unsubscribe, json, MAX_PACKET } from "./protocol";
+import { decode, encode, subscribe, subscribeInputs, subscribeBody, updatePublication, unsubscribe, json, MAX_PACKET, VERSION } from "./protocol";
 import type { Accepted, Capabilities, Hello, Received, Sample, Skeleton, Reference, Tracking } from "./protocol";
 import { Sequence, Latest } from "./statistics";
 import { profiler } from "./performance";
@@ -124,7 +124,7 @@ export class Connection {
           this.send(this.control, bytes);
           this.record("Sent", "control", "ClientHello", bytes.length, {
             requestId: 1n,
-            supportedVersions: [1],
+            supportedVersions: [VERSION],
           });
         }
         this.emit();
@@ -222,7 +222,7 @@ export class Connection {
       if (!this.helloSent || this.state.hello || message.requestId !== 1n)
         throw new Error("Unexpected ServerHello");
       if (message.selectedVersion === 0) throw new Error(message.reason);
-      if (message.selectedVersion !== 1)
+      if (message.selectedVersion !== VERSION)
         throw new Error("Server selected an unsupported version");
       this.state.hello = message;
     } else if (message.kind === "Capabilities") {
@@ -234,7 +234,7 @@ export class Connection {
       for (const space of message.spaces) this.addReference(space);
       if (message.pose && !this.requested.has("pose")) {
         this.requested.add("pose"); const id = ++this.requestId;
-        this.sendRequest(id, "Subscribe poses", subscribe(id, message.pose.sources));
+        this.sendRequest(id, "Subscribe poses", subscribe(id, message.pose.sources, message.publication.sendRateHz, message.publication.historyLength));
       }
       if (message.controller && !this.requested.has("controller")) {
         this.requested.add("controller"); const id = ++this.requestId;
@@ -272,14 +272,14 @@ export class Connection {
       this.state.skeletons.set(`${message.id}:${message.version}`, message);
       if (this.state.skeletons.size > 128) this.state.skeletons.delete(this.state.skeletons.keys().next().value!);
     } else if (message.kind === "StreamAccepted") {
-      if (message.requestId && !this.pending.delete(message.requestId)) throw new Error("Unexpected stream acceptance");
+      if (!this.pending.delete(message.requestId)) throw new Error("Unexpected stream acceptance");
+      const limits = this.state.capabilities?.limits;
+      if (!limits || message.rate < limits.minSendRateHz || message.rate > limits.maxSendRateHz || message.history > limits.maxHistoryLength) throw new Error("Publication exceeds advertised limits");
       const old = this.state.streams.find(s => s.descriptor.streamId === message.streamId);
-      if (old?.descriptor.subscriptionId === message.subscriptionId) old.descriptor = message;
-      else {
-        const stream: LiveStream = { descriptor: message, sample: null, statistics: initialStatistics(), newest: 0n, lastReceivedAt: 0, rateAt: performance.now(), rateCount: 0n };
-        if (old) { stream.statistics.messages = old.statistics.messages; this.state.streams[this.state.streams.indexOf(old)] = stream; }
-        else this.state.streams.push(stream);
-      }
+      if (old) {
+        if (old.descriptor.subscriptionId !== message.subscriptionId) throw new Error("Stream acquisition changed");
+        old.descriptor = message;
+      } else this.state.streams.push({ descriptor: message, sample: null, statistics: initialStatistics(), newest: 0n, lastReceivedAt: 0, rateAt: performance.now(), rateCount: 0n });
     } else if (message.kind === "RequestRejected") {
       if (!this.pending.delete(message.requestId)) throw new Error("Unexpected request rejection");
       this.state.detail = message.reason;

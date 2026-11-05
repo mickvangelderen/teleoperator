@@ -247,7 +247,7 @@ function renderState(state: State) {
       : "Connect to discover the device’s tracking sources.",
   );
   const names = state.capabilities?.pose ? state.capabilities.pose.sources : [];
-  document.querySelectorAll(".source-state").forEach((source, i) => setText(source, i === 0 && names.length ? `${names.length} pose sources · ${poseStream?.descriptor.sampleRate ?? "—"} Hz` : i === 1 && inputStream ? `${inputStream.descriptor.inputs.length} inputs · ${inputStream.descriptor.sampleRate} Hz` : i === 2 && bodyStream ? `${bodyStream.sample?.poses.length ?? 0} joints · ${bodyStream.descriptor.sampleRate} Hz` : live ? "Not advertised" : "Awaiting discovery"));
+  document.querySelectorAll(".source-state").forEach((source, i) => setText(source, i === 0 && names.length ? `${names.length} pose sources · ${state.capabilities?.sampleRate ?? "—"} Hz` : i === 1 && inputStream ? `${inputStream.descriptor.inputs.length} inputs · ${state.capabilities?.sampleRate} Hz` : i === 2 && bodyStream ? `${bodyStream.sample?.poses.length ?? 0} joints · ${state.capabilities?.sampleRate} Hz` : live ? "Not advertised" : "Awaiting discovery"));
   text("stream-count", `${state.streams.length} active streams`);
   const base = state.capabilities?.spaces.find(s => s.id === stream?.reference?.id);
   const frameName = base ? ["VIEW", "LOCAL", "STAGE", "LOCAL FLOOR", "UNBOUNDED"][base.spaceKind] : "UNKNOWN";

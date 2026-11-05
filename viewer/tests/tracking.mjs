@@ -22,7 +22,7 @@ async function client(rate) {
   await page.waitForFunction(() => window.client.state.streams.length === 3 && window.client.state.streams.every(s => s.sample !== null) || window.client.state.status === "Error");
   assert.equal(await page.evaluate(() => window.client.state.status), "Connected");
   assert.equal(await page.evaluate(() => window.client.state.source), "synthetic");
-  assert.equal(await page.evaluate(() => window.client.state.streams.every(s => s.descriptor.sampleRate === 200 && s.descriptor.rate === 100 && s.descriptor.history === 2)), true);
+  assert.equal(await page.evaluate(() => window.client.state.capabilities.sampleRate === 200 && window.client.state.streams.every(s => s.descriptor.rate === 100 && s.descriptor.history === 2)), true);
   return page;
 }
 async function snapshot(page, type = "pose") {

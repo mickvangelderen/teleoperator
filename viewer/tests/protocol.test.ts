@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Builder, ByteBuffer } from "flatbuffers";
-import { decode, encode, MAX_PACKET, subscribe, subscribeInputs, subscribeBody } from "../src/protocol";
+import { decode, encode, MAX_PACKET, VERSION } from "../src/protocol";
 import { Packet } from "../src/generated/xr-operator/wire/packet";
 import { Message } from "../src/generated/xr-operator/wire/message";
 import { ClientHello } from "../src/generated/xr-operator/wire/client-hello";
@@ -30,33 +30,14 @@ import { SkeletonDefinition } from "../src/generated/xr-operator/wire/skeleton-d
 import { MetadataRef } from "../src/generated/xr-operator/wire/metadata-ref";
 import { Transform } from "../src/generated/xr-operator/wire/transform";
 import { LocationFlags } from "../src/generated/xr-operator/wire/location-flags";
-import { Subscribe } from "../src/generated/xr-operator/wire/subscribe";
-import { PoseSettings } from "../src/generated/xr-operator/wire/pose-settings";
-import { ControllerSettings } from "../src/generated/xr-operator/wire/controller-settings";
-import { BodySettings } from "../src/generated/xr-operator/wire/body-settings";
 
 function finish(b: Builder, kind: Message, value: number) {
   Packet.finishPacketBuffer(b, Packet.createPacket(b, kind, value));
   return new Uint8Array(b.asUint8Array());
 }
-
-test("all subscription requests acquire at 200 Hz and publish at 100 Hz with two samples", () => {
-  const cases = [
-    [subscribe(1n, ["head"]), new PoseSettings()],
-    [subscribeInputs(2n, [{ source: "left", id: "trigger", label: "Trigger", type: 1 }]), new ControllerSettings()],
-    [subscribeBody(3n, "body", "default"), new BodySettings()],
-  ] as const;
-  for (const [bytes, settings] of cases) {
-    const packet = Packet.getRootAsPacket(new ByteBuffer(bytes));
-    const request = packet.message(new Subscribe()) as Subscribe;
-    assert.equal(request.acquisition(settings).sampleRateHz(), 200);
-    assert.equal(request.publication()!.sendRateHz(), 100);
-    assert.equal(request.publication()!.historyLength(), 2);
-  }
-});
 function hello(
-  selected = 1,
-  versions = [1],
+  selected = VERSION,
+  versions = [VERSION],
   low = 2n ** 63n + 71n,
   high = 2n ** 60n,
   reason = "",
@@ -81,7 +62,7 @@ test("hello preserves all 64-bit values and writes XROP framing", () => {
   assert.equal(sent.messageType(), Message.ClientHello);
   const client = sent.message(new ClientHello()) as ClientHello;
   assert.equal(client.requestId(), 2n ** 64n - 1n);
-  assert.equal(client.supportedVersions(0), 1);
+  assert.equal(client.supportedVersions(0), VERSION);
   const response = decode(hello(), "control");
   assert.equal(response.kind, "ServerHello");
   if (response.kind !== "ServerHello") throw new Error("Expected hello");
@@ -114,7 +95,7 @@ test("reject malformed, oversized, wrong-channel and semantically invalid messag
 });
 
 test("empty discovery reports absence, validates limits and defaults", () => {
-  function capabilities(maxControl = MAX_PACKET, rate = 1) {
+  function capabilities(maxControl = MAX_PACKET, rate = 1, sampleRate = 200) {
     const b = new Builder(256);
     const spaces = Capabilities.createReferenceSpacesVector(b, []);
     const publication = PublicationSettings.createPublicationSettings(
@@ -123,7 +104,7 @@ test("empty discovery reports absence, validates limits and defaults", () => {
       1,
     );
     const limits = Limits.createLimits(b, 1, 120, 1, MAX_PACKET, maxControl, 1);
-    Capabilities.startCapabilities(b);
+    Capabilities.startCapabilities(b); Capabilities.addSampleRateHz(b, sampleRate);
     Capabilities.addReferenceSpaces(b, spaces);
     Capabilities.addPublicationDefaults(b, publication);
     Capabilities.addLimits(b, limits);
@@ -139,6 +120,7 @@ test("empty discovery reports absence, validates limits and defaults", () => {
   assert.throws(() => decode(capabilities(MAX_PACKET + 1), "control"));
   assert.throws(() => decode(capabilities(MAX_PACKET, NaN), "control"));
   assert.throws(() => decode(capabilities(MAX_PACKET, 0), "control"));
+  for (const rate of [0, -1, NaN, Infinity, 0.5]) assert.throws(() => decode(capabilities(MAX_PACKET, 1, rate), "control"));
 });
 
 test("clock replies support zero and signed nanoseconds", () => {
@@ -241,4 +223,70 @@ test("skeleton metadata rejects cycles and missing parents", () => {
   assert.throws(() => decode(skeleton([1, 0]), "control"));
   assert.throws(() => decode(skeleton([-1, 10]), "control"));
   assert.throws(() => decode(skeleton(), "tracking"));
+});
+
+test("v2 selections and populated discovery use the reduced schema", async () => {
+  const { subscribe, subscribeInputs, subscribeBody } = await import("../src/protocol");
+  const { Subscribe } = await import("../src/generated/xr-operator/wire/subscribe");
+  const { PoseSettings } = await import("../src/generated/xr-operator/wire/pose-settings");
+  const { ControllerSettings } = await import("../src/generated/xr-operator/wire/controller-settings");
+  const { BodySettings } = await import("../src/generated/xr-operator/wire/body-settings");
+  const request = (data: Uint8Array) => Packet.getRootAsPacket(new ByteBuffer(data)).message(new Subscribe()) as InstanceType<typeof Subscribe>;
+  assert.equal((request(subscribe(1n, ["head"])).acquisition(new PoseSettings()) as InstanceType<typeof PoseSettings>).sources(0)?.sourceId(), "head");
+  for (const data of [subscribe(1n, ["head"]), subscribeInputs(2n, [{ source: "left", id: "trigger/value", type: 1, label: "Trigger" }]), subscribeBody(3n, "body", "set")])
+    assert.equal(request(data).publication(), null, "Absent publication uses server defaults for every kind");
+  assert.equal((request(subscribeInputs(2n, [{ source: "left", id: "trigger/value", type: 1, label: "Trigger" }])).acquisition(new ControllerSettings()) as InstanceType<typeof ControllerSettings>).inputs(0)?.inputId(), "trigger/value");
+  assert.equal((request(subscribeBody(3n, "body", "set")).acquisition(new BodySettings()) as InstanceType<typeof BodySettings>).jointSet(), "set");
+
+  const { BodySource } = await import("../src/generated/xr-operator/wire/body-source");
+  const { BodyCapabilities } = await import("../src/generated/xr-operator/wire/body-capabilities");
+  const b = new Builder(512);
+  const source = BodySource.createBodySource(b, b.createString("body"), b.createString("set"), true, true);
+  const body = BodyCapabilities.createBodyCapabilities(b, BodyCapabilities.createSourcesVector(b, [source]));
+  const spaces = Capabilities.createReferenceSpacesVector(b, []);
+  const publication = PublicationSettings.createPublicationSettings(b, 100, 1);
+  const limits = Limits.createLimits(b, 1, 100, 8, MAX_PACKET, MAX_PACKET, 3);
+  Capabilities.startCapabilities(b); Capabilities.addSampleRateHz(b, 200); Capabilities.addBody(b, body); Capabilities.addReferenceSpaces(b, spaces); Capabilities.addPublicationDefaults(b, publication); Capabilities.addLimits(b, limits);
+  const data = finish(b, Message.Capabilities, Capabilities.endCapabilities(b));
+  const result = decode(data, "control");
+  assert.equal(result.kind, "Capabilities");
+  if (result.kind !== "Capabilities") throw new Error("Expected capabilities");
+  assert.deepEqual(result.body, { source: "body", jointSet: "set" });
+  assert.equal(result.sampleRate, 200);
+  // Padding and unused fields need not be read, but truncation must never change decoded values.
+  for (let end = 0; end < data.length; end++) {
+    let partial;
+    try { partial = decode(data.subarray(0, end), "control"); } catch { continue; }
+    assert.deepEqual(partial, result);
+  }
+});
+
+test("v2 acceptance preserves selected definitions and publication values", async () => {
+  const { PoseSettings } = await import("../src/generated/xr-operator/wire/pose-settings");
+  const { PoseSelection } = await import("../src/generated/xr-operator/wire/pose-selection");
+  const { PoseSource } = await import("../src/generated/xr-operator/wire/pose-source");
+  const { SubscriptionDescriptor: Descriptor } = await import("../src/generated/xr-operator/wire/subscription-descriptor");
+  const { StreamAccepted } = await import("../src/generated/xr-operator/wire/stream-accepted");
+  const { Acquisition } = await import("../src/generated/xr-operator/wire/acquisition");
+  const b = new Builder(512);
+  const selection = PoseSelection.createPoseSelection(b, b.createString("head"));
+  const acquisition = PoseSettings.createPoseSettings(b, PoseSettings.createSourcesVector(b, [selection]));
+  const source = PoseSource.createPoseSource(b, b.createString("head"), b.createString("Head"), false);
+  const sources = Descriptor.createPoseSourcesVector(b, [source]);
+  Descriptor.startSubscriptionDescriptor(b); Descriptor.addSubscriptionId(b, 9n); Descriptor.addAcquisitionType(b, Acquisition.PoseSettings); Descriptor.addAcquisition(b, acquisition); Descriptor.addPoseSources(b, sources);
+  Descriptor.addInitialReferenceSpace(b, MetadataRef.createMetadataRef(b, 1n, 3));
+  const descriptor = Descriptor.endSubscriptionDescriptor(b);
+  const publication = PublicationSettings.createPublicationSettings(b, 30, 4);
+  StreamAccepted.startStreamAccepted(b); StreamAccepted.addRequestId(b, 2n); StreamAccepted.addStreamId(b, 7n); StreamAccepted.addDescriptor(b, descriptor); StreamAccepted.addPublication(b, publication);
+  const data = finish(b, Message.StreamAccepted, StreamAccepted.endStreamAccepted(b));
+  const result = decode(data, "control");
+  assert.equal(result.kind, "StreamAccepted");
+  if (result.kind !== "StreamAccepted") throw new Error("Expected acceptance");
+  assert.deepEqual(result.sources, ["head"]); assert.equal(result.rate, 30); assert.equal(result.history, 4);
+  // Padding and unused fields need not be read, but truncation must never change decoded values.
+  for (let end = 0; end < data.length; end++) {
+    let partial;
+    try { partial = decode(data.subarray(0, end), "control"); } catch { continue; }
+    assert.deepEqual(partial, result);
+  }
 });

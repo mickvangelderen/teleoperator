@@ -1,6 +1,6 @@
 use crate::{
     protocol::{finish, wire},
-    tracking::{Pose, RATE},
+    tracking::Pose,
 };
 use flatbuffers::{FlatBufferBuilder as Builder, WIPOffset};
 use std::sync::Arc;
@@ -99,16 +99,11 @@ pub fn transform(p: &Pose) -> wire::Transform {
 pub fn settings<'a>(b: &mut Builder<'a>) -> WIPOffset<wire::BodySettings<'a>> {
     let source = b.create_string(SOURCE);
     let set = b.create_string(JOINT_SET);
-    let target = wire::TargetTime::create(b, &Default::default());
     wire::BodySettings::create(
         b,
         &wire::BodySettingsArgs {
-            sample_rate_hz: Some(RATE),
             source_id: Some(source),
             joint_set: Some(set),
-            base_space_id: Some(1),
-            target_time: Some(target),
-            fidelity_preference: Some(wire::Fidelity::Default),
         },
     )
 }
@@ -119,33 +114,20 @@ pub fn capabilities<'a>(
 ) -> WIPOffset<wire::BodyCapabilities<'a>> {
     let source = b.create_string(SOURCE);
     let set = b.create_string(JOINT_SET);
-    let sets = b.create_vector(&[set]);
-    let fidelities = b.create_vector(&[wire::Fidelity::Default]);
     let source = wire::BodySource::create(
         b,
         &wire::BodySourceArgs {
             source_id: Some(source),
-            joint_sets: Some(sets),
-            fidelities: Some(fidelities),
+            joint_set: Some(set),
             supports_actual_fidelity: fidelity,
             supports_calibration_status: calibration,
-            restrictions: None,
         },
     );
     let sources = b.create_vector(&[source]);
-    let rates = b.create_vector(&[RATE]);
-    let spaces = b.create_vector(&[1u64]);
-    let target = wire::TargetTime::create(b, &Default::default());
-    let targets = b.create_vector(&[target]);
-    let defaults = settings(b);
     wire::BodyCapabilities::create(
         b,
         &wire::BodyCapabilitiesArgs {
             sources: Some(sources),
-            sample_rates_hz: Some(rates),
-            base_space_ids: Some(spaces),
-            target_times: Some(targets),
-            defaults: Some(defaults),
         },
     )
 }

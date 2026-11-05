@@ -1,4 +1,4 @@
-// Draft protocol version 1. See README.md for framing and semantic validation.
+// Protocol version 2 (incompatible with v1 except the hello envelope). See README.md for framing and semantic validation.
 // Append table fields and union members; never change existing wire values.
 // All server timestamps are signed 64-bit nanoseconds in server-monotonic.
 // Geometry uses fixed right-handed +X right, +Y up, -Z forward coordinates.
@@ -6,13 +6,6 @@ namespace XrOperator.Wire;
 
 enum Hand:ubyte { None = 0, Left = 1, Right = 2 }
 enum InputType:ubyte { Boolean = 0, Scalar = 1, Vector2 = 2 }
-enum Requirement:ubyte { Omit = 0, Required = 1, Optional = 2 }
-enum BooleanMode:ubyte { Runtime = 0, Hysteresis = 1 }
-enum TargetTimePolicy:ubyte {
-  AcquisitionTime = 0,
-  PredictedDisplayTime = 1,
-  AcquisitionOffset = 2
-}
 enum Fidelity:ubyte { Default = 0, Low = 1, High = 2 }
 enum CalibrationStatus:ubyte { Unknown = 0, Valid = 1, Calibrating = 2, Invalid = 3 }
 enum ReferenceSpaceKind:ubyte {
@@ -35,7 +28,6 @@ enum LocationFlags:ushort (bit_flags) {
   OrientationTracked = 2,
   PositionTracked = 3
 }
-enum VelocityFlags:ubyte (bit_flags) { LinearValid = 0, AngularValid = 1 }
 
 struct SessionId { low:ulong; high:ulong; }
 struct MetadataRef { id:ulong; version:uint; }
@@ -44,15 +36,6 @@ struct Vec3 { x:float; y:float; z:float; }
 struct Quaternion { x:float; y:float; z:float; w:float; }
 struct Transform { position:Vec3; orientation:Quaternion; }
 struct JointPose { transform:Transform; flags:LocationFlags; }
-
-// A hysteresis rule names an analog input on the same source. Runtime mode
-// uses the prepared Boolean action and leaves the other fields absent.
-table BooleanRule {
-  mode:BooleanMode = Runtime;
-  analog_input_id:string;
-  press_threshold:float = null;
-  release_threshold:float = null;
-}
 
 table InputDefinition {
   source_id:string (required);
@@ -64,72 +47,49 @@ table InputDefinition {
   minimum:Vec2;
   maximum:Vec2;
   device_label:string;
-  boolean_rules:[BooleanRule];
 }
 
 table ControllerSource {
   source_id:string (required);
   hand:Hand = None;
   interaction_profile:string;
-  restrictions:[string];
 }
 
 table PoseSource {
   source_id:string (required);
   meaning:string (required);
   supports_activity:bool;
-  supports_velocities:bool;
-  restrictions:[string];
 }
 
 table BodySource {
   source_id:string (required);
-  joint_sets:[string] (required);
-  fidelities:[Fidelity] (required);
+  joint_set:string (required);
   supports_actual_fidelity:bool;
   supports_calibration_status:bool;
-  restrictions:[string];
 }
 
-table TargetTime {
-  policy:TargetTimePolicy = AcquisitionTime;
-  offset_ns:long;
-}
-
-// Settings tables are reused for requests and resolved descriptors. Null means
-// advertised default in a request; descriptors must contain resolved settings.
+// Acquisition uses the advertised sample rate in space 1, at acquisition time.
+// Settings select required inputs/sources; unsupported selections are rejected.
 table ControlSelection {
   source_id:string (required);
   input_id:string (required);
-  requirement:Requirement = Required;
-  boolean_rule:BooleanRule;
 }
 
 table ControllerSettings {
-  sample_rate_hz:float = null;
   inputs:[ControlSelection] (required);
 }
 
 table PoseSelection {
   source_id:string (required);
-  requirement:Requirement = Required;
-  velocities:Requirement = Omit;
 }
 
 table PoseSettings {
-  sample_rate_hz:float = null;
   sources:[PoseSelection] (required);
-  base_space_id:ulong = null;
-  target_time:TargetTime;
 }
 
 table BodySettings {
-  sample_rate_hz:float = null;
   source_id:string (required);
-  joint_set:string;
-  base_space_id:ulong = null;
-  target_time:TargetTime;
-  fidelity_preference:Fidelity = null;
+  joint_set:string (required);
 }
 
 union Acquisition {
@@ -146,24 +106,14 @@ table PublicationSettings {
 table ControllerCapabilities {
   sources:[ControllerSource] (required);
   inputs:[InputDefinition] (required);
-  sample_rates_hz:[float] (required);
-  defaults:ControllerSettings (required);
 }
 
 table PoseCapabilities {
   sources:[PoseSource] (required);
-  sample_rates_hz:[float] (required);
-  base_space_ids:[ulong] (required);
-  target_times:[TargetTime] (required);
-  defaults:PoseSettings (required);
 }
 
 table BodyCapabilities {
   sources:[BodySource] (required);
-  sample_rates_hz:[float] (required);
-  base_space_ids:[ulong] (required);
-  target_times:[TargetTime] (required);
-  defaults:BodySettings (required);
 }
 
 table Limits {
@@ -182,6 +132,8 @@ table Capabilities {
   reference_spaces:[ReferenceSpaceDefinition] (required);
   publication_defaults:PublicationSettings (required);
   limits:Limits (required);
+  // Read-only acquisition cadence, shared by all stream kinds.
+  sample_rate_hz:float;
 }
 
 // Hello layouts are stable across versions so peers can decode them before negotiation.
@@ -200,11 +152,9 @@ table ServerHello {
   server_session_id:SessionId;
 }
 
-// stream_id = 0 creates a stream; otherwise replace its whole acquisition
-// configuration. Unavailable optional selections are listed in StreamAccepted.
+// Subscribe always creates a stream. Only publication can change in place.
 table Subscribe {
   request_id:ulong;
-  stream_id:ulong;
   acquisition:Acquisition (required);
   publication:PublicationSettings;
 }
@@ -227,32 +177,18 @@ table SubscriptionDescriptor {
   initial_skeleton:MetadataRef;
 }
 
-table Omission {
-  source_id:string (required);
-  // Input ID, "velocities", or "source" for an entirely omitted pose source.
-  capability_id:string (required);
-  reason:string (required);
-}
-
 table StreamAccepted {
-  // Zero denotes a server-initiated association/publication notification.
+  // Echoes a Subscribe or UpdatePublication request.
   request_id:ulong;
   stream_id:ulong;
   descriptor:SubscriptionDescriptor (required);
   publication:PublicationSettings (required);
-  omissions:[Omission] (required);
-}
-
-table Alternative {
-  acquisition:Acquisition;
-  publication:PublicationSettings;
 }
 
 table RequestRejected {
   request_id:ulong;
   code:RejectionCode;
   reason:string (required);
-  alternatives:[Alternative] (required);
 }
 
 table StreamClosed {
@@ -310,17 +246,10 @@ table ControllerSample {
   values:[ControllerValue] (required);
 }
 
-table Velocity {
-  linear:Vec3 (required);
-  angular:Vec3 (required);
-  flags:VelocityFlags = 0;
-}
-
 table PoseValue {
   location:JointPose (required);
   // Null when the source API does not expose activity.
   is_active:bool = null;
-  velocity:Velocity;
 }
 
 table PoseSample {

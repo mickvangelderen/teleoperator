@@ -42,7 +42,6 @@ fn source<'a>(b: &mut Builder<'a>, index: usize) -> WIPOffset<wire::PoseSource<'
             source_id: Some(name),
             meaning: Some(meaning),
             supports_activity: index > 0,
-            ..Default::default()
         },
     )
 }
@@ -55,20 +54,15 @@ fn settings<'a>(b: &mut Builder<'a>, indices: &[usize]) -> WIPOffset<wire::PoseS
                 b,
                 &wire::PoseSelectionArgs {
                     source_id: Some(name),
-                    ..Default::default()
                 },
             )
         })
         .collect();
     let selections = b.create_vector(&selections);
-    let target = wire::TargetTime::create(b, &Default::default());
     wire::PoseSettings::create(
         b,
         &wire::PoseSettingsArgs {
-            sample_rate_hz: Some(RATE),
             sources: Some(selections),
-            base_space_id: Some(1),
-            target_time: Some(target),
         },
     )
 }
@@ -114,19 +108,10 @@ pub fn capabilities(hub: &Hub) -> Vec<u8> {
     let pose = if available {
         let sources: Vec<_> = (0..SOURCES.len()).map(|i| source(&mut b, i)).collect();
         let sources = b.create_vector(&sources);
-        let rates = b.create_vector(&[RATE]);
-        let spaces = b.create_vector(&[1u64]);
-        let target = wire::TargetTime::create(&mut b, &Default::default());
-        let targets = b.create_vector(&[target]);
-        let defaults = settings(&mut b, &[0, 1, 2, 3, 4]);
         Some(wire::PoseCapabilities::create(
             &mut b,
             &wire::PoseCapabilitiesArgs {
                 sources: Some(sources),
-                sample_rates_hz: Some(rates),
-                base_space_ids: Some(spaces),
-                target_times: Some(targets),
-                defaults: Some(defaults),
             },
         ))
     } else {
@@ -171,50 +156,22 @@ pub fn capabilities(hub: &Hub) -> Vec<u8> {
             reference_spaces: Some(spaces),
             publication_defaults: Some(defaults),
             limits: Some(limits),
+            sample_rate_hz: RATE,
         },
     );
     finish(b, wire::Message::Capabilities, m.as_union_value())
 }
 
 type Rejection = (wire::RejectionCode, &'static str);
-fn rejected(id: u64, (code, reason): Rejection, kind: wire::Acquisition) -> Vec<u8> {
+pub(crate) fn rejected(id: u64, (code, reason): Rejection) -> Vec<u8> {
     let mut b = Builder::new();
     let reason = b.create_string(reason);
-    let choices = if code == wire::RejectionCode::UnsupportedSetting {
-        let acquisition = match kind {
-            wire::Acquisition::PoseSettings => {
-                Some(settings(&mut b, &[0, 1, 2, 3, 4]).as_union_value())
-            }
-            wire::Acquisition::ControllerSettings => Some(
-                inputs::settings(
-                    &mut b,
-                    &(0..inputs::definitions().len()).collect::<Vec<_>>(),
-                )
-                .as_union_value(),
-            ),
-            wire::Acquisition::BodySettings => Some(body::settings(&mut b).as_union_value()),
-            _ => None,
-        };
-        let publication = publication(&mut b, DEFAULT_SEND_RATE, DEFAULT_HISTORY);
-        vec![wire::Alternative::create(
-            &mut b,
-            &wire::AlternativeArgs {
-                acquisition_type: kind,
-                acquisition,
-                publication: Some(publication),
-            },
-        )]
-    } else {
-        vec![]
-    };
-    let alternatives = b.create_vector(&choices);
     let m = wire::RequestRejected::create(
         &mut b,
         &wire::RequestRejectedArgs {
             request_id: id,
             code,
             reason: Some(reason),
-            alternatives: Some(alternatives),
         },
     );
     finish(b, wire::Message::RequestRejected, m.as_union_value())
@@ -232,16 +189,11 @@ fn closed(request: u64, stream: u64, reason: wire::CloseReason) -> Vec<u8> {
     );
     finish(b, wire::Message::StreamClosed, m.as_union_value())
 }
-fn resolve_publication(
-    p: Option<wire::PublicationSettings<'_>>,
-    previous: Option<&Stream>,
-) -> Result<(f32, u32), Rejection> {
+fn resolve_publication(p: Option<wire::PublicationSettings<'_>>) -> Result<(f32, u32), Rejection> {
     let rate = p
         .and_then(|p| p.send_rate_hz())
-        .unwrap_or(previous.map_or(DEFAULT_SEND_RATE, |s| s.rate));
-    let history = p.map_or(previous.map_or(DEFAULT_HISTORY, |s| s.history), |p| {
-        p.history_length()
-    });
+        .unwrap_or(DEFAULT_SEND_RATE);
+    let history = p.map_or(DEFAULT_HISTORY, |p| p.history_length());
     if !rate.is_finite()
         || !(1.0..=RATE).contains(&rate)
         || history == 0
@@ -315,13 +267,7 @@ impl Connection {
     pub fn request_stream(&mut self, packet: wire::Packet<'_>, id: u64) -> Vec<Vec<u8>> {
         match self.change_stream(packet, id) {
             Ok(messages) => messages,
-            Err(error) => vec![rejected(
-                id,
-                error,
-                packet
-                    .message_as_subscribe()
-                    .map_or(wire::Acquisition::NONE, |r| r.acquisition_type()),
-            )],
+            Err(error) => vec![rejected(id, error)],
         }
     }
     fn change_stream(
@@ -331,8 +277,8 @@ impl Connection {
     ) -> Result<Vec<Vec<u8>>, Rejection> {
         let unknown = (wire::RejectionCode::UnknownStream, "No such stream");
         let skeleton = self.hub.skeleton.lock().unwrap().clone();
-        let requested_id = if let Some(r) = packet.message_as_subscribe() {
-            r.stream_id()
+        let requested_id = if packet.message_as_subscribe().is_some() {
+            0
         } else if let Some(r) = packet.message_as_update_publication() {
             r.stream_id()
         } else {
@@ -350,10 +296,9 @@ impl Connection {
                 wire::CloseReason::Unsubscribed,
             )]);
         }
-        let mut omissions = Vec::new();
         let index;
         if let Some(request) = packet.message_as_subscribe() {
-            if existing.is_none() && self.streams.len() >= 3 {
+            if self.streams.len() >= 3 {
                 return Err((
                     wire::RejectionCode::ResourceLimit,
                     "At most three streams per peer",
@@ -369,17 +314,6 @@ impl Connection {
             let kind;
             if let Some(settings) = request.acquisition_as_pose_settings() {
                 kind = Kind::Pose;
-                if settings.sample_rate_hz().is_some_and(|n| n != RATE)
-                    || settings.base_space_id().is_some_and(|n| n != 1)
-                    || settings.target_time().is_some_and(|t| {
-                        t.policy() != wire::TargetTimePolicy::AcquisitionTime || t.offset_ns() != 0
-                    })
-                {
-                    return Err((
-                        wire::RejectionCode::UnsupportedSetting,
-                        "Pose acquisition requires 200 Hz, the advertised reference space 1, and AcquisitionTime",
-                    ));
-                }
                 let requested = settings.sources();
                 if requested.is_empty() || requested.len() > 64 {
                     return Err((
@@ -389,51 +323,23 @@ impl Connection {
                 }
                 let mut names = std::collections::HashSet::new();
                 for s in requested {
-                    if s.source_id().len() > 256
-                        || !names.insert(s.source_id())
-                        || ![wire::Requirement::Required, wire::Requirement::Optional]
-                            .contains(&s.requirement())
-                        || ![
-                            wire::Requirement::Omit,
-                            wire::Requirement::Optional,
-                            wire::Requirement::Required,
-                        ]
-                        .contains(&s.velocities())
-                    {
+                    if s.source_id().len() > 256 || !names.insert(s.source_id()) {
                         return Err((
                             wire::RejectionCode::InvalidRequest,
                             "Invalid or duplicate pose selection",
                         ));
                     }
-                    let Some(index) = SOURCES.iter().position(|name| *name == s.source_id()) else {
-                        if s.requirement() == wire::Requirement::Required {
-                            return Err((
-                                wire::RejectionCode::UnsupportedCapability,
-                                "Unknown required pose source",
-                            ));
-                        }
-                        omissions.push((s.source_id(), "source"));
-                        continue;
-                    };
-                    if s.velocities() == wire::Requirement::Required {
-                        return Err((
+                    let index = SOURCES
+                        .iter()
+                        .position(|name| *name == s.source_id())
+                        .ok_or((
                             wire::RejectionCode::UnsupportedCapability,
-                            "Pose velocities unavailable",
-                        ));
-                    }
-                    if s.velocities() == wire::Requirement::Optional {
-                        omissions.push((s.source_id(), "velocities"));
-                    }
+                            "Unknown pose source",
+                        ))?;
                     sources.push(index);
                 }
             } else if let Some(settings) = request.acquisition_as_controller_settings() {
                 kind = Kind::Controller;
-                if settings.sample_rate_hz().is_some_and(|r| r != RATE) {
-                    return Err((
-                        wire::RejectionCode::UnsupportedSetting,
-                        "Controller acquisition requires 200 Hz",
-                    ));
-                }
                 let selections = settings.inputs();
                 if selections.is_empty() || selections.len() > 128 {
                     return Err((
@@ -447,8 +353,6 @@ impl Connection {
                     if s.source_id().len() > 256
                         || s.input_id().len() > 256
                         || !seen.insert((s.source_id(), s.input_id()))
-                        || ![wire::Requirement::Required, wire::Requirement::Optional]
-                            .contains(&s.requirement())
                     {
                         return Err((
                             wire::RejectionCode::InvalidRequest,
@@ -458,26 +362,10 @@ impl Connection {
                     let found = definitions
                         .iter()
                         .position(|d| d.source == s.source_id() && d.id == s.input_id());
-                    let unsupported_rule = s.boolean_rule().is_some_and(|r| {
-                        r.mode() != wire::BooleanMode::Runtime
-                            || r.analog_input_id().is_some()
-                            || r.press_threshold().is_some()
-                            || r.release_threshold().is_some()
-                    }) || found.is_some_and(|i| {
-                        definitions[i].kind != inputs::InputType::Boolean
-                            && s.boolean_rule().is_some()
-                    });
-                    if found.is_none() || unsupported_rule {
-                        if s.requirement() == wire::Requirement::Required {
-                            return Err((
-                                wire::RejectionCode::UnsupportedCapability,
-                                "Controller input or Boolean rule unavailable",
-                            ));
-                        }
-                        omissions.push((s.source_id(), s.input_id()));
-                        continue;
-                    }
-                    sources.push(found.unwrap());
+                    sources.push(found.ok_or((
+                        wire::RejectionCode::UnsupportedCapability,
+                        "Unknown controller input",
+                    ))?);
                 }
             } else if let Some(settings) = request.acquisition_as_body_settings() {
                 kind = Kind::Body;
@@ -487,19 +375,10 @@ impl Connection {
                         "Body tracker unavailable",
                     ));
                 }
-                if settings.sample_rate_hz().is_some_and(|r| r != RATE)
-                    || settings.joint_set().is_some_and(|s| s != body::JOINT_SET)
-                    || settings.base_space_id().is_some_and(|id| id != 1)
-                    || settings
-                        .fidelity_preference()
-                        .is_some_and(|f| f != wire::Fidelity::Default)
-                    || settings.target_time().is_some_and(|t| {
-                        t.policy() != wire::TargetTimePolicy::AcquisitionTime || t.offset_ns() != 0
-                    })
-                {
+                if settings.joint_set() != body::JOINT_SET {
                     return Err((
                         wire::RejectionCode::UnsupportedSetting,
-                        "Body requires 200 Hz, the default 70-joint set, the advertised reference space 1, AcquisitionTime and default fidelity",
+                        "Unsupported body joint set",
                     ));
                 }
             } else {
@@ -515,12 +394,11 @@ impl Connection {
                 ));
             }
             sources.sort_unstable();
-            let previous = existing.map(|i| &self.streams[i]);
-            let (rate, history) = resolve_publication(request.publication(), previous)?;
+            let (rate, history) = resolve_publication(request.publication())?;
             let subscription = self.hub.subscribe(kind, sources);
             self.known_subscriptions
                 .insert(subscription.id, Arc::downgrade(&subscription));
-            let stats = previous.map_or_else(|| self.hub.stream_stats(), |s| s.stats.clone());
+            let stats = self.hub.stream_stats();
             let stream = Stream {
                 subscription,
                 stats,
@@ -529,16 +407,12 @@ impl Connection {
                 next_send: Instant::now(),
                 last_sample: 0,
             };
-            index = existing.unwrap_or(self.streams.len());
-            if let Some(i) = existing {
-                self.streams[i] = stream;
-            } else {
-                self.streams.push(stream);
-            }
+            index = self.streams.len();
+            self.streams.push(stream);
         } else if let Some(request) = packet.message_as_update_publication() {
             index = existing.ok_or(unknown)?;
             let stream = &mut self.streams[index];
-            let (rate, history) = resolve_publication(Some(request.publication()), Some(stream))?;
+            let (rate, history) = resolve_publication(Some(request.publication()))?;
             stream.rate = rate;
             stream.history = history;
             stream.next_send = Instant::now();
@@ -554,19 +428,13 @@ impl Connection {
                 "Body tracker unavailable",
             ))?));
         }
-        replies.push(stream.accepted(id, version, skeleton.as_deref(), &omissions));
+        replies.push(stream.accepted(id, version, skeleton.as_deref()));
         Ok(replies)
     }
 }
 
 impl Stream {
-    fn accepted(
-        &self,
-        request: u64,
-        version: u32,
-        skeleton: Option<&body::Skeleton>,
-        omitted: &[(&str, &str)],
-    ) -> Vec<u8> {
+    fn accepted(&self, request: u64, version: u32, skeleton: Option<&body::Skeleton>) -> Vec<u8> {
         let mut b = Builder::new();
         let (acquisition_type, acquisition, sources, inputs) = match self.subscription.kind {
             Kind::Body => (
@@ -624,23 +492,6 @@ impl Stream {
             },
         );
         let publication = publication(&mut b, self.rate, self.history);
-        let omissions: Vec<_> = omitted
-            .iter()
-            .map(|(name, capability)| {
-                let source = b.create_string(name);
-                let capability = b.create_string(capability);
-                let reason = b.create_string("Unavailable");
-                wire::Omission::create(
-                    &mut b,
-                    &wire::OmissionArgs {
-                        source_id: Some(source),
-                        capability_id: Some(capability),
-                        reason: Some(reason),
-                    },
-                )
-            })
-            .collect();
-        let omissions = b.create_vector(&omissions);
         let m = wire::StreamAccepted::create(
             &mut b,
             &wire::StreamAcceptedArgs {
@@ -648,7 +499,6 @@ impl Stream {
                 stream_id: self.stats.id,
                 descriptor: Some(descriptor),
                 publication: Some(publication),
-                omissions: Some(omissions),
             },
         );
         finish(b, wire::Message::StreamAccepted, m.as_union_value())
@@ -805,7 +655,6 @@ impl Stream {
                                 &wire::PoseValueArgs {
                                     location: Some(&location),
                                     is_active: p.active,
-                                    velocity: None,
                                 },
                             )
                         })
@@ -887,7 +736,7 @@ mod tests {
         }
     }
 
-    fn request(id: u64, stream: u64, sources: &[&str], rate: Option<f32>, history: u32) -> Vec<u8> {
+    fn request(id: u64, sources: &[&str], rate: Option<f32>, history: u32) -> Vec<u8> {
         let mut b = Builder::new();
         let sources: Vec<_> = sources
             .iter()
@@ -897,7 +746,6 @@ mod tests {
                     &mut b,
                     &wire::PoseSelectionArgs {
                         source_id: Some(name),
-                        ..Default::default()
                     },
                 )
             })
@@ -907,7 +755,6 @@ mod tests {
             &mut b,
             &wire::PoseSettingsArgs {
                 sources: Some(sources),
-                ..Default::default()
             },
         );
         let publication = rate.map(|r| publication(&mut b, r, history));
@@ -915,7 +762,6 @@ mod tests {
             &mut b,
             &wire::SubscribeArgs {
                 request_id: id,
-                stream_id: stream,
                 acquisition_type: wire::Acquisition::PoseSettings,
                 acquisition: Some(acquisition.as_union_value()),
                 publication,
@@ -929,18 +775,14 @@ mod tests {
         hub.set_available(true);
         let bytes = capabilities(&hub);
         let advertised = packet(&bytes).unwrap().message_as_capabilities().unwrap();
-        assert_eq!(advertised.pose().unwrap().sample_rates_hz().get(0), 200.);
-        assert_eq!(
-            advertised.controller().unwrap().sample_rates_hz().get(0),
-            200.
-        );
+        assert_eq!(advertised.sample_rate_hz(), 200.);
         assert_eq!(advertised.limits().max_send_rate_hz(), 200.);
         assert_eq!(advertised.publication_defaults().send_rate_hz(), Some(100.));
         assert_eq!(advertised.publication_defaults().history_length(), 2);
 
         let mut c = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
         c.negotiated = true;
-        c.control(&request(1, 0, &["head"], None, 1)).unwrap();
+        c.control(&request(1, &["head"], None, 1)).unwrap();
         assert_eq!((c.streams[0].rate, c.streams[0].history), (100., 2));
         let poses = std::array::from_fn(|_| Pose::default());
         for at in [0, 5_000_000, 10_000_000] {
@@ -953,20 +795,16 @@ mod tests {
         assert_eq!(samples.get(0).sample_number(), 2);
         assert_eq!(samples.get(1).sample_number(), 3);
 
-        let id = c.streams[0].stats.id;
-        c.control(&request(2, id, &["head"], Some(200.), 2))
-            .unwrap();
-        assert_eq!(c.streams[0].rate, 200.);
-        let rejected = c
-            .control(&request(3, id, &["head"], Some(201.), 2))
-            .unwrap();
+        c.control(&request(2, &["head"], Some(200.), 2)).unwrap();
+        assert_eq!(c.streams[1].rate, 200.);
+        let rejected = c.control(&request(3, &["head"], Some(201.), 2)).unwrap();
         assert!(
             packet(&rejected[0])
                 .unwrap()
                 .message_as_request_rejected()
                 .is_some()
         );
-        assert_eq!(c.streams[0].rate, 200.);
+        assert_eq!(c.streams[1].rate, 200.);
     }
 
     #[test]
@@ -978,13 +816,12 @@ mod tests {
         let mut b = Connection::with_hub(wire::SessionId::new(1, 2), hub);
         b.negotiated = true;
         let responses = a
-            .control(&request(1, 0, &["right/grip", "head"], Some(30.), 4))
+            .control(&request(1, &["right/grip", "head"], Some(30.), 4))
             .unwrap();
         let accepted = packet(responses.last().unwrap())
             .unwrap()
             .message_as_stream_accepted()
             .unwrap();
-        let id = accepted.stream_id();
         assert_eq!(
             accepted
                 .descriptor()
@@ -994,7 +831,7 @@ mod tests {
                 .source_id(),
             "head"
         );
-        b.control(&request(1, 0, &["head", "right/grip"], None, 1))
+        b.control(&request(1, &["head", "right/grip"], None, 1))
             .unwrap();
         assert_eq!(
             a.streams.first().unwrap().subscription.id,
@@ -1008,7 +845,7 @@ mod tests {
             (vec!["head"], 100., 9),
         ] {
             let response = a.request_stream(
-                packet(&request(2, id, &sources, Some(rate), history)).unwrap(),
+                packet(&request(2, &sources, Some(rate), history)).unwrap(),
                 2,
             );
             assert!(
@@ -1021,12 +858,45 @@ mod tests {
         }
     }
     #[test]
+    fn subscribe_creates_another_stream_and_publication_replacement_uses_defaults() {
+        let hub = Hub::new("test");
+        hub.set_available(true);
+        let mut c = Connection::with_hub(wire::SessionId::new(1, 2), hub);
+        c.negotiated = true;
+        c.control(&request(1, &["head"], Some(30.), 4)).unwrap();
+        let original = c.streams[0].stats.id;
+        c.control(&request(2, &["left/aim"], None, 1)).unwrap();
+        assert_ne!(original, c.streams[1].stats.id);
+        assert_eq!(c.streams[0].subscription.sources, [0]);
+        let mut b = Builder::new();
+        let p = wire::PublicationSettings::create(&mut b, &Default::default());
+        let update = wire::UpdatePublication::create(
+            &mut b,
+            &wire::UpdatePublicationArgs {
+                request_id: 3,
+                stream_id: original,
+                publication: Some(p),
+            },
+        );
+        c.control(&finish(
+            b,
+            wire::Message::UpdatePublication,
+            update.as_union_value(),
+        ))
+        .unwrap();
+        assert_eq!(
+            (c.streams[0].rate, c.streams[0].history),
+            (DEFAULT_SEND_RATE, 1)
+        );
+    }
+
+    #[test]
     fn publication_waits_for_fresh_acquisition_but_never_for_full_history() {
         let hub = Hub::new("test");
         hub.set_available(true);
         let mut c = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
         c.negotiated = true;
-        c.control(&request(1, 0, &["head"], Some(100.), 8)).unwrap();
+        c.control(&request(1, &["head"], Some(100.), 8)).unwrap();
         let stream = &mut c.streams[0];
         let deadline = Instant::now() - Duration::from_millis(10);
         stream.next_send = deadline;
@@ -1072,7 +942,7 @@ mod tests {
         hub.set_available(true);
         let mut c = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
         c.negotiated = true;
-        c.control(&request(1, 0, &["head"], Some(100.), 4)).unwrap();
+        c.control(&request(1, &["head"], Some(100.), 4)).unwrap();
         let poses = std::array::from_fn(|_| Pose::default());
         for n in 0..10 {
             hub.acquire(&poses, &[], None, n, None);
@@ -1143,7 +1013,7 @@ mod tests {
             },
         );
         let subscribe = finish(builder, wire::Message::Subscribe, message.as_union_value());
-        a.control(&request(1, 0, &["head"], None, 1)).unwrap();
+        a.control(&request(1, &["head"], None, 1)).unwrap();
         a.control(&subscribe).unwrap();
         b.control(&subscribe).unwrap();
         assert_eq!(a.streams.len(), 2);
@@ -1190,7 +1060,7 @@ mod tests {
         hub.acquire(&poses, &[], Some(&body), 0, None);
         let mut c = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
         c.negotiated = true;
-        c.control(&request(1, 0, &["head"], None, 1)).unwrap();
+        c.control(&request(1, &["head"], None, 1)).unwrap();
         let mut b = Builder::new();
         let settings = body::settings(&mut b);
         let p = publication(&mut b, 100., 8);
@@ -1201,7 +1071,6 @@ mod tests {
                 acquisition_type: wire::Acquisition::BodySettings,
                 acquisition: Some(settings.as_union_value()),
                 publication: Some(p),
-                ..Default::default()
             },
         );
         let responses = c

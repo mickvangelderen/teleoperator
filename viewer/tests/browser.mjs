@@ -62,7 +62,7 @@ try {
       /^\d+\.\d$/.test(document.querySelector("#rtt").textContent),
     );
   }
-  assert.equal(await page.locator("#version").textContent(), "1");
+  assert.equal(await page.locator("#version").textContent(), "2");
   assert.equal(await page.locator("#control").textContent(), "Open");
   assert.equal(await page.locator("#tracking").textContent(), "Open");
   assert.equal(
@@ -75,7 +75,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#payload").textContent.includes('"selectedVersion": 1'));
   assert.match(
     await page.locator("#payload").textContent(),
-    /"selectedVersion": 1/,
+    /"selectedVersion": 2/,
   );
   await page.screenshot({ path: output + "connected.png", fullPage: true });
   await page.getByLabel("Show clock probes").check();

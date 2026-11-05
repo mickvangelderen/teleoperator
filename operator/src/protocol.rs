@@ -9,6 +9,7 @@ mod generated {
 }
 pub use generated::xr_operator::wire;
 
+pub const VERSION: u32 = 2;
 pub const MAX_PACKET: usize = 65_536;
 const MAX_REQUESTS: usize = 65_536;
 
@@ -95,9 +96,13 @@ impl Connection {
             {
                 return Err("Invalid supported versions");
             }
-            let selected = if unique.contains(&1) { 1 } else { 0 };
+            let selected = if unique.contains(&VERSION) {
+                VERSION
+            } else {
+                0
+            };
             let mut builder = FlatBufferBuilder::new();
-            let supported = builder.create_vector(&[1u32]);
+            let supported = builder.create_vector(&[VERSION]);
             let reason =
                 (selected == 0).then(|| builder.create_string("No common protocol version"));
             let message = wire::ServerHello::create(
@@ -141,35 +146,12 @@ impl Connection {
             if self.negotiated {
                 return Ok(self.request_stream(packet, id));
             }
-            let (code, reason) = if !self.negotiated {
+            Ok(vec![crate::streams::rejected(
+                id,
                 (
                     wire::RejectionCode::InvalidRequest,
                     "Complete ClientHello before requesting streams",
-                )
-            } else if packet.message_type() == wire::Message::Subscribe {
-                (
-                    wire::RejectionCode::UnsupportedCapability,
-                    "OpenXR acquisition is not implemented yet",
-                )
-            } else {
-                (wire::RejectionCode::UnknownStream, "No such stream")
-            };
-            let mut builder = FlatBufferBuilder::new();
-            let reason = builder.create_string(reason);
-            let alternatives = builder.create_vector::<WIPOffset<wire::Alternative<'_>>>(&[]);
-            let message = wire::RequestRejected::create(
-                &mut builder,
-                &wire::RequestRejectedArgs {
-                    request_id: id,
-                    code,
-                    reason: Some(reason),
-                    alternatives: Some(alternatives),
-                },
-            );
-            Ok(vec![finish(
-                builder,
-                wire::Message::RequestRejected,
-                message.as_union_value(),
+                ),
             )])
         }
     }
@@ -227,26 +209,26 @@ mod tests {
     #[test]
     fn negotiation_and_discovery() {
         let mut c = connection();
-        let replies = c.control(&hello(u64::MAX, &[8, 1, 2])).unwrap();
+        let replies = c.control(&hello(u64::MAX, &[8, VERSION, 9])).unwrap();
         assert_eq!(replies.len(), 2);
         let h = packet(&replies[0])
             .unwrap()
             .message_as_server_hello()
             .unwrap();
         assert_eq!(h.request_id(), u64::MAX);
-        assert_eq!(h.selected_version(), 1);
+        assert_eq!(h.selected_version(), VERSION);
         assert_eq!(h.server_session_id().unwrap().high(), 22);
         let caps = packet(&replies[1])
             .unwrap()
             .message_as_capabilities()
             .unwrap();
         assert!(caps.pose().is_none() && caps.controller().is_none() && caps.body().is_none());
-        assert!(c.control(&hello(2, &[1])).is_err());
+        assert!(c.control(&hello(2, &[VERSION])).is_err());
     }
     #[test]
     fn incompatible_and_invalid_hellos() {
         let mut c = connection();
-        let replies = c.control(&hello(1, &[2])).unwrap();
+        let replies = c.control(&hello(1, &[1])).unwrap();
         assert_eq!(replies.len(), 1);
         let h = packet(&replies[0])
             .unwrap()
@@ -255,7 +237,7 @@ mod tests {
         assert_eq!(h.selected_version(), 0);
         assert!(h.server_session_id().is_none());
         assert!(!h.reason().unwrap().is_empty());
-        assert!(c.control(&hello(2, &[1])).is_err());
+        assert!(c.control(&hello(2, &[VERSION])).is_err());
         for versions in [&[][..], &[1, 1], &[0, 1]] {
             assert!(connection().control(&hello(1, versions)).is_err());
         }
@@ -289,7 +271,7 @@ mod tests {
         let probe = finish(b, wire::Message::ClockProbe, m.as_union_value());
         let mut c = connection();
         assert!(c.tracking(&probe, 0, || 1).is_none());
-        c.control(&hello(1, &[1])).unwrap();
+        c.control(&hello(1, &[VERSION])).unwrap();
         let response = c.tracking(&probe, 0, || 9).unwrap();
         let reply = packet(&response).unwrap().message_as_clock_reply().unwrap();
         assert_eq!(reply.request_id(), u64::MAX);

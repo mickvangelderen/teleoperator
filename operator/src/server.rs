@@ -375,7 +375,7 @@ pub async fn serve(
         slots: Arc::new(Semaphore::new(4)),
         shutdown: shutdown.clone(),
     });
-    let router = Router::new().route("/health", get(|State(server): State<Arc<Server>>| async move { Json(serde_json::json!({"application": "XR Operator", "protocol_versions": [1], "tracking": server.hub.available.load(Ordering::SeqCst), "source": server.hub.source})) }))
+    let router = Router::new().route("/health", get(|State(server): State<Arc<Server>>| async move { Json(serde_json::json!({"application": "XR Operator", "protocol_versions": [protocol::VERSION], "tracking": server.hub.available.load(Ordering::SeqCst), "source": server.hub.source})) }))
         .route("/stats", get(|State(server): State<Arc<Server>>| async move { Json(server.hub.diagnostics()) }))
         .route("/offer", post(offer)).layer(DefaultBodyLimit::max(protocol::MAX_PACKET))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(10)))

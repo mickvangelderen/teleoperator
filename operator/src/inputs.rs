@@ -1,4 +1,4 @@
-use crate::{protocol::wire, tracking::RATE};
+use crate::protocol::wire;
 use flatbuffers::{FlatBufferBuilder as Builder, WIPOffset};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -199,12 +199,6 @@ pub fn definition<'a>(b: &mut Builder<'a>, d: &Definition) -> WIPOffset<wire::In
         "normalized"
     });
     let label = b.create_string(d.label);
-    let rules = if d.kind == InputType::Boolean {
-        let rule = wire::BooleanRule::create(b, &Default::default());
-        Some(b.create_vector(&[rule]))
-    } else {
-        None
-    };
     let min = wire::Vec2::new(
         if d.kind == InputType::Vector2 {
             -1.
@@ -238,7 +232,6 @@ pub fn definition<'a>(b: &mut Builder<'a>, d: &Definition) -> WIPOffset<wire::In
             minimum: Some(&min),
             maximum: Some(&max),
             device_label: Some(label),
-            boolean_rules: rules,
         },
     )
 }
@@ -253,15 +246,11 @@ pub fn settings<'a>(
             let d = definitions[i];
             let source = b.create_string(d.source);
             let id = b.create_string(d.id);
-            let rule = (d.kind == InputType::Boolean)
-                .then(|| wire::BooleanRule::create(b, &Default::default()));
             wire::ControlSelection::create(
                 b,
                 &wire::ControlSelectionArgs {
                     source_id: Some(source),
                     input_id: Some(id),
-                    boolean_rule: rule,
-                    ..Default::default()
                 },
             )
         })
@@ -270,7 +259,6 @@ pub fn settings<'a>(
     wire::ControllerSettings::create(
         b,
         &wire::ControllerSettingsArgs {
-            sample_rate_hz: Some(RATE),
             inputs: Some(inputs),
         },
     )
@@ -292,7 +280,6 @@ pub fn capabilities<'a>(b: &mut Builder<'a>) -> WIPOffset<wire::ControllerCapabi
                         wire::Hand::Right
                     },
                     interaction_profile: Some(profile),
-                    restrictions: None,
                 },
             )
         })
@@ -300,15 +287,11 @@ pub fn capabilities<'a>(b: &mut Builder<'a>) -> WIPOffset<wire::ControllerCapabi
     let sources = b.create_vector(&sources);
     let inputs: Vec<_> = definitions.iter().map(|d| definition(b, d)).collect();
     let inputs = b.create_vector(&inputs);
-    let rates = b.create_vector(&[RATE]);
-    let defaults = settings(b, &(0..definitions.len()).collect::<Vec<_>>());
     wire::ControllerCapabilities::create(
         b,
         &wire::ControllerCapabilitiesArgs {
             sources: Some(sources),
             inputs: Some(inputs),
-            sample_rates_hz: Some(rates),
-            defaults: Some(defaults),
         },
     )
 }

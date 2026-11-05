@@ -16,8 +16,8 @@ OpenXR body set, confidence, activity, versioned skeleton geometry, and actual
 fidelity/calibration status when the runtime supplies them. Body capability is
 advertised only after the runtime has returned a valid skeleton.
 
-The protocol implements hello, capability discovery, clock probes, tracking subscribe,
-replacement, publication changes, and unsubscribe. Identical acquisition requests
+The protocol implements hello, capability discovery, clock probes, protocol v2 tracking subscribe,
+publication changes, and unsubscribe. A stream's acquisition selection is immutable. Identical acquisition requests
 share a subscription; publication is independent per client. See
 [tracking validation](TRACKING.md) for the supported settings and test results.
 
