@@ -1,9 +1,10 @@
 # Tracking checkpoint
 
-Implemented: OpenXR passthrough and head + left/right grip/aim acquisition;
-shared 100 Hz pose subscriptions; independent 1–100 Hz publication; 1–8 samples
-of consecutive history; bounded transport buffering; Viewer pose visualization,
-sequence and consumer statistics. The only supported base is Local (ID 1), with
+Implemented: OpenXR passthrough, head + left/right grip/aim poses, 27 controller
+inputs, and the default 70-joint body set; shared 100 Hz acquisition; independent
+1–100 Hz publication; 1–8 samples of consecutive history; bounded transport
+buffering; Viewer spatial visualization, sequence and consumer statistics.
+The only supported base is Local (ID 1), with
 AcquisitionTime targeting. Velocities are not advertised. Unavailable optional
 pose selections are explicitly omitted; unsupported required settings are rejected.
 
@@ -17,23 +18,36 @@ into that epoch is implemented.
 
 ## Measured locally, 2026-11-05
 
-Synthetic acquisition through the real native WebRTC server and Chromium,
-unordered tracking channel with zero retries. Two clients shared acquisition.
+Final run at 10:53 UTC: synthetic acquisition through the real native WebRTC
+server and Chromium, unordered tracking channel with zero retries. Two clients
+shared acquisition with pose, controller, and body streams active concurrently.
 
 | 10-second observation | 60 Hz consumer | 5 Hz consumer |
 | --- | ---: | ---: |
-| Received messages | 977 | 995 |
-| Received rate | 97.7 Hz | 99.5 Hz |
+| Received pose messages | 1,000 | 989 |
+| Received rate | 99.96 Hz | 98.86 Hz |
 | Missing message sequence numbers | 0 | 0 |
-| Consumed updates | 616 | 50 |
-| Deliberately coalesced updates | 361 | 945 |
+| Consumed updates | 625 | 50 |
+| Deliberately coalesced updates | 375 | 939 |
 | Malformed/unknown discarded packets | 0 | 0 |
 
+Controller and body streams received 990–1,000 messages each with zero sequence
+gaps or discarded packets. Counter deltas are sampled from a running connection;
+a pending sample at the interval boundary can make consumed + coalesced differ
+from received by one.
+
 Blocking the slow client's JavaScript thread for two seconds left the fast client
-receiving at 96.6 Hz over a three-second observation. The slow client recovered,
-retaining at most one pending sample. A 10 Hz publication update measured 10.3 Hz
-and preserved the subscription identity. Deliberately discarding 28 tracking
-messages in the receiver produced exactly 28 additional sequence gaps.
+receiving at 99.95 Hz over a three-second observation. The slow client recovered,
+retaining at most one pending sample. A 10 Hz pose publication update measured
+10.33 Hz and preserved the subscription identity. Body publication at 30 Hz with
+eight historical samples measured 29.96 Hz with no malformed/unknown packets.
+No sender backpressure skips or send errors occurred; peak buffered bytes were
+18,616 with the larger body history.
+
+Deliberately discarding 25 pose messages in the receiver produced exactly 25
+additional sequence gaps. A dropped final message cannot be
+identified until a later sequence number arrives; this is expected for a
+sequence-based metric on an unreliable channel.
 
 The browser's SCTP implementation continues acknowledging while JS is blocked.
 This is a consumer/backlog test, not evidence of network congestion or headset
@@ -57,11 +71,21 @@ Boolean conversions are advertised; application hysteresis rules and Touch Plus
 finger-sensing extensions are not advertised. Input last-change timestamps remain
 absent until runtime-time conversion is validated.
 
-A second local test with concurrent pose/input streams received 1,000 pose
-messages in 10 seconds in each client, with zero gaps; the 5 Hz consumer consumed
-50 and coalesced 950. Publishing controller inputs at 1 Hz for 3.2 seconds delivered
+Publishing controller inputs at 1 Hz for 3.2 seconds delivered
 three snapshots carrying three additional presses and releases, while retaining
 the same subscription. This verifies counter recovery across unreceived changes.
 
-Remaining project checkpoints: body tracking, permissions, skeleton metadata and
-visualization; final hardware review. `IDEA.md` remains the project scope and has not been modified.
+The body checkpoint implements the default 70-joint set, permission requests and
+revocation, skeleton version changes, quality reporting, and visualization. It
+retains immutable skeleton definitions alongside sample history, including history
+that crosses a skeleton change. Three streams share the same WebRTC connection;
+subscription retirement and capability loss are reported over reliable control.
+The Viewer rejects unknown metadata, malformed geometry, cyclic skeletons and
+metadata versions whose contents change.
+
+All original core implementation steps now have code and local validation.
+Remaining qualification is on the Quest: passthrough appearance, actual controller
+bindings, permission UI, body activation, skeleton coordinates, recenter/resume,
+and real network loss/latency. The Viewer uses wireframe guides; no Meta model
+assets have been imported. Optional protocol settings are listed in the Operator
+README and are rejected when unavailable rather than silently substituted. `IDEA.md` remains the project scope and has not been modified.

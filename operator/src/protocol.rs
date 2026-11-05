@@ -1,7 +1,7 @@
 use crate::{streams::Stream, tracking::Hub};
 use flatbuffers::{FlatBufferBuilder, UnionWIPOffset, WIPOffset};
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Weak};
 
 #[allow(unused_imports, dead_code, clippy::all, mismatched_lifetime_syntaxes)]
 mod generated {
@@ -15,7 +15,9 @@ const MAX_REQUESTS: usize = 65_536;
 pub struct Connection {
     pub hub: Arc<Hub>,
     pub streams: Vec<Stream>,
+    pub known_subscriptions: HashMap<u64, Weak<crate::tracking::Subscription>>,
     pub advertised: bool,
+    pub advertised_body: bool,
     pub resumed_at: i64,
     session: wire::SessionId,
     pub negotiated: bool,
@@ -55,7 +57,9 @@ impl Connection {
         Self {
             hub,
             streams: Vec::new(),
+            known_subscriptions: HashMap::new(),
             advertised: false,
+            advertised_body: false,
             resumed_at: 0,
             session,
             negotiated: false,
@@ -119,6 +123,7 @@ impl Connection {
             );
             Ok(if self.negotiated {
                 self.advertised = self.hub.available.load(std::sync::atomic::Ordering::SeqCst);
+                self.advertised_body = self.hub.skeleton.lock().unwrap().is_some();
                 vec![response, crate::streams::capabilities(&self.hub)]
             } else {
                 vec![response]
@@ -202,44 +207,6 @@ impl Connection {
 }
 
 #[cfg(test)]
-fn capabilities() -> Vec<u8> {
-    let mut builder = FlatBufferBuilder::new();
-    let spaces = builder.create_vector::<WIPOffset<wire::ReferenceSpaceDefinition<'_>>>(&[]);
-    let publication = wire::PublicationSettings::create(
-        &mut builder,
-        &wire::PublicationSettingsArgs {
-            send_rate_hz: Some(1.0),
-            history_length: 1,
-        },
-    );
-    let limits = wire::Limits::create(
-        &mut builder,
-        &wire::LimitsArgs {
-            min_send_rate_hz: 1.0,
-            max_send_rate_hz: 120.0,
-            max_history_length: 1,
-            max_tracking_message_bytes: MAX_PACKET as u32,
-            max_control_message_bytes: MAX_PACKET as u32,
-            max_streams_per_client: 1,
-        },
-    );
-    let message = wire::Capabilities::create(
-        &mut builder,
-        &wire::CapabilitiesArgs {
-            reference_spaces: Some(spaces),
-            publication_defaults: Some(publication),
-            limits: Some(limits),
-            ..Default::default()
-        },
-    );
-    finish(
-        builder,
-        wire::Message::Capabilities,
-        message.as_union_value(),
-    )
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     fn hello(id: u64, versions: &[u32]) -> Vec<u8> {
@@ -303,7 +270,11 @@ mod tests {
         let mut corrupt = data.clone();
         corrupt[4] = 0;
         assert!(connection().control(&corrupt).is_err());
-        assert!(connection().control(&capabilities()).is_err());
+        assert!(
+            connection()
+                .control(&crate::streams::capabilities(&Hub::new("none")))
+                .is_err()
+        );
         assert!(connection().tracking(&data, 0, || 1).is_none());
     }
     #[test]

@@ -151,6 +151,7 @@ impl Peer {
     async fn publish(&self) {
         let mut interval = tokio::time::interval(Duration::from_millis(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut known_skeletons = std::collections::HashSet::new();
         let mut known_versions = std::collections::HashSet::new();
         loop {
             interval.tick().await;
@@ -191,12 +192,12 @@ impl Peer {
                         }
                         stream
                             .packet()
-                            .map(|(packet, versions)| (packet, versions, stream.stats.clone()))
+                            .map(|publication| (publication, stream.stats.clone()))
                     })
                     .collect::<Vec<_>>()
             };
-            for (_, versions, _) in &prepared {
-                for &version in versions {
+            for (publication, _) in &prepared {
+                for &version in &publication.references {
                     if known_versions.insert(version)
                         && control
                             .send(&Bytes::from(reference_packet(version)))
@@ -207,11 +208,27 @@ impl Peer {
                     }
                 }
             }
+            for (publication, _) in &prepared {
+                for skeleton in &publication.skeletons {
+                    if known_skeletons.insert(skeleton.version)
+                        && control
+                            .send(&Bytes::from(crate::body::definition(skeleton)))
+                            .await
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            if let Some(latest) = known_skeletons.iter().copied().max() {
+                known_skeletons.retain(|v| latest.saturating_sub(*v) < 32);
+            }
             if let Some(latest) = known_versions.iter().copied().max() {
                 known_versions.retain(|v| latest.saturating_sub(*v) < 32);
             }
             drop(gate);
-            for (packet, _, stats) in prepared {
+            for (publication, stats) in prepared {
+                let packet = publication.bytes;
                 if tracking.buffered_amount().await >= 16_384 {
                     stats.skipped.fetch_add(1, Ordering::SeqCst);
                     continue;

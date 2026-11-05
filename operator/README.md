@@ -10,9 +10,12 @@ space. Each sample retains independent position/orientation validity, tracking,
 and controller activity flags. Unavailable tracking is never replaced with fake
 headset data. A second stream exposes 27 controller inputs, including runtime
 Boolean conversions for trigger/grip presses, touch states, thumbsticks, face
-buttons and the left menu button. Body samples are not implemented yet.
+buttons and the left menu button. The body stream exposes the default 70-joint
+OpenXR body set, confidence, activity, versioned skeleton geometry, and actual
+fidelity/calibration status when the runtime supplies them. Body capability is
+advertised only after the runtime has returned a valid skeleton.
 
-The protocol implements hello, capability discovery, clock probes, pose subscribe,
+The protocol implements hello, capability discovery, clock probes, tracking subscribe,
 replacement, publication changes, and unsubscribe. Identical acquisition requests
 share a subscription; publication is independent per client. See
 [tracking validation](TRACKING.md) for the supported settings and test results.
@@ -120,3 +123,25 @@ The transport is pinned to webrtc-rs **0.17.2**. Quest/Chromium tests of 0.21.1
 found missing remote DCEP retransmission metadata, and intermittent loss of the
 first message with pre-negotiated channels. Recheck these behaviors before
 changing the dependency. No upstream source is vendored or modified.
+
+## Body permission and supported settings
+
+On first launch the app requests `com.oculus.permission.BODY_TRACKING` using
+Android's permission UI. Grant it in the headset. Denial leaves head/controller
+tracking available; body discovery appears after permission and skeleton acquisition
+succeed. Revoking permission closes body streams without closing pose/input streams.
+The Viewer reconnects to resubscribe after a capability is lost and restored.
+
+The current implementation advertises 100 Hz acquisition, Local space, acquisition-time
+targeting, the default 70-joint body set (upper body and hands), and the runtime's
+default fidelity preference. Full 84-joint tracking, selectable fidelity, velocity
+channels, application hysteresis and Touch Plus extras are not advertised. Consumers
+can choose 1–100 Hz publication and 1–8 historical samples independently for each
+stream. The spatial Viewer uses wireframe guides and received joint geometry.
+
+Runtime target, returned-body and input-change timestamps are currently absent,
+not raw `XrTime` values mislabeled as server time. Acquisition timestamps and clock
+probes use a shared server monotonic epoch. Exact runtime-time conversion and the
+skeleton coordinate convention need Quest validation before enabling those fields.
+See the [Khronos skeleton joint reference](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrBodySkeletonJointFB.html)
+for the API's stated base-space convention.

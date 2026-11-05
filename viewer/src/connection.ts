@@ -1,5 +1,5 @@
-import { decode, encode, subscribe, subscribeInputs, updatePublication, unsubscribe, MAX_PACKET } from "./protocol";
-import type { Accepted, Capabilities, Hello, Received, Sample, Tracking } from "./protocol";
+import { decode, encode, subscribe, subscribeInputs, subscribeBody, updatePublication, unsubscribe, json, MAX_PACKET } from "./protocol";
+import type { Accepted, Capabilities, Hello, Received, Sample, Skeleton, Reference, Tracking } from "./protocol";
 import { Sequence, Latest } from "./statistics";
 
 export type Entry = {
@@ -24,6 +24,7 @@ export type State = {
   rtt: number | null;
   entries: Entry[];
   streams: LiveStream[];
+  skeletons: Map<string, Skeleton>;
   source: string;
   discarded: number;
 
@@ -43,7 +44,7 @@ export const initialState = (): State => ({
   bytes: 0,
   rtt: null,
   entries: [],
-  streams: [], source: "unknown", discarded: 0,
+  streams: [], skeletons: new Map(), source: "unknown", discarded: 0,
 });
 
 export class Connection {
@@ -68,7 +69,7 @@ export class Connection {
   private readonly probes = new Map<bigint, number>();
   private requestId = 1n;
   private readonly pending = new Set<bigint>();
-  private readonly references = new Set<string>();
+  private readonly references = new Map<string, Reference>();
   private consumerTimer?: ReturnType<typeof setInterval>;
   private offset: number | null = null;
   private bestRtt = Infinity;
@@ -217,7 +218,7 @@ export class Connection {
       this.state.capabilities = message;
       this.state.status = "Connected";
       this.state.detail = message.pose ? "Receiving head and controller poses." : "Hello accepted. No tracking sources advertised.";
-      for (const space of message.spaces) this.references.add(`${space.id}:${space.version}`);
+      for (const space of message.spaces) this.addReference(space);
       if (message.pose && !this.requested.has("pose")) {
         this.requested.add("pose"); const id = ++this.requestId;
         this.sendRequest(id, "Subscribe poses", subscribe(id, message.pose.sources));
@@ -225,6 +226,10 @@ export class Connection {
       if (message.controller && !this.requested.has("controller")) {
         this.requested.add("controller"); const id = ++this.requestId;
         this.sendRequest(id, "Subscribe inputs", subscribeInputs(id, message.controller.inputs));
+      }
+      if (message.body && !this.requested.has("body")) {
+        this.requested.add("body"); const id = ++this.requestId;
+        this.sendRequest(id, "Subscribe body", subscribeBody(id, message.body.source, message.body.jointSet));
       }
       clearTimeout(this.deadline);
       if (!this.timer) {
@@ -247,8 +252,12 @@ export class Connection {
         this.offset = Number(message.receivedAt + message.sentAt) / 2e6 - (sent + this.lastReplyAt) / 2;
       }
     } else if (message.kind === "ReferenceSpaceDefinition") {
-      this.references.add(`${message.id}:${message.version}`);
-      if (this.references.size > 128) this.references.delete(this.references.values().next().value!);
+      this.addReference(message);
+    } else if (message.kind === "SkeletonDefinition") {
+      const old = this.state.skeletons.get(`${message.id}:${message.version}`);
+      if (old && json(old) !== json(message)) throw new Error("Skeleton version changed contents");
+      this.state.skeletons.set(`${message.id}:${message.version}`, message);
+      if (this.state.skeletons.size > 128) this.state.skeletons.delete(this.state.skeletons.keys().next().value!);
     } else if (message.kind === "StreamAccepted") {
       if (message.requestId && !this.pending.delete(message.requestId)) throw new Error("Unexpected stream acceptance");
       const old = this.state.streams.find(s => s.descriptor.streamId === message.streamId);
@@ -269,14 +278,26 @@ export class Connection {
     }
   }
 
+  private addReference(reference: Reference) {
+    const key = `${reference.id}:${reference.version}`, old = this.references.get(key);
+    if (old && json(old) !== json(reference)) throw new Error("Reference version changed contents");
+    this.references.set(key, reference);
+    if (this.references.size > 128) this.references.delete(this.references.keys().next().value!);
+  }
+
   private acceptTracking(message: Tracking) {
     const live = this.state.streams.find(s => s.descriptor.streamId === message.streamId && s.descriptor.subscriptionId === message.subscriptionId);
     if (!live) { this.state.discarded++; return; }
     const stream = live.descriptor, stats = live.statistics;
-    if (message.samples.length > stream.history || message.samples.some(s => s.type !== stream.type || (s.type === "pose" ? s.poses.length !== stream.sources.length : s.inputs.length !== stream.inputs.length || s.inputs.some((input, i) => input.type !== stream.inputs[i].type)))) throw new Error("Tracking layout differs from descriptor");
+    if (message.samples.length > stream.history || message.samples.some(s => s.type !== stream.type || (s.type === "pose" && s.poses.length !== stream.sources.length) || (s.type === "controller" && (s.inputs.length !== stream.inputs.length || s.inputs.some((input, i) => input.type !== stream.inputs[i].type))))) throw new Error("Tracking layout differs from descriptor");
     if (!stats.messages.accept(message.messageNumber)) return;
     for (const sample of message.samples) {
       if (stream.reference && !this.references.has(`${stream.reference.id}:${sample.referenceVersion}`)) { stats.discarded++; continue; }
+      if (sample.body) {
+        const skeleton = this.state.skeletons.get(`${stream.skeleton?.id}:${sample.body.skeletonVersion}`);
+        if (!skeleton || !this.references.has(`${skeleton.reference.id}:${skeleton.reference.version}`)) { stats.discarded++; continue; }
+        if (skeleton.joints.length !== sample.poses.length || skeleton.jointSet !== stream.jointSet) throw new Error("Body layout differs from skeleton");
+      }
       stats.samples.accept(sample.number);
       if (sample.number > live.newest) {
         live.newest = sample.number;
@@ -400,7 +421,7 @@ export class Connection {
     this.state.rtt = null;
     this.state.hello = null;
     this.state.capabilities = null;
-    this.state.streams = [];
+    this.state.streams = []; this.state.skeletons.clear();
     this.update(this.state);
   }
 }

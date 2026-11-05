@@ -23,6 +23,13 @@ import { ControllerSamples } from "../src/generated/xr-operator/wire/controller-
 import { BooleanValue } from "../src/generated/xr-operator/wire/boolean-value";
 import { ScalarValue } from "../src/generated/xr-operator/wire/scalar-value";
 import { InputValue } from "../src/generated/xr-operator/wire/input-value";
+import { BodySample } from "../src/generated/xr-operator/wire/body-sample";
+import { BodySamples } from "../src/generated/xr-operator/wire/body-samples";
+import { SkeletonJoint } from "../src/generated/xr-operator/wire/skeleton-joint";
+import { SkeletonDefinition } from "../src/generated/xr-operator/wire/skeleton-definition";
+import { MetadataRef } from "../src/generated/xr-operator/wire/metadata-ref";
+import { Transform } from "../src/generated/xr-operator/wire/transform";
+import { LocationFlags } from "../src/generated/xr-operator/wire/location-flags";
 
 function finish(b: Builder, kind: Message, value: number) {
   Packet.finishPacketBuffer(b, Packet.createPacket(b, kind, value));
@@ -181,4 +188,38 @@ test("controller snapshots preserve cumulative counters and reject invalid activ
   assert.equal(result.samples[0].inputs[1].changedAt, null);
   for (const value of [NaN, Infinity, -0.1, 1.1]) assert.throws(() => decode(snapshot(value), "tracking"));
   for (let end = 0; end < data.length; end++) assert.throws(() => decode(data.subarray(0, end), "tracking"));
+});
+
+test("body packets retain metadata versions, quality and fixed-size joint geometry", () => {
+  function snapshot(confidence = 0.75, fidelity = 2) {
+    const b = new Builder(512);
+    BodySample.startJointsVector(b, 1); JointPose.createJointPose(b, 1, 2, 3, 0, 0, 0, 1, LocationFlags.OrientationValid | LocationFlags.PositionValid | LocationFlags.OrientationTracked | LocationFlags.PositionTracked); const joints = b.endVector();
+    const sample = BodySample.createBodySample(b, 99n, 123n, 0n, 0n, 4, 7, true, confidence, fidelity, 1, joints);
+    const history = BodySamples.createBodySamples(b, BodySamples.createSamplesVector(b, [sample]));
+    return finish(b, Message.Tracking, Tracking.createTracking(b, 1n, 2n, 3n, Samples.BodySamples, history));
+  }
+  const result = decode(snapshot(), "tracking"); assert.equal(result.kind, "Tracking");
+  if (result.kind !== "Tracking") throw new Error("Expected tracking");
+  assert.deepEqual(result.samples[0].poses[0].position, [1, 2, 3]);
+  assert.equal(result.samples[0].referenceVersion, 4);
+  assert.deepEqual(result.samples[0].body, { active: true, confidence: 0.75, returnedAt: 0n, skeletonVersion: 7, fidelity: 2, calibration: 1 });
+  for (const confidence of [NaN, -1, 2]) assert.throws(() => decode(snapshot(confidence), "tracking"));
+  assert.throws(() => decode(snapshot(0.5, 0), "tracking"));
+});
+
+test("skeleton metadata rejects cycles and missing parents", () => {
+  function skeleton(parents = [-1, 0]) {
+    const b = new Builder(512);
+    const joints = parents.map((parent, id) => {
+      const name = b.createString(`joint ${id}`);
+      SkeletonJoint.startSkeletonJoint(b); SkeletonJoint.addJointId(b, id); SkeletonJoint.addParentId(b, parent); SkeletonJoint.addName(b, name); SkeletonJoint.addRestPose(b, Transform.createTransform(b, 0, id, 0, 0, 0, 0, 1)); return SkeletonJoint.endSkeletonJoint(b);
+    });
+    const vector = SkeletonDefinition.createJointsVector(b, joints), set = b.createString("test");
+    SkeletonDefinition.startSkeletonDefinition(b); SkeletonDefinition.addJoints(b, vector); SkeletonDefinition.addJointSet(b, set); SkeletonDefinition.addReference(b, MetadataRef.createMetadataRef(b, 2n, 1)); SkeletonDefinition.addReferenceSpace(b, MetadataRef.createMetadataRef(b, 1n, 3));
+    return finish(b, Message.SkeletonDefinition, SkeletonDefinition.endSkeletonDefinition(b));
+  }
+  assert.equal(decode(skeleton(), "control").kind, "SkeletonDefinition");
+  assert.throws(() => decode(skeleton([1, 0]), "control"));
+  assert.throws(() => decode(skeleton([-1, 10]), "control"));
+  assert.throws(() => decode(skeleton(), "tracking"));
 });

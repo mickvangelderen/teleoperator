@@ -24,6 +24,7 @@ impl Action {
         }
     }
     pub fn sample(&self, session: &xr::Session<xr::OpenGlEs>, synchronized: bool) -> Input {
+        // shortcut: omit runtime change times until their server-epoch conversion is validated on Quest.
         match self {
             Self::Boolean(action) => action
                 .state(session, xr::Path::NULL)

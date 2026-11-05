@@ -1,9 +1,10 @@
+use crate::body::{self, Body, Skeleton};
 use crate::inputs::{self, Input};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -13,6 +14,7 @@ use tokio::sync::watch;
 pub enum Kind {
     Pose,
     Controller,
+    Body,
 }
 
 pub const RATE: f32 = 100.0;
@@ -35,6 +37,7 @@ pub struct Sample {
     pub reference_version: u32,
     pub poses: Vec<Pose>,
     pub inputs: Vec<Input>,
+    pub body: Option<Body>,
 }
 
 pub struct Subscription {
@@ -62,6 +65,10 @@ pub struct Hub {
     pub source: &'static str,
     pub available: AtomicBool,
     pub resumed_at: AtomicI64,
+    pub skeleton: Mutex<Option<Arc<Skeleton>>>,
+    pub body_fidelity: AtomicBool,
+    pub body_calibration: AtomicBool,
+    next_skeleton: AtomicU32,
     pub reference_version: Mutex<u32>,
     subscriptions: Mutex<HashMap<SubscriptionKey, Weak<Subscription>>>,
     next_subscription: AtomicU64,
@@ -77,6 +84,10 @@ impl Hub {
             source,
             available: AtomicBool::new(false),
             resumed_at: AtomicI64::new(0),
+            skeleton: Mutex::new(None),
+            body_fidelity: AtomicBool::new(false),
+            body_calibration: AtomicBool::new(false),
+            next_skeleton: AtomicU32::new(1),
             reference_version: Mutex::new(1),
             subscriptions: Mutex::new(HashMap::new()),
             next_subscription: AtomicU64::new(1),
@@ -84,6 +95,11 @@ impl Hub {
             updates: watch::channel(0).0,
             stats: Mutex::new(VecDeque::new()),
         })
+    }
+    pub fn next_skeleton_version(&self) -> u32 {
+        self.next_skeleton
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
+            .expect("Skeleton version exhausted")
     }
     pub fn now(&self) -> i64 {
         self.started
@@ -146,15 +162,20 @@ impl Hub {
         &self,
         poses: &[Pose; 5],
         inputs: &[Input],
+        body: Option<&Body>,
         acquired_at: i64,
         target_at: Option<i64>,
     ) {
+        *self.skeleton.lock().unwrap() = body.map(|b| b.skeleton.clone());
         let version = *self.reference_version.lock().unwrap();
         let mut subscriptions = self.subscriptions.lock().unwrap();
         subscriptions.retain(|_, weak| {
             let Some(subscription) = weak.upgrade() else {
                 return false;
             };
+            if subscription.kind == Kind::Body && body.is_none() {
+                return true;
+            }
             let number = Self::id(&subscription.number)
                 .checked_add(1)
                 .expect("Sample counter exhausted");
@@ -190,6 +211,7 @@ impl Hub {
                     Vec::new()
                 },
                 inputs: selected_inputs,
+                body: (subscription.kind == Kind::Body).then(|| body.unwrap().clone()),
             });
             if samples.len() > HISTORY {
                 samples.pop_front();
@@ -207,6 +229,9 @@ impl Hub {
 
 pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
     hub.set_available(true);
+    hub.body_fidelity.store(true, Ordering::SeqCst);
+    hub.body_calibration.store(true, Ordering::SeqCst);
+    let skeleton = body::synthetic_skeleton();
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -221,7 +246,8 @@ pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
                     inputs::InputType::Scalar => inputs::Value::Scalar((phase.sin() + 1.) / 2.),
                     inputs::InputType::Vector2 => inputs::Value::Vector2([phase.sin() * 0.5, phase.cos() * 0.5]),
                 } }).collect::<Vec<_>>();
-                hub.acquire(&poses, &inputs, at, Some(at));
+                let body = Body { skeleton: skeleton.clone(), active: true, confidence: Some(1.), returned_at: Some(at), fidelity: Some(crate::protocol::wire::Fidelity::High), calibration: Some(crate::protocol::wire::CalibrationStatus::Valid), joints: skeleton.joints.iter().map(|j| { let mut pose = j.rest.clone(); pose.position[2] += phase.sin() * 0.1; pose }).collect() };
+                hub.acquire(&poses, &inputs, Some(&body), at, Some(at));
             }
         }
     }
@@ -239,7 +265,7 @@ mod tests {
         assert_eq!(a.id, b.id);
         let poses = std::array::from_fn(|_| Pose::default());
         for i in 0..12 {
-            hub.acquire(&poses, &[], i, Some(0));
+            hub.acquire(&poses, &[], None, i, Some(0));
         }
         let samples = a.samples.lock().unwrap();
         assert_eq!(samples.len(), 8);

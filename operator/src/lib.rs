@@ -1,3 +1,4 @@
+pub mod body;
 #[cfg(target_os = "android")]
 mod egl;
 pub mod inputs;
@@ -7,6 +8,8 @@ pub mod streams;
 pub mod tracking;
 #[cfg(target_os = "android")]
 mod xr;
+#[cfg(target_os = "android")]
+mod xr_body;
 #[cfg(target_os = "android")]
 mod xr_inputs;
 

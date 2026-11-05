@@ -23,6 +23,7 @@ webrtc = "=0.17.2"
 android-activity = { version = "0.6.1", features = ["native-activity"] }
 android_logger = { version = "0.15.1", default-features = false }
 openxr = "0.22.0"
+jni = "0.21.1"
 
 [[bin]]
 name = "xr-operator-server"
@@ -36,6 +37,13 @@ runtime_libs = "libs"
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
+
+[[package.metadata.android.uses_permission]]
+name = "com.oculus.permission.BODY_TRACKING"
+
+[[package.metadata.android.uses_feature]]
+name = "com.oculus.software.body_tracking"
+required = false
 
 [package.metadata.android.sdk]
 min_sdk_version = 32

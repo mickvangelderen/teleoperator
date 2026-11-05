@@ -58,7 +58,7 @@ try {
   assert.equal(await page.locator("#tracking").textContent(), "Open");
   assert.equal(
     await page.locator("#source-count").textContent(),
-    process.env.EXPECT_TRACKING === "1" ? "5 advertised" : "0 advertised",
+    process.env.EXPECT_TRACKING === "1" ? "8 advertised" : "0 advertised",
   );
   const session = await page.locator("#session-id").textContent();
   assert.match(session, /^[a-f0-9]{16} [a-f0-9]{16}$/);

@@ -4,7 +4,7 @@ Read-only TypeScript interface for XR Operator. It displays the live hello
 exchange, full-width session identity, advertised capabilities, channel state,
 clock-probe round-trip time, message sizes, and decoded payloads. The spatial
 workspace renders head and controller poses, controller input states and cumulative
-transition counts, their validity/activity, and per-stream
+transition counts, the 70-joint body skeleton and quality, their validity/activity, and per-stream
 statistics. An explicit desktop synthetic source is labeled in the Viewer; the
 Viewer never invents poses when the headset is unavailable.
 
@@ -80,7 +80,7 @@ not a calibrated one-way latency measurement. Resume clears the estimate.
 
 ## Tracking and slow-consumer test
 
-The Viewer automatically subscribes to advertised pose and controller sources.
+The Viewer automatically subscribes to advertised pose, controller and body sources.
 Select the stream in Tracking statistics to inspect its metrics and publication settings. Publication rate
 (100/30/10 Hz), history (1/4/8), and consumption rate (60/30/5 Hz) are independent.
 Only the latest pending sample reaches the visualizer. The receive path records
@@ -104,3 +104,9 @@ changes publication/history without changing acquisition, injects explicitly
 labeled receiver drops, checks the desktop/mobile UI, and writes JSON measurements
 and screenshots to `.artifacts/tracking/`. It requires the explicit synthetic
 server; it does not claim to exercise headset tracking or Wi-Fi loss.
+
+The spatial view offers isometric/front/side projections and zoom. It draws received
+body joint geometry and pose wireframes, hides invalid positions/inactive sources,
+and fades stale state. Body quality reports activity, confidence, actual fidelity
+and calibration independently. The default body set includes upper body and hands;
+it does not contain leg joints. This is a diagnostic view, not an avatar renderer.

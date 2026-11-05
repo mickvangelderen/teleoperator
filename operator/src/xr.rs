@@ -19,6 +19,9 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
     extensions.khr_opengl_es_enable = true;
     extensions.khr_convert_timespec_time = true;
     extensions.fb_passthrough = available.fb_passthrough;
+    extensions.fb_body_tracking = available.fb_body_tracking;
+    extensions.meta_body_tracking_fidelity = available.meta_body_tracking_fidelity;
+    extensions.meta_body_tracking_calibration = available.meta_body_tracking_calibration;
     if !extensions.fb_passthrough {
         return Err("Runtime does not support passthrough".into());
     }
@@ -99,14 +102,34 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
     )?;
     let gate = Mutex::new((false, Vec::<xr::Time>::new()));
     let stop = AtomicBool::new(false);
+    let body_permission = Arc::new(AtomicBool::new(false));
+    if extensions.fb_body_tracking {
+        crate::xr_body::poll_permission(app, body_permission.clone(), true);
+    }
+    hub.body_fidelity
+        .store(extensions.meta_body_tracking_fidelity, Ordering::SeqCst);
+    hub.body_calibration
+        .store(extensions.meta_body_tracking_calibration, Ordering::SeqCst);
     hub.set_available(true);
     let result = std::thread::scope(|scope| {
         let sampler = scope.spawn(|| {
             let mut next = Instant::now();
+            let mut tracker = None;
+            let mut retry_body = Instant::now();
             while !stop.load(Ordering::SeqCst) {
                 next += Duration::from_millis(10);
                 let mut state = gate.lock().unwrap();
                 let acquired_at = hub.now();
+                let mut body = hub
+                    .skeleton
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|s| crate::body::Body::inactive(s.clone()));
+                if !body_permission.load(Ordering::SeqCst) {
+                    tracker = None;
+                    body = None;
+                }
                 let mut inputs = input_definitions
                     .iter()
                     .map(|d| crate::inputs::Input::inactive(d.kind))
@@ -132,6 +155,26 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                     for (input, action) in inputs.iter_mut().zip(&input_actions) {
                         *input = action.sample(&session, synced);
                     }
+                    if extensions.fb_body_tracking
+                        && body_permission.load(Ordering::SeqCst)
+                        && tracker.is_none()
+                        && Instant::now() >= retry_body
+                    {
+                        retry_body = Instant::now() + Duration::from_secs(1);
+                        match crate::xr_body::Tracker::new(
+                            &session,
+                            extensions.meta_body_tracking_fidelity,
+                            extensions.meta_body_tracking_calibration,
+                        ) {
+                            Ok(created) => tracker = Some(created),
+                            Err(error) => log::warn!("Body tracker unavailable: {error}"),
+                        }
+                    }
+                    if let Some(tracker) = &mut tracker
+                        && let Ok(sample) = tracker.sample(&local, time, &hub)
+                    {
+                        body = Some(sample);
+                    }
                     for (i, space) in spaces.iter().enumerate() {
                         if i > 0 {
                             let action = if i % 2 == 1 { &aim } else { &grip };
@@ -154,7 +197,7 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                     }
                 }
                 // XrTime has a runtime epoch; leave target_at absent until explicitly converted.
-                hub.acquire(&poses, &inputs, acquired_at, None);
+                hub.acquire(&poses, &inputs, body.as_ref(), acquired_at, None);
                 drop(state);
                 let now = Instant::now();
                 if next > now {
@@ -168,7 +211,12 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
             let mut events = xr::EventDataBuffer::new();
             let mut alive = true;
             let mut has_run = false;
+            let mut permission_poll = Instant::now();
             while alive {
+                if extensions.fb_body_tracking && Instant::now() >= permission_poll {
+                    permission_poll = Instant::now() + Duration::from_secs(1);
+                    crate::xr_body::poll_permission(app, body_permission.clone(), false);
+                }
                 let running = gate.lock().unwrap().0;
                 app.poll_events(
                     Some(Duration::from_millis(if running { 0 } else { 20 })),
