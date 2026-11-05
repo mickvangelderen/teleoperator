@@ -176,7 +176,6 @@ table Limits {
 }
 
 table Capabilities {
-  revision:ulong;
   controller:ControllerCapabilities;
   pose:PoseCapabilities;
   body:BodyCapabilities;

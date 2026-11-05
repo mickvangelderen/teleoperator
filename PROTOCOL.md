@@ -116,6 +116,11 @@ become immutable context shared by that connection's control and tracking
 channels; subsequent messages do not repeat them. A new connection establishes
 this context again. The server publishes capabilities over control.
 
+Each capabilities announcement is a complete snapshot that replaces the client's
+previous discovery state. Apply snapshots in receive order on the reliable
+ordered control channel; no separate capabilities revision counter is needed.
+Updating discovery state does not modify existing subscription descriptors.
+
 Capability discovery describes what the server can expose through its supported
 bindings and runtime configuration. It includes:
 

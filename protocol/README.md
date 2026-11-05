@@ -33,9 +33,10 @@ state before interpreting the payload using the negotiated version.
    perform a new handshake; callbacks from a retired connection retain their
    original context and must not update the new connection's state.
 4. The server sends a full `Capabilities` snapshot before accepting subscriptions.
-   Later snapshots replace discovery state and increment `revision`; they do
-   not modify existing subscription descriptors. Profile changes are reported
-   through the per-hand `ControllerSource` entries in these snapshots.
+   Later snapshots replace discovery state in receive order on the reliable
+   ordered control channel; no revision counter is carried. They do not modify
+   existing subscription descriptors. Profile changes are reported through the
+   per-hand `ControllerSource` entries in these snapshots.
 
 Use a proposed 64 KiB control-message ceiling before discovery. Advertised
 control limits cannot exceed it in version 1. Tracking limits must fit the
@@ -49,7 +50,7 @@ complete snapshot cannot fit. These are ceilings, not recommended packet sizes.
 | Representation | Meaning |
 | --- | --- |
 | `SessionId { low:ulong, high:ulong }` | Opaque, nonzero 128-bit value freshly generated at application startup; equality compares both words; no UUID byte-order convention |
-| `ulong` | Unsigned 64-bit subscription, stream, request, sample, message, transition, and capability-revision numbers |
+| `ulong` | Unsigned 64-bit subscription, stream, request, sample, message, and transition numbers |
 | `long` | Signed 64-bit nanoseconds, including timestamps and prediction offsets |
 | `MetadataRef { id:ulong, version:uint }` | Session-scoped metadata identity and unsigned 32-bit version |
 | `uint` / `int` | Counts, byte limits, joint IDs / parent IDs (`-1` means no parent) |
@@ -59,7 +60,7 @@ Session identity scopes subscriptions, streams, and metadata. Stream IDs are
 unique across the server session, even across clients, and never reassigned.
 Subscription and metadata IDs are also never reassigned in their respective
 namespaces. Reference-space and skeleton IDs have separate namespaces.
-IDs, metadata versions, revisions, sample numbers, and message numbers start at
+IDs, metadata versions, sample numbers, and message numbers start at
 1. Transition counts start at 0. Zero stream ID requests creation; zero response
 request ID denotes a server notification. Control request IDs are nonzero and
 never reused within a connection. Probe IDs have a separate, nonzero,
