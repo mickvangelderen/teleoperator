@@ -1,7 +1,7 @@
 # FlatBuffers wire-format proposal
 
 [wire.fbs](wire.fbs) is a compilable draft of protocol version **1**, based on
-[PROTOCOL.md](../PROTOCOL.md). It specifies both data channels. It does not yet
+[PROTOCOL.md](PROTOCOL.md). It specifies both data channels. It does not yet
 connect the Android app to OpenXR or WebRTC. The choices below are proposals for
 discussion, not claims about tested Quest capabilities or performance.
 
@@ -113,9 +113,9 @@ resolved and within both retention and encoded-message limits.
 `InputDefinition` keys are `(source_id, input_id)`. Meanings belong to stable
 protocol input IDs; device labels and interaction profiles are supplementary.
 Use vendor-qualified IDs for controls without common meanings. Exact canonical
-names and normalization remain a separate vocabulary decision. The example IDs
-in this directory are illustrative. Body joint-set strings likewise identify a
-defined joint vocabulary; names for the 70- and 84-joint sets remain to be agreed.
+names and normalization remain a separate vocabulary decision. Body joint-set
+strings likewise identify a defined joint vocabulary; names for the 70- and
+84-joint sets remain to be agreed.
 
 `Subscribe` creates a stream when `stream_id = 0`; otherwise it replaces that
 stream's entire acquisition request. Sources/inputs are explicitly selected.
@@ -265,15 +265,7 @@ language runtimes when integrating the endpoints. From the repository root:
 
 ```sh
 flatc --rust --ts -o .artifacts/protocol/generated protocol/wire.fbs
-flatc --binary --strict-json -o .artifacts/protocol protocol/wire.fbs protocol/examples/*.json
-flatc --json --strict-json --defaults-json -o .artifacts/protocol/decoded protocol/wire.fbs -- .artifacts/protocol/*.xrop
 ```
-
-The examples form a server hello, controller stream acceptance, and subsequent
-publication with complete samples. Quoted 64-bit literals are
-`flatc` JSON fixture syntax, not the network encoding. The timestamps deliberately
-exceed JavaScript's exact `number` range. FlatBuffers supports nullable scalars
-and fixed structs as described in its [schema reference](https://flatbuffers.dev/schema/).
 
 ## Choices to discuss before implementation
 

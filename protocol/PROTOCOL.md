@@ -3,8 +3,8 @@
 This document describes the intended protocol for publishing OpenXR tracking
 from the device application to WebRTC clients, initially on Quest. It defines
 responsibilities, negotiation, data semantics, and delivery behavior. A concrete
-FlatBuffers draft is in [protocol/wire.fbs](protocol/wire.fbs), with proposed
-encoding choices and validation rules in [protocol/README.md](protocol/README.md).
+FlatBuffers draft is in [wire.fbs](wire.fbs), with proposed encoding choices and
+validation rules in [README.md](README.md).
 Unresolved defaults and target-device limits are listed under
 [open decisions and validation](#open-decisions-and-validation).
 
@@ -627,7 +627,7 @@ fixed by this document:
 
 - Review and adopt or revise the proposed FlatBuffers encoding, control and
   descriptor schemas, version negotiation, numeric widths, and no-wrap rules in
-  [the wire-format draft](protocol/README.md).
+  [the wire-format draft](README.md).
 - Canonical control identifiers and normalization rules, device binding coverage,
   and default client action mappings. Boolean activation requires a decision
   between runtime conversion and application-defined thresholds/hysteresis.

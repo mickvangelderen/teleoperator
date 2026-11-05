@@ -1,9 +1,0 @@
-{
-  "message_type": "ServerHello",
-  "message": {
-    "request_id": "1",
-    "selected_version": 1,
-    "supported_versions": [1],
-    "server_session_id": { "low": "1234", "high": "5678" }
-  }
-}
