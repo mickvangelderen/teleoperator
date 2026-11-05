@@ -1,4 +1,5 @@
 use crate::protocol::{self, Connection, wire};
+use crate::{streams::reference_packet, tracking::Hub};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
@@ -8,7 +9,7 @@ use axum::{
 use bytes::Bytes;
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
@@ -32,6 +33,7 @@ struct Server {
     started: Instant,
     slots: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
+    hub: Arc<Hub>,
 }
 
 struct Peer {
@@ -40,6 +42,9 @@ struct Peer {
     channels: AtomicU8,
     negotiated: AtomicBool,
     close: Notify,
+    control: Mutex<Weak<RTCDataChannel>>,
+    tracking: Mutex<Weak<RTCDataChannel>>,
+    control_gate: tokio::sync::Mutex<()>,
 }
 
 impl Peer {
@@ -65,6 +70,11 @@ impl Peer {
             self.close.notify_one();
             return;
         }
+        *if control {
+            self.control.lock().unwrap()
+        } else {
+            self.tracking.lock().unwrap()
+        } = Arc::downgrade(&dc);
         dc.on_open(Box::new(move || {
             Box::pin(async move {
                 log::info!("Data channel open: {label}");
@@ -94,6 +104,11 @@ impl Peer {
                     return;
                 };
                 let received_at = peer.now();
+                let _gate = if control {
+                    Some(peer.control_gate.lock().await)
+                } else {
+                    None
+                };
                 let replies = if message.is_string {
                     if control {
                         Err("Expected binary control packet")
@@ -132,6 +147,78 @@ impl Peer {
             })
         }));
     }
+
+    async fn publish(&self) {
+        let mut interval = tokio::time::interval(Duration::from_millis(2));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut known_versions = std::collections::HashSet::new();
+        loop {
+            interval.tick().await;
+            if !self.negotiated.load(Ordering::SeqCst) {
+                continue;
+            }
+            let (Some(control), Some(tracking)) = (
+                self.control.lock().unwrap().upgrade(),
+                self.tracking.lock().unwrap().upgrade(),
+            ) else {
+                continue;
+            };
+            let gate = self.control_gate.lock().await;
+            let notifications = self.protocol.lock().unwrap().refresh();
+            for notification in notifications {
+                if control.send(&Bytes::from(notification)).await.is_err() {
+                    return;
+                }
+            }
+            let buffered = tracking.buffered_amount().await;
+            let prepared = {
+                let mut protocol = self.protocol.lock().unwrap();
+                protocol.stream.as_mut().and_then(|stream| {
+                    stream
+                        .stats
+                        .peak_buffer
+                        .fetch_max(buffered as u64, Ordering::SeqCst);
+                    if !stream.due() {
+                        return None;
+                    }
+                    // One publication in flight; skip before serialization when SCTP backs up.
+                    if buffered >= 16_384 {
+                        stream.stats.skipped.fetch_add(1, Ordering::SeqCst);
+                        return None;
+                    }
+                    stream
+                        .packet()
+                        .map(|(packet, versions)| (packet, versions, stream.stats.clone()))
+                })
+            };
+            let Some((packet, versions, stats)) = prepared else {
+                continue;
+            };
+            for &version in &versions {
+                if known_versions.insert(version)
+                    && control
+                        .send(&Bytes::from(reference_packet(version)))
+                        .await
+                        .is_err()
+                {
+                    return;
+                }
+            }
+            known_versions.retain(|v| versions.contains(v));
+            drop(gate);
+            let bytes = packet.len();
+            match tracking.send(&Bytes::from(packet)).await {
+                Ok(_) => {
+                    stats.sent.fetch_add(1, Ordering::SeqCst);
+                    stats.bytes.fetch_add(bytes as u64, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    stats.errors.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 type HttpError = (StatusCode, String);
@@ -158,11 +245,14 @@ async fn offer(
         )
     })?;
     let peer = Arc::new(Peer {
-        protocol: Mutex::new(Connection::new(server.session)),
+        protocol: Mutex::new(Connection::with_hub(server.session, server.hub.clone())),
         started: server.started,
         channels: AtomicU8::new(0),
         negotiated: AtomicBool::new(false),
         close: Notify::new(),
+        control: Mutex::new(Weak::new()),
+        tracking: Mutex::new(Weak::new()),
+        control_gate: tokio::sync::Mutex::new(()),
     });
     // 0.17 retains remote DCEP reliability settings and avoids the 0.21 negotiated-channel race.
     let pc = Arc::new(
@@ -201,6 +291,7 @@ async fn offer(
     tokio::spawn(async move {
         let _permit = permit;
         tokio::select! {
+            _ = live_peer.publish() => {},
             _ = live_peer.close.notified() => {},
             _ = shutdown.wait_for(|stopped| *stopped) => {},
             _ = async {
@@ -239,6 +330,7 @@ async fn offer(
 pub async fn serve(
     listener: TcpListener,
     shutdown: watch::Receiver<bool>,
+    hub: Arc<Hub>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut random = [0; 16];
     getrandom::fill(&mut random).map_err(|e| format!("Session randomness: {e}"))?;
@@ -249,11 +341,13 @@ pub async fn serve(
     }
     let server = Arc::new(Server {
         session: wire::SessionId::new(low, high),
-        started: Instant::now(),
+        started: hub.started,
+        hub,
         slots: Arc::new(Semaphore::new(4)),
         shutdown: shutdown.clone(),
     });
-    let router = Router::new().route("/health", get(|| async { Json(serde_json::json!({"application": "XR Operator", "protocol_versions": [1], "tracking": false})) }))
+    let router = Router::new().route("/health", get(|State(server): State<Arc<Server>>| async move { Json(serde_json::json!({"application": "XR Operator", "protocol_versions": [1], "tracking": server.hub.available.load(Ordering::SeqCst), "source": server.hub.source})) }))
+        .route("/stats", get(|State(server): State<Arc<Server>>| async move { Json(server.hub.diagnostics()) }))
         .route("/offer", post(offer)).layer(DefaultBodyLimit::max(protocol::MAX_PACKET))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(10)))
         .with_state(server.clone());

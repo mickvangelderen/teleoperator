@@ -1,5 +1,11 @@
+#[cfg(target_os = "android")]
+mod egl;
 pub mod protocol;
 pub mod server;
+pub mod streams;
+pub mod tracking;
+#[cfg(target_os = "android")]
+mod xr;
 
 #[cfg(target_os = "android")]
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
@@ -23,19 +29,27 @@ fn android_main(app: AndroidApp) {
         .build()
         .expect("Network runtime");
     let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let hub = crate::tracking::Hub::new("openxr");
+    let server_hub = hub.clone();
     let server = runtime.spawn(async move {
         match tokio::net::TcpListener::bind("0.0.0.0:8080").await {
             Ok(listener) => {
-                if let Err(error) = crate::server::serve(listener, shutdown).await {
+                if let Err(error) = crate::server::serve(listener, shutdown, server_hub).await {
                     log::error!("Server stopped: {error}");
                 }
             }
             Err(error) => log::error!("Could not listen on port 8080: {error}"),
         }
     });
-    let mut running = true;
+    let mut running = match crate::xr::run(&app, hub) {
+        Ok(()) => false,
+        Err(error) => {
+            log::error!("OpenXR stopped: {error}");
+            true
+        }
+    };
     while running {
-        // Block until Android has work; there is no XR frame loop yet.
+        // Keep signaling available after an XR initialization failure.
         app.poll_events(None, |event| {
             if let PollEvent::Main(event) = event {
                 match event {

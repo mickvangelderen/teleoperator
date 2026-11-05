@@ -1,5 +1,7 @@
+use crate::{streams::Stream, tracking::Hub};
 use flatbuffers::{FlatBufferBuilder, UnionWIPOffset, WIPOffset};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 #[allow(unused_imports, dead_code, clippy::all, mismatched_lifetime_syntaxes)]
 mod generated {
@@ -11,6 +13,10 @@ pub const MAX_PACKET: usize = 65_536;
 const MAX_REQUESTS: usize = 65_536;
 
 pub struct Connection {
+    pub hub: Arc<Hub>,
+    pub stream: Option<Stream>,
+    pub advertised: bool,
+    pub resumed_at: i64,
     session: wire::SessionId,
     pub negotiated: bool,
     rejected: bool,
@@ -18,7 +24,7 @@ pub struct Connection {
     probes: HashSet<u64>,
 }
 
-fn finish(
+pub(crate) fn finish(
     mut builder: FlatBufferBuilder<'_>,
     kind: wire::Message,
     message: WIPOffset<UnionWIPOffset>,
@@ -43,7 +49,14 @@ pub fn packet(data: &[u8]) -> Result<wire::Packet<'_>, &'static str> {
 
 impl Connection {
     pub fn new(session: wire::SessionId) -> Self {
+        Self::with_hub(session, Hub::new("none"))
+    }
+    pub fn with_hub(session: wire::SessionId, hub: Arc<Hub>) -> Self {
         Self {
+            hub,
+            stream: None,
+            advertised: false,
+            resumed_at: 0,
             session,
             negotiated: false,
             rejected: false,
@@ -105,7 +118,8 @@ impl Connection {
                 hello.request_id()
             );
             Ok(if self.negotiated {
-                vec![response, capabilities()]
+                self.advertised = self.hub.available.load(std::sync::atomic::Ordering::SeqCst);
+                vec![response, crate::streams::capabilities(&self.hub)]
             } else {
                 vec![response]
             })
@@ -119,6 +133,9 @@ impl Connection {
                 _ => return Err("Unexpected message on control channel"),
             };
             self.request(id)?;
+            if self.negotiated {
+                return Ok(self.request_stream(packet, id));
+            }
             let (code, reason) = if !self.negotiated {
                 (
                     wire::RejectionCode::InvalidRequest,
@@ -184,6 +201,7 @@ impl Connection {
     }
 }
 
+#[cfg(test)]
 fn capabilities() -> Vec<u8> {
     let mut builder = FlatBufferBuilder::new();
     let spaces = builder.create_vector::<WIPOffset<wire::ReferenceSpaceDefinition<'_>>>(&[]);

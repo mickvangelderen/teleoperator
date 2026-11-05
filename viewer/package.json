@@ -12,8 +12,9 @@
     "dev": "pnpm generate && vite --host 127.0.0.1",
     "build": "pnpm generate && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "pnpm generate && tsx --test tests/protocol.test.ts",
-    "test:browser": "node tests/browser.mjs"
+    "test": "pnpm generate && tsx --test tests/*.test.ts",
+    "test:browser": "node tests/browser.mjs",
+    "test:tracking": "node tests/tracking.mjs"
   },
   "dependencies": {
     "flatbuffers": "25.9.23"

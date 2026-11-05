@@ -1,0 +1,96 @@
+import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { chromium } from "playwright-core";
+
+// Run against Vite dev and the explicit --synthetic-tracking server.
+const url = process.env.VIEWER_URL || "http://127.0.0.1:5174";
+const output = new URL("../../.artifacts/tracking/", import.meta.url);
+await mkdir(output, { recursive: true });
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE, headless: true });
+const errors = [];
+async function client(rate) {
+  const page = await browser.newPage();
+  page.on("pageerror", error => errors.push(error.message));
+  await page.route("**/__tracking_test", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Tracking transport test</title>" }));
+  await page.goto(url + "/__tracking_test");
+  await page.evaluate(async rate => {
+    const { Connection } = await import("/src/connection.ts");
+    window.client = new Connection(() => {});
+    await window.client.connect();
+    window.client.setConsumerRate(rate);
+  }, rate);
+  await page.waitForFunction(() => window.client.state.sample !== null);
+  assert.equal(await page.evaluate(() => window.client.state.source), "synthetic");
+  return page;
+}
+async function snapshot(page) {
+  return page.evaluate(() => {
+    const { statistics: s, stream } = window.client.state;
+    return { at: performance.now(), stream: String(stream.streamId), subscription: String(stream.subscriptionId), received: Number(s.messages.unique), missing: Number(s.messages.missing), reordered: Number(s.messages.reordered), duplicates: Number(s.messages.duplicates), sampleGaps: Number(s.samples.missing), coalesced: s.consumer.coalesced, consumed: s.consumer.consumed, discarded: s.discarded, ageMs: s.age, pending: s.consumer.pending ? 1 : 0 };
+  });
+}
+function delta(before, after) {
+  const elapsed = (after.at - before.at) / 1000;
+  return { seconds: elapsed, messages: after.received - before.received, messagesPerSecond: (after.received - before.received) / elapsed, missing: after.missing - before.missing, coalesced: after.coalesced - before.coalesced, consumed: after.consumed - before.consumed, ageMs: after.ageMs, discarded: after.discarded - before.discarded };
+}
+try {
+  const fast = await client(60), slow = await client(5);
+  const start = await Promise.all([snapshot(fast), snapshot(slow)]);
+  assert.equal(start[0].subscription, start[1].subscription, "Identical requests share acquisition");
+  await new Promise(r => setTimeout(r, 10_000));
+  const end = await Promise.all([snapshot(fast), snapshot(slow)]);
+  const baseline = { fast: delta(start[0], end[0]), slow: delta(start[1], end[1]) };
+  assert.ok(baseline.fast.messagesPerSecond > 80 && baseline.slow.messagesPerSecond > 80);
+  assert.ok(baseline.slow.coalesced > 800 && baseline.slow.consumed <= 55);
+  assert.equal(baseline.fast.discarded, 0); assert.equal(baseline.slow.discarded, 0);
+
+  const blockedStart = await Promise.all([snapshot(fast), snapshot(slow)]);
+  // Browser SCTP still ACKs while JS is blocked: this exercises callback backlog, not network loss.
+  await slow.evaluate(() => { const until = performance.now() + 2000; while (performance.now() < until) {} });
+  await new Promise(r => setTimeout(r, 1000));
+  const blockedEnd = await Promise.all([snapshot(fast), snapshot(slow)]);
+  const blocked = { fast: delta(blockedStart[0], blockedEnd[0]), slow: delta(blockedStart[1], blockedEnd[1]) };
+  assert.ok(blocked.fast.messagesPerSecond > 80);
+  assert.ok(blockedEnd[1].pending <= 1 && blockedEnd[1].ageMs < 500);
+
+  await slow.evaluate(() => window.client.setPublication(10, 8));
+  await slow.waitForFunction(() => window.client.state.stream.rate === 10);
+  const limitedStart = await snapshot(slow);
+  await new Promise(r => setTimeout(r, 3000));
+  const limitedEnd = await snapshot(slow);
+  const limited = delta(limitedStart, limitedEnd);
+  assert.ok(limited.messagesPerSecond > 8 && limited.messagesPerSecond < 12);
+  assert.equal(limitedStart.subscription, limitedEnd.subscription, "Publication changes retain acquisition identity");
+
+  // Deterministic receiver injection verifies metrics; this is explicitly not measured network loss.
+  await fast.evaluate(() => {
+    const channel = window.client.tracking, receive = channel.onmessage;
+    window.injected = 0; let n = 0;
+    channel.onmessage = event => {
+      const data = new DataView(event.data), root = data.getUint32(0, true), vt = root - data.getInt32(root, true), field = data.getUint16(vt + 4, true);
+      if (data.getUint8(root + field) === 14 && ++n % 10 === 0) { window.injected++; return; }
+      receive(event);
+    };
+  });
+  const injectedStart = await snapshot(fast);
+  await new Promise(r => setTimeout(r, 3000));
+  const injectedEnd = await snapshot(fast);
+  const injected = await fast.evaluate(() => window.injected);
+  assert.ok(injectedEnd.missing - injectedStart.missing >= injected - 1);
+
+  const ui = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
+  ui.on("pageerror", error => errors.push(error.message));
+  await ui.goto(url); await ui.getByRole("button", { name: "Connect" }).click();
+  await ui.waitForFunction(() => document.querySelector("#poses").childElementCount === 5);
+  await ui.screenshot({ path: new URL("viewer.png", output).pathname, fullPage: true });
+  await ui.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await ui.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await ui.screenshot({ path: new URL("mobile.png", output).pathname, fullPage: true });
+  await fast.evaluate(() => window.client.close()); await slow.evaluate(() => window.client.close());
+  await ui.getByRole("button", { name: "Disconnect" }).click();
+  const sender = await ui.evaluate(async () => (await fetch("/api/stats")).json());
+  const report = { source: "synthetic", transport: "real local WebRTC, unordered, maxRetransmits=0", measuredAt: new Date().toISOString(), baseline, blocked, limited, receiverInjection: { droppedByTest: injected, additionalMissing: injectedEnd.missing - injectedStart.missing }, sender };
+  await writeFile(new URL("measurements.json", output), JSON.stringify(report, null, 2) + "\n");
+  assert.deepEqual(errors, []);
+  console.log(JSON.stringify(report, null, 2));
+} finally { await browser.close(); }

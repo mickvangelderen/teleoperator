@@ -4,13 +4,16 @@ Rust Android application for Meta Quest 3. The roadmap is in [IDEA.md](../IDEA.m
 
 The application is built as an ARM64 shared library and packaged with
 `cargo-apk`. It runs an HTTP signaling endpoint on **port 8080** and a WebRTC
-data-channel server alongside the Android lifecycle loop. It opens an empty
-Android panel. OpenXR, passthrough, and tracking acquisition are not implemented.
+data-channel server alongside an immersive OpenXR session with passthrough.
+Head and left/right controller grip and aim poses are acquired at 100 Hz in Local
+space. Each sample retains independent position/orientation validity, tracking,
+and controller activity flags. Unavailable tracking is never replaced with fake
+headset data. Controller inputs and body samples are not implemented yet.
 
-The implemented protocol is `ClientHello` / `ServerHello`, an empty
-`Capabilities` snapshot, and `ClockProbe` / `ClockReply`. Unsupported stream
-requests receive `RequestRejected`. The [Viewer](../viewer/README.md) displays
-this real state and does not substitute sample tracking data.
+The protocol implements hello, capability discovery, clock probes, pose subscribe,
+replacement, publication changes, and unsubscribe. Identical acquisition requests
+share a subscription; publication is independent per client. See
+[tracking validation](TRACKING.md) for the supported settings and test results.
 
 ## Build
 
@@ -31,6 +34,7 @@ installation, then build:
 ```sh
 export ANDROID_HOME="$HOME/Android/Sdk"
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
+python3 prepare-loader.py
 cargo apk build --lib
 ```
 
@@ -75,18 +79,23 @@ The same server runs on the host, without Android or hardware:
 
 ```sh
 cargo run
+# Explicit synthetic poses over the same protocol and publisher:
+cargo run -- --synthetic-tracking
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
 It binds `127.0.0.1:8080` by default. Override with `XR_OPERATOR_BIND=IP:PORT`
 when needed. Ctrl+C closes the listener and peers. The Quest binds `0.0.0.0:8080`
-and closes networking when the activity is destroyed. Pausing the Android panel
-does not itself shut down networking.
+and closes networking when the activity is destroyed. Pausing the XR session does not shut down networking. Samples become invalid or
+inactive while the runtime is unavailable. Resume invalidates clock mapping and
+starts another Local reference-space version.
 
 ## Transport
 
-- `GET /health` reports service availability, separately from protocol negotiation.
+- `GET /health` reports source provenance and tracking availability.
+- `GET /stats` reports accepted sends, backpressure skips, send errors, bytes, and
+  peak buffered bytes for the latest 64 streams. Counters are decimal strings.
 - `POST /offer` takes JSON `{ "type": "offer", "sdp": "..." }` and returns an
   answer with gathered host ICE candidates. Both endpoints gather completely;
   there is no trickle endpoint. Requests and protocol packets are limited to 64 KiB.

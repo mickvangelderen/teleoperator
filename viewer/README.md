@@ -3,8 +3,9 @@
 Read-only TypeScript interface for XR Operator. It displays the live hello
 exchange, full-width session identity, advertised capabilities, channel state,
 clock-probe round-trip time, message sizes, and decoded payloads. The spatial
-workspace stays empty until tracking acquisition and its receiver are implemented.
-There is no demo-data mode.
+workspace renders head and controller poses, their validity/activity, and per-stream
+statistics. An explicit desktop synthetic source is labeled in the Viewer; the
+Viewer never invents poses when the headset is unavailable.
 
 The frontend uses pnpm, TypeScript, Vite, the generated FlatBuffers types, and
 native browser WebRTC. The neighboring OpenArm projects informed the small
@@ -72,5 +73,32 @@ Received buffers are bounds-checked before field access; generated TypeScript
 accessors alone are not used as a verifier. Tracking packets before negotiation
 or malformed tracking replies are discarded. Invalid control fails the connection.
 All 64-bit fields stay `bigint`; the inspector renders them as decimal strings.
-RTT subtracts server processing time from the local round trip. It is not one-way
-latency or a calibrated mapping of server time to browser time.
+RTT subtracts server processing time from the local round trip. The lowest-RTT
+probe estimates a clock offset for the displayed sample age; this is approximate,
+not a calibrated one-way latency measurement. Resume clears the estimate.
+
+## Tracking and slow-consumer test
+
+The Viewer automatically subscribes to advertised pose sources. Publication rate
+(100/30/10 Hz), history (1/4/8), and consumption rate (60/30/5 Hz) are independent.
+Only the latest pending sample reaches the visualizer. The receive path records
+sequence gaps, reordered/duplicate messages, sample coverage, and discarded
+packets. Missing-message counts are provisional until late arrivals fill gaps;
+packets older than a bounded 4,096-message reorder window count as too late.
+Sample gaps include samples omitted by a lower publication rate. Viewer coalescing
+is deliberate replacement of pending updates and is not transport loss.
+
+Run `cargo run --manifest-path operator/Cargo.toml -- --synthetic-tracking`
+from the repository root, then `pnpm dev --port 5174` from `viewer/`. In another
+terminal in `viewer/`:
+
+```sh
+VIEWER_URL=http://127.0.0.1:5174 CHROMIUM_EXECUTABLE=/path/to/chrome pnpm test:tracking
+```
+
+This behavioral test uses the actual Connection receiver through Vite and a real
+WebRTC server. It compares concurrent fast/slow consumers, blocks one JS thread,
+changes publication/history without changing acquisition, injects explicitly
+labeled receiver drops, checks the desktop/mobile UI, and writes JSON measurements
+and screenshots to `.artifacts/tracking/`. It requires the explicit synthetic
+server; it does not claim to exercise headset tracking or Wi-Fi loss.

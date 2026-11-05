@@ -11,6 +11,12 @@ import { ClockReply } from "../src/generated/xr-operator/wire/clock-reply";
 import { Capabilities } from "../src/generated/xr-operator/wire/capabilities";
 import { Limits } from "../src/generated/xr-operator/wire/limits";
 import { PublicationSettings } from "../src/generated/xr-operator/wire/publication-settings";
+import { PoseValue } from "../src/generated/xr-operator/wire/pose-value";
+import { PoseSample } from "../src/generated/xr-operator/wire/pose-sample";
+import { PoseSamples } from "../src/generated/xr-operator/wire/pose-samples";
+import { Tracking } from "../src/generated/xr-operator/wire/tracking";
+import { JointPose } from "../src/generated/xr-operator/wire/joint-pose";
+import { Samples } from "../src/generated/xr-operator/wire/samples";
 
 function finish(b: Builder, kind: Message, value: number) {
   Packet.finishPacketBuffer(b, Packet.createPacket(b, kind, value));
@@ -117,4 +123,34 @@ test("clock replies support zero and signed nanoseconds", () => {
     sentAt: 17n,
   });
   assert.throws(() => decode(packet, "control"));
+});
+
+test("tracking validates nested histories and preserves pose validity and optional timestamps", () => {
+  function tracking(numbers = [9007199254740993n, 9007199254740994n], flags = 15, x = 0, version = 1) {
+    const b = new Builder(512);
+    const samples = numbers.map(number => {
+      PoseValue.startPoseValue(b);
+      PoseValue.addLocation(b, JointPose.createJointPose(b, x, 1.6, 0, 0, 0, 0, 1, flags));
+      PoseValue.addIsActive(b, false);
+      const pose = PoseValue.endPoseValue(b);
+      const poses = PoseSample.createPosesVector(b, [pose]);
+      return PoseSample.createPoseSample(b, number, 0n, 0n, version, poses);
+    });
+    const history = PoseSamples.createPoseSamples(b, PoseSamples.createSamplesVector(b, samples));
+    const tracking = Tracking.createTracking(b, 1n, 2n, 3n, Samples.PoseSamples, history);
+    return finish(b, Message.Tracking, tracking);
+  }
+  const data = tracking(), result = decode(data, "tracking");
+  assert.equal(result.kind, "Tracking");
+  if (result.kind !== "Tracking") throw new Error("Expected tracking");
+  assert.equal(result.samples[0].number, 9007199254740993n);
+  assert.equal(result.samples[0].targetAt, 0n);
+  assert.equal(result.samples[0].poses[0].active, false);
+  for (let end = 0; end < data.length; end++) assert.throws(() => decode(data.subarray(0, end), "tracking"));
+  assert.throws(() => decode(data, "control"));
+  assert.throws(() => decode(tracking([1n, 3n]), "tracking"));
+  assert.throws(() => decode(tracking([], 0), "tracking"));
+  assert.throws(() => decode(tracking([1n], 15, NaN), "tracking"));
+  assert.throws(() => decode(tracking([1n], 15, 0, 0), "tracking"));
+  assert.doesNotThrow(() => decode(tracking([1n], 0, NaN), "tracking"));
 });

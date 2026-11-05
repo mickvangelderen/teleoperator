@@ -840,3 +840,17 @@ label,
 .section-label {
   font-size: 10px;
 }
+/* Tracking is rendered at the selected consumer rate; the receive path stays independent. */
+#poses { position: absolute; inset: 0; width: 100%; height: 100%; font: 12px monospace; }
+#empty-state[hidden] { display: none; }
+.tracking-stats { margin: 24px 0; }
+.tracking-controls { display: flex; flex-wrap: wrap; gap: 24px; padding: 20px 24px; align-items: center; }
+.tracking-controls label { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.tracking-controls select, #inspect-sample { padding: 8px 10px; border: 1px solid #c4d1c7; border-radius: 6px; background: #fff; color: #293c31; }
+.tracking-numbers { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; padding: 0 24px; }
+.tracking-numbers dt { font-size: 11px; color: #53675b; }
+.tracking-numbers dd { margin: 8px 0; font: 20px monospace; }
+.statistics-note { margin: 16px 24px; font-size: 12px; color: #53675b; line-height: 1.6; }
+.pose-values { display: grid; gap: 8px; margin: 20px 24px; font: 11px monospace; color: #53675b; }
+@media (max-width: 850px) { .tracking-numbers { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 480px) { .tracking-numbers { grid-template-columns: repeat(2, 1fr); } .tracking-controls { gap: 12px; } }
