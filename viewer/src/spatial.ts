@@ -1,68 +1,184 @@
-import type { Pose, Sample, Skeleton } from "./protocol";
+import {
+  ACESFilmicToneMapping, AxesHelper, BufferGeometry, Color, Float32BufferAttribute,
+  GridHelper, Group, HemisphereLight, Line, LineBasicMaterial, LineSegments,
+  Mesh, MeshStandardMaterial, PerspectiveCamera, PMREMGenerator, Scene,
+  SphereGeometry, Vector3, WebGLRenderer,
+} from "three";
+import type { Material, Object3D } from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
+import { BodyModel } from "./body-model";
+import type { Sample, Skeleton } from "./protocol";
 
-const ns = "http://www.w3.org/2000/svg";
-let yaw = Math.PI / 6;
-let scale = 190;
-export function setView(view: string, zoom: number) {
-  yaw = view === "front" ? 0 : view === "side" ? Math.PI / 2 : Math.PI / 6;
-  scale = 190 * zoom;
-}
-const project = ([x, y, z]: number[]) => {
-  const horizontal = x * Math.cos(yaw) - z * Math.sin(yaw);
-  const depth = x * Math.sin(yaw) + z * Math.cos(yaw);
-  return [450 + horizontal * scale, 380 - y * scale + depth * scale * 0.3];
-};
-function transform(v: number[], pose: Pose) {
-  const [x, y, z, w] = pose.orientation, [a, b, c] = v;
-  const tx = 2 * (y * c - z * b), ty = 2 * (z * a - x * c), tz = 2 * (x * b - y * a);
-  return [a + w * tx + y * tz - z * ty, b + w * ty + z * tx - x * tz, c + w * tz + x * ty - y * tx].map((n, i) => n + pose.position[i]);
-}
-function line(parent: SVGElement, a: number[], b: number[], color: string, width = 1.5) {
-  const [x, y] = project(a), [ex, ey] = project(b);
-  const element = document.createElementNS(ns, "line");
-  for (const [key, value] of Object.entries({x1: x, y1: y, x2: ex, y2: ey, stroke: color, "stroke-width": width})) element.setAttribute(key, String(value));
-  parent.append(element);
-}
-function marker(parent: SVGElement, position: number[], color: string, radius: number) {
-  const [x, y] = project(position), circle = document.createElementNS(ns, "circle");
-  circle.setAttribute("cx", String(x)); circle.setAttribute("cy", String(y)); circle.setAttribute("r", String(radius)); circle.setAttribute("fill", color); parent.append(circle);
-}
-export function drawPoses(svg: SVGSVGElement, sample: Sample | null, sources: string[], stale: boolean, body: Sample | null = null, skeleton?: Skeleton, bodyStale = false) {
-  svg.replaceChildren();
-  const grid = document.createElementNS(ns, "g"); grid.setAttribute("opacity", "0.35");
-  for (let i = -8; i <= 8; i++) { line(grid, [i / 4, 0, -2], [i / 4, 0, 2], "#b8c8bd", 0.7); line(grid, [-2, 0, i / 4], [2, 0, i / 4], "#b8c8bd", 0.7); }
-  svg.append(grid);
-  line(svg, [0, 0, 0], [0.5, 0, 0], "#b65c54"); line(svg, [0, 0, 0], [0, 0.5, 0], "#3b8b62"); line(svg, [0, 0, 0], [0, 0, -0.5], "#476cac");
-  if (body?.body?.active && skeleton) {
-    const g = document.createElementNS(ns, "g"); g.setAttribute("data-body", "true"); g.setAttribute("opacity", bodyStale ? "0.2" : "0.7");
-    const indices = new Map(skeleton.joints.map((joint, i) => [joint.id, i]));
-    skeleton.joints.forEach((joint, i) => {
-      const pose = body.poses[i]; if (!(pose.flags & 2)) return;
-      const parent = indices.get(joint.parent), color = i < 18 ? "#567d70" : "#829d92";
-      if (parent !== undefined && (body.poses[parent].flags & 2)) line(g, pose.position, body.poses[parent].position, color, i < 18 ? 3 : 1.2);
-      marker(g, pose.position, color, i < 18 ? 3.2 : 1.6);
+export class SpatialView {
+  private renderer = new WebGLRenderer({ antialias: true });
+  private scene = new Scene();
+  private camera = new PerspectiveCamera(38, 1, 0.01, 100);
+  private controls: OrbitControls;
+  private observer: ResizeObserver;
+  private frame = 0;
+  private disposed = false;
+  private poses = new Map<string, { group: Group; shape: Group }>();
+  private body?: BodyModel;
+  private joints = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0x244e40, transparent: true, opacity: 0.75, depthTest: false }));
+  private jointPositions = new Float32BufferAttribute(new Float32Array(84 * 6), 3);
+  private latest: Parameters<SpatialView["update"]> = [null, [], true, null, undefined, true];
+  private environment?: ReturnType<PMREMGenerator["fromEquirectangular"]>;
+
+  constructor(private surface: HTMLElement, private status: (message: string) => void) {
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer.toneMapping = ACESFilmicToneMapping;
+    this.scene.background = new Color(0xf0f3ef);
+    this.surface.append(this.renderer.domElement);
+    this.renderer.domElement.setAttribute("aria-label", "3D view of received headset, controller and body tracking. Drag to orbit; scroll to zoom.");
+    this.renderer.domElement.setAttribute("role", "img");
+    this.renderer.domElement.tabIndex = 0;
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.minDistance = 0.2;
+    this.controls.maxDistance = 15;
+    this.controls.addEventListener("change", this.invalidate);
+    this.controls.listenToKeyEvents(this.renderer.domElement);
+    this.setView("iso", 1);
+    this.scene.add(new GridHelper(4, 16, 0xa2b4aa, 0xd5dfd7), new AxesHelper(0.35), new HemisphereLight(0xffffff, 0x89988c, 1));
+    this.joints.frustumCulled = false;
+    this.joints.visible = false;
+    this.joints.geometry.setAttribute("position", this.jointPositions);
+    this.joints.geometry.setDrawRange(0, 0);
+    this.scene.add(this.joints);
+    for (const name of ["head", "left/aim", "left/grip", "right/aim", "right/grip"]) {
+      const color = name.startsWith("left") ? 0xb45f2d : name.startsWith("right") ? 0x476cac : 0x286b4c;
+      const group = new Group(), shape = new Group();
+      const marker = new Mesh(new SphereGeometry(0.008, 8, 6), new MeshStandardMaterial({ color }));
+      group.add(shape, marker);
+      if (name.endsWith("aim")) shape.add(new Line(new BufferGeometry().setFromPoints([new Vector3(), new Vector3(0, 0, -0.35)]), new LineBasicMaterial({ color })));
+      else shape.add(new AxesHelper(name === "head" ? 0.12 : 0.07));
+      group.visible = false;
+      this.poses.set(name, { group, shape });
+      this.scene.add(group);
+    }
+    this.observer = new ResizeObserver(() => {
+      const { clientWidth: width, clientHeight: height } = surface;
+      if (!width || !height) return;
+      this.camera.aspect = width / height;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setSize(width, height, false);
+      this.invalidate();
     });
-    svg.append(g);
+    this.observer.observe(surface);
+    document.addEventListener("visibilitychange", this.invalidate);
+    this.renderer.domElement.addEventListener("webglcontextlost", event => { event.preventDefault(); status("3D context lost. Reload to restore the view."); });
+    void this.load();
   }
-  sample?.poses.forEach((pose, i) => {
-    if (!(pose.flags & 2) || pose.active === false) return;
-    const name = sources[i], aim = name.endsWith("aim"), color = name.startsWith("left") ? "#b45f2d" : name.startsWith("right") ? "#476cac" : "#286b4c";
-    const g = document.createElementNS(ns, "g"); g.setAttribute("data-pose", name);
-    g.setAttribute("opacity", stale ? "0.25" : pose.flags & 8 ? "1" : "0.45");
-    marker(g, pose.position, color, aim ? 2 : 4);
-    if (pose.flags & 1) {
-      line(g, pose.position, transform([0, 0, aim ? -0.45 : -0.22], pose), color, aim ? 1.2 : 2.5);
-      if (!aim) {
-        const [width, height, depth] = name === "head" ? [0.1, 0.06, 0.06] : [0.025, 0.07, 0.025];
-        const vertices = Array.from({length: 8}, (_, n) => transform([n & 1 ? width : -width, n & 2 ? height : -height, n & 4 ? depth : -depth], pose));
-        for (let n = 0; n < 8; n++) for (const bit of [1, 2, 4]) if (!(n & bit)) line(g, vertices[n], vertices[n | bit], color, 1.7);
-        line(g, pose.position, transform([0, 0.18, 0], pose), "#3b8b62", 1.5);
-      }
+
+  private async load() {
+    this.status("Loading Meta models…");
+    const loader = new GLTFLoader();
+    const loads = [
+      ...([ ["headset.glb", "head"], ["controller_left.glb", "left/aim"], ["controller_right.glb", "right/aim"] ] as const).map(async ([file, name]) => {
+        const { scene } = await loader.loadAsync(`/assets/meta/${file}`);
+        if (this.disposed) { dispose(scene); return; }
+        // Meta's hardware art faces +Z; OpenXR viewing/aim frames face -Z.
+        scene.rotation.y = Math.PI;
+        scene.traverse(object => { if (/batteryindicator/i.test(object.name)) object.visible = false; });
+        this.poses.get(name)!.shape.add(scene);
+      }),
+      loader.loadAsync("/assets/meta/body.glb").then(({ scene }) => {
+        if (this.disposed) { dispose(scene); return; }
+        this.body = new BodyModel(scene);
+        scene.visible = false;
+        this.scene.add(scene);
+      }),
+      new HDRLoader().loadAsync("/assets/environment/studio_small_09_1k.hdr").then(hdr => {
+        if (this.disposed) { hdr.dispose(); return; }
+        const pmrem = new PMREMGenerator(this.renderer);
+        this.environment = pmrem.fromEquirectangular(hdr);
+        this.scene.environment = this.environment.texture;
+        hdr.dispose(); pmrem.dispose();
+      }),
+    ];
+    const results = await Promise.allSettled(loads);
+    if (this.disposed) return;
+    const failed = results.filter(r => r.status === "rejected");
+    this.surface.dataset.assets = failed.length ? "error" : "ready";
+    this.status(failed.length ? "3D assets could not load. Reload to retry; tracking data remains available below." : "Meta models · drag to orbit · scroll to zoom");
+    this.update(...this.latest);
+  }
+
+  private invalidate = () => {
+    if (this.frame || this.disposed) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      if (!document.hidden) this.renderer.render(this.scene, this.camera);
+    });
+  };
+
+  setView(view: string, zoom: number) {
+    this.controls.target.set(0, 1.3, 0);
+    const direction = view === "front" ? [0, 0.15, -1] : view === "side" ? [1, 0.15, 0] : [0.8, 0.35, -1];
+    this.camera.position.copy(this.controls.target).add(new Vector3(...direction).normalize().multiplyScalar(2.4 / zoom));
+    this.controls.update();
+    this.invalidate();
+  }
+
+  showJoints(show: boolean) { this.joints.visible = show; this.invalidate(); }
+
+  update(sample: Sample | null, sources: string[], stale: boolean, body: Sample | null = null, skeleton?: Skeleton, bodyStale = true) {
+    this.latest = [sample, sources, stale, body, skeleton, bodyStale];
+    let count = 0;
+    for (const [name, object] of this.poses) {
+      const pose = sample?.poses[sources.indexOf(name)];
+      object.group.visible = !!pose && !!(pose.flags & 2) && pose.active !== false;
+      if (!pose || !object.group.visible) continue;
+      count++;
+      object.group.position.fromArray(pose.position);
+      object.shape.visible = !!(pose.flags & 1);
+      if (object.shape.visible) object.group.quaternion.fromArray(pose.orientation);
+      fade(object.group, stale ? 0.25 : pose.flags & 8 ? 1 : 0.45);
     }
-    if (!aim) {
-      const [x, y] = project(pose.position), label = document.createElementNS(ns, "text");
-      label.setAttribute("x", String(x + 12)); label.setAttribute("y", String(y - 18)); label.setAttribute("fill", color); label.textContent = name; g.append(label);
+    this.surface.dataset.poseCount = String(count);
+    this.body?.update(body, skeleton);
+    if (this.body) fade(this.body.root, bodyStale ? 0.25 : 1);
+    const lines: number[] = [];
+    if (body?.body?.active && skeleton) {
+      const ids = new Map(skeleton.joints.map((j, i) => [j.id, i]));
+      skeleton.joints.forEach((joint, i) => {
+        const parent = ids.get(joint.parent);
+        if (parent !== undefined && (body.poses[i].flags & 2) && (body.poses[parent].flags & 2)) lines.push(...body.poses[i].position, ...body.poses[parent].position);
+      });
     }
-    svg.append(g);
+    this.surface.dataset.bodyJoints = String(body?.body?.active ? body.poses.filter(p => (p.flags & 2) !== 0).length : 0);
+    this.jointPositions.array.set(lines);
+    this.jointPositions.needsUpdate = true;
+    this.joints.geometry.setDrawRange(0, lines.length / 3);
+    this.invalidate();
+  }
+
+  dispose() {
+    this.disposed = true;
+    cancelAnimationFrame(this.frame);
+    this.observer.disconnect(); this.controls.dispose();
+    document.removeEventListener("visibilitychange", this.invalidate);
+    this.environment?.dispose(); dispose(this.scene); this.renderer.dispose();
+  }
+}
+
+function materials(object: Object3D, visit: (material: Material) => void) {
+  object.traverse(child => {
+    const material = (child as Mesh).material;
+    if (material) for (const item of Array.isArray(material) ? material : [material]) visit(item);
+  });
+}
+function fade(object: Object3D, opacity: number) {
+  materials(object, material => {
+    if (material.transparent !== (opacity < 1)) material.needsUpdate = true;
+    material.opacity = opacity; material.transparent = opacity < 1; material.depthWrite = opacity === 1;
+  });
+}
+function dispose(object: Object3D) {
+  object.traverse(child => (child as Mesh).geometry?.dispose());
+  materials(object, material => {
+    for (const value of Object.values(material)) if (value?.isTexture) value.dispose();
+    material.dispose();
   });
 }

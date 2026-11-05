@@ -863,3 +863,9 @@ label,
 .pose-values { display: grid; gap: 8px; margin: 20px 24px; font: 11px monospace; color: #53675b; }
 @media (max-width: 850px) { .tracking-numbers { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 480px) { .tracking-numbers { grid-template-columns: repeat(2, 1fr); } .tracking-controls { gap: 12px; } }
+
+#poses canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#poses canvas:focus-visible { outline: 2px solid #286b4c; outline-offset: -3px; }
+.viewport-label, .viewport-footer, .empty-state { pointer-events: none; }
+#graphics-status { flex-basis: 100%; color: #63766c; }
+@media (min-width: 900px) { .viewport { height: 440px; } }

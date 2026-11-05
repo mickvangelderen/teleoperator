@@ -1,0 +1,13 @@
+{
+  "environment/studio_small_09_1k.hdr": "e7cfda5f4e98e623db12b8bfd0184e048488e4855d9c83e2751fb44a32e80c45",
+  "meta/ART_ATTRIBUTION_LICENSE.txt": "c30d98037ec73fb9b7aa9930ac65b056b7e986903991e4e85eb2098e32917d6f",
+  "meta/EMULATOR-LICENSE.txt": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+  "meta/MOVEMENT-LICENSE.txt": "744654513f128b999cea52b2610c5b5b98169efb05cb5769330188ab732c87d8",
+  "meta/body.glb": "f03d0fe40b9a95638bf5966b5463135bacd6f8eb612586cd40204dbfd950de35",
+  "meta/controller_battery_albedo.png": "ac24e0bcd775333b6e788ab0fd6f848aad5fd0b4bb53881170e9a10072d1a493",
+  "meta/controller_left.glb": "6ca67ed0fd0a472b6e6aea94eaff68deb9a6f0738092a47c9ed67dc724905d32",
+  "meta/controller_left_albedo.png": "94503df522002c65fcf3e24595adfa498857beea40255627894d40fdc139e071",
+  "meta/controller_right.glb": "e52d342f3bd614007e82ef2a471552b61662c7d0062d03a437333611e0886996",
+  "meta/controller_right_albedo.png": "a565866f3f38e2dc8c96e6771455ffb7093df4d82d494f99d4308073997f573d",
+  "meta/headset.glb": "2d6b5fe37a97f373cc5d9417931b5c09b7b0883f1ab8a6412d1f7926cdb7bbf0"
+}

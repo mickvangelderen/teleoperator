@@ -86,6 +86,20 @@ metadata versions whose contents change.
 All original core implementation steps now have code and local validation.
 Remaining qualification is on the Quest: passthrough appearance, actual controller
 bindings, permission UI, body activation, skeleton coordinates, recenter/resume,
-and real network loss/latency. The Viewer uses wireframe guides; no Meta model
-assets have been imported. Optional protocol settings are listed in the Operator
+and real network loss/latency. The Viewer now uses Meta hardware and Movement meshes with a Three.js
+renderer; its source/license manifest and rendering checks are in the Viewer README. Optional protocol settings are listed in the Operator
 README and are rejected when unavailable rather than silently substituted. `IDEA.md` remains the project scope and has not been modified.
+
+## Meta assets and WebGL checkpoint
+
+The Viewer now uses Three.js 0.186.1 with Meta hardware and body meshes, following
+OpenArm Teleop’s rendering technology. The browser checks cover model loading,
+orbit controls, desktop/mobile sizing and missing-asset handling. A unit test loads
+the actual body GLB and verifies first-frame rigid motion, repeated samples and
+invalid-data visibility. Twelve Viewer unit tests and the production build pass.
+
+The 17:11 UTC local transport rerun with the WebGL Viewer also passed: both
+receivers measured about 100 messages/sec with zero observed sequence gaps. This
+remains synthetic acquisition, not Quest or Wi-Fi qualification. The synthetic
+head/controller fixtures move independently of the body fixture, so their meshes
+do not represent a single person wearing and holding the devices.

@@ -137,7 +137,7 @@ targeting, the default 70-joint body set (upper body and hands), and the runtime
 default fidelity preference. Full 84-joint tracking, selectable fidelity, velocity
 channels, application hysteresis and Touch Plus extras are not advertised. Consumers
 can choose 1–100 Hz publication and 1–8 historical samples independently for each
-stream. The spatial Viewer uses wireframe guides and received joint geometry.
+stream. The spatial Viewer uses attributed Meta models and an optional received-joint overlay.
 
 Runtime target, returned-body and input-change timestamps are currently absent,
 not raw `XrTime` values mislabeled as server time. Acquisition timestamps and clock

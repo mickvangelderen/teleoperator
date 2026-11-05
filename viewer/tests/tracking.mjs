@@ -111,7 +111,7 @@ try {
   const ui = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
   ui.on("pageerror", error => errors.push(error.message));
   await ui.goto(url); await ui.getByRole("button", { name: "Connect" }).click();
-  await ui.waitForFunction(() => document.querySelectorAll("#poses [data-pose]").length === 5 && document.querySelectorAll("#poses [data-body]").length === 1);
+  await ui.waitForFunction(() => document.querySelector("#poses").dataset.poseCount === "5" && document.querySelector("#poses").dataset.bodyJoints === "70" && document.querySelector("#poses").dataset.assets === "ready");
   await ui.waitForFunction(() => parseFloat(document.querySelector("#tracking-rate").textContent) > 50);
   await ui.screenshot({ path: new URL("viewer.png", output).pathname, fullPage: true });
   await ui.screenshot({ path: new URL("overview.png", output).pathname });

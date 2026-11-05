@@ -23,6 +23,14 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(url);
+  await page.waitForFunction(() => document.querySelector("#poses").dataset.assets === "ready");
+  assert.equal(await page.locator("#poses canvas").count(), 1);
+  const beforeOrbit = await page.locator("#poses").screenshot();
+  const box = await page.locator("#poses canvas").boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down(); await page.mouse.move(box.x + box.width / 2 + 100, box.y + box.height / 2 + 30, { steps: 8 }); await page.mouse.up();
+  assert.notDeepEqual(await page.locator("#poses").screenshot(), beforeOrbit, "Orbit must change the rendered view");
+  await page.locator("#view-angle").selectOption("front");
   assert.equal(await page.locator("#status").textContent(), "Disconnected");
   await page.screenshot({ path: output + "disconnected.png", fullPage: true });
   await page.getByRole("button", { name: "Connect" }).click();
@@ -122,9 +130,14 @@ try {
     await page.locator("#session-id").textContent(),
     "No session established",
   );
+  await page.route("**/assets/meta/headset.glb", route => route.fulfill({ status: 404, body: "Missing asset" }));
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector("#poses").dataset.assets === "error");
+  assert.match(await page.locator("#graphics-status").textContent(), /could not load/);
+  assert.equal(await page.getByRole("button", { name: "Connect" }).isEnabled(), true);
   assert.deepEqual(errors, []);
   console.log(
-    `PASS: live hello, discovery, clock replies, reconnect, mobile layout and signaling failure. Captures: ${output}`,
+    `PASS: live hello, discovery, clock replies, reconnect, WebGL models/orbit, mobile layout, signaling and asset failures. Captures: ${output}`,
   );
 } finally {
   await browser.close();

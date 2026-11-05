@@ -2,7 +2,7 @@ import { Connection, initialState, initialStatistics } from "./connection";
 import type { Entry, State } from "./connection";
 import { json } from "./protocol";
 import "./style.css";
-import { drawPoses, setView } from "./spatial";
+import type { SpatialView } from "./spatial";
 
 declare const __OPERATOR_TARGET__: string;
 
@@ -36,8 +36,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <div class="workspace-layout">
       <section class="panel workspace">
         <div class="panel-header"><h2><span class="panel-symbol">⌘</span> Tracking workspace</h2><span id="stream-count" class="tag">0 active streams</span></div>
-        <div class="viewport"><svg id="poses" viewBox="0 0 900 480" role="img" aria-label="Received head and controller poses"></svg><div class="viewport-label"><span class="mini-dot"></span> <span id="data-source">SPATIAL VIEW</span></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Your workspace is ready</h3><p id="workspace-note">Connect to discover the device’s tracking sources.</p></div><div class="viewport-footer"><span>+X right &nbsp; +Y up &nbsp; −Z forward</span><span>METRES · RIGHT-HANDED</span></div></div>
-        <div class="view-controls"><label>View <select id="view-angle"><option value="iso">Isometric</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><span id="body-quality">Body tracking unavailable</span></div><div class="sources" aria-label="Tracking capabilities">${(["head", "controller", "body"] as const).map((type, index) => `<div class="source">${icon(type)}<div><strong>${["Head & poses", "Controller inputs", "Body tracking"][index]}</strong><span class="source-state">Awaiting discovery</span></div><span class="source-dash">—</span></div>`).join("")}</div>
+        <div class="viewport"><div id="poses"></div><div class="viewport-label"><span class="mini-dot"></span> <span id="data-source">SPATIAL VIEW</span></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Your workspace is ready</h3><p id="workspace-note">Connect to discover the device’s tracking sources.</p></div><div class="viewport-footer"><span>+X right &nbsp; +Y up &nbsp; −Z forward</span><span>METRES · RIGHT-HANDED</span></div></div>
+        <div class="view-controls"><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label><input id="show-joints" type="checkbox"> Joint overlay</label><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" role="status">Loading 3D view…</span></div><div class="sources" aria-label="Tracking capabilities">${(["head", "controller", "body"] as const).map((type, index) => `<div class="source">${icon(type)}<div><strong>${["Head & poses", "Controller inputs", "Body tracking"][index]}</strong><span class="source-state">Awaiting discovery</span></div><span class="source-dash">—</span></div>`).join("")}</div>
       </section>
       <aside class="panel session">
         <div class="panel-header"><h2>Session details</h2><span id="hello-badge" class="tag">Awaiting hello</span></div>
@@ -71,6 +71,11 @@ let selected: Entry | null = null;
 let lastRtt: number | null = null;
 const rtts: number[] = [];
 let messageSignature = "";
+let spatial: SpatialView | undefined;
+void import("./spatial").then(({ SpatialView }) => {
+  spatial = new SpatialView(element("poses"), message => text("graphics-status", message));
+  render(current);
+}).catch(() => text("graphics-status", "WebGL is unavailable. Tracking data remains available below."));
 
 function updateMessages(state: State) {
   const showProbes = element<HTMLInputElement>("show-probes").checked;
@@ -201,7 +206,7 @@ function render(state: State) {
   element("empty-state").hidden = !!sample?.poses.some(p => (p.flags & 2) && p.active !== false) || !!bodyStream?.sample?.body?.active;
   const body = bodyStream?.sample?.body;
   const skeleton = body ? state.skeletons.get(`${bodyStream?.descriptor.skeleton?.id}:${body.skeletonVersion}`) : undefined;
-  drawPoses(document.querySelector<SVGSVGElement>("#poses")!, sample, stream?.sources ?? [], poseStream?.statistics.stale ?? true, bodyStream?.sample ?? null, skeleton, bodyStream?.statistics.stale ?? true);
+  spatial?.update(sample, stream?.sources ?? [], poseStream?.statistics.stale ?? true, bodyStream?.sample ?? null, skeleton, bodyStream?.statistics.stale ?? true);
   text("body-quality", body ? `${body.active ? "Body active" : "Body inactive"} · confidence ${body.confidence === null ? "unknown" : (body.confidence * 100).toFixed(0) + "%"} · ${body.fidelity === 2 ? "high" : body.fidelity === 1 ? "low" : "unknown"} fidelity · calibration ${["unknown", "valid", "calibrating", "invalid"][body.calibration ?? 0]}` : "Body tracking unavailable");
   const values = element("pose-values"); values.replaceChildren();
   sample?.poses.forEach((pose, i) => {
@@ -291,6 +296,9 @@ element("stream-kind").onchange = () => {
 };
 
 for (const id of ["view-angle", "view-zoom"]) element(id).oninput = () => {
-  setView(element<HTMLSelectElement>("view-angle").value, Number(element<HTMLInputElement>("view-zoom").value));
+  spatial?.setView(element<HTMLSelectElement>("view-angle").value, Number(element<HTMLInputElement>("view-zoom").value));
   render(current);
 };
+
+element("show-joints").onchange = () => spatial?.showJoints(element<HTMLInputElement>("show-joints").checked);
+if (import.meta.hot) import.meta.hot.dispose(() => { connection?.close(); spatial?.dispose(); });

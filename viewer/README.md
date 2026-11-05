@@ -10,9 +10,9 @@ Viewer never invents poses when the headset is unavailable.
 
 The frontend uses pnpm, TypeScript, Vite, the generated FlatBuffers types, and
 native browser WebRTC. The neighboring OpenArm projects informed the small
-bundle, lockfile, local proxy, and browser-test workflow; no code or assets were
-copied from them. No Python server, UI framework, or 3D dependency is needed for
-this milestone.
+bundle, lockfile, local proxy, and browser-test workflow; no application code was copied from them. The 3D view now follows OpenArm
+Teleop’s Three.js/WebGL, glTF, OrbitControls and HDR/PMREM rendering setup.
+The attributed controller art is reused; all rendering code here is new.
 
 ## Run
 
@@ -105,8 +105,27 @@ labeled receiver drops, checks the desktop/mobile UI, and writes JSON measuremen
 and screenshots to `.artifacts/tracking/`. It requires the explicit synthetic
 server; it does not claim to exercise headset tracking or Wi-Fi loss.
 
-The spatial view offers isometric/front/side projections and zoom. It draws received
-body joint geometry and pose wireframes, hides invalid positions/inactive sources,
-and fades stale state. Body quality reports activity, confidence, actual fidelity
-and calibration independently. The default body set includes upper body and hands;
-it does not contain leg joints. This is a diagnostic view, not an avatar renderer.
+The spatial view renders Meta headset, Touch Plus controller and Movement body
+assets using Three.js/WebGL. Drag to orbit, right-drag to pan, scroll/pinch to zoom,
+or select perspective/front/side views. Keyboard arrows pan when the canvas is
+focused. A joint overlay shows the received skeleton independently of the mesh.
+Assets and studio HDR lighting load locally, with no runtime CDN dependency.
+The 3D module loads separately from the connection UI and renders on changes.
+Missing assets or unavailable WebGL leave transport controls and numeric data usable.
+
+Controller models follow the aim frames; colored markers/axes expose the separate
+grip frames. The headset is Meta’s simplified emulator asset, not a calibrated
+Quest 3 enclosure. The body model is an upper-body adaptation of Meta’s Movement
+sample with a neutral material. Runtime rest geometry aligns its authored A-pose;
+received position and orientation deltas animate the rig. The default 70-joint
+stream has no legs, so leg geometry is removed. Invalid/inactive data is hidden
+and stale state fades. Mesh dimensions and retargeting are visualization aids;
+use the joint overlay and numerical poses when checking physical alignment.
+Headset origin, controller alignment and body retargeting still need Quest validation.
+
+Asset sources, licenses, exact revisions and conversion details are in
+[`public/assets/SOURCES.md`](public/assets/SOURCES.md). `pnpm build:body` regenerates
+the body GLB from checksum-verified upstream assets; it is not required for normal
+builds. Unit tests load the actual GLB and check first-frame rigid motion, repeated
+samples and invalid tracking. Browser checks exercise WebGL loading, orbit, resize,
+asset failure, real tracking transport and disconnect behavior.
