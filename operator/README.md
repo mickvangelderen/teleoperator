@@ -48,9 +48,14 @@ Build, install, and launch:
 The script defaults to the SDK paths above when `ANDROID_HOME` or
 `ANDROID_NDK_HOME` is unset, preserving any existing values.
 
-The script updates the installed app while preserving its data. If multiple
-devices are connected, select the Quest with
-`ANDROID_SERIAL=YOUR_QUEST_SERIAL ./deploy.sh`.
+The script updates the installed app while preserving its data. It prefers USB;
+otherwise, it discovers and connects to modern wireless ADB through mDNS.
+To select a device explicitly, use `ANDROID_SERIAL=YOUR_QUEST_SERIAL ./deploy.sh`.
+Deploy over USB once to enable wireless debugging, accepting the headset's
+network authorization prompt if shown. Subsequent deployments can use Wi-Fi.
+
+The script overrides proximity detection to treat the headset as worn and wakes
+it, keeping it active off-head. This also keeps the display awake.
 
 To stream the app's logs:
 
