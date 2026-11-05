@@ -119,8 +119,8 @@ defined joint vocabulary; names for the 70- and 84-joint sets remain to be agree
 `Subscribe` creates a stream when `stream_id = 0`; otherwise it replaces that
 stream's entire acquisition request. Sources/inputs are explicitly selected.
 `Required` and `Optional` express support requirements; `Omit` is invalid for a
-listed source/input but valid for optional output features. Empty controller
-and pose selections are invalid, including after resolving optional selections.
+listed source/input but valid for velocities. Empty controller and pose
+selections are invalid, including after resolving optional selections.
 Required support does not imply current activity.
 
 The settings union is reused for requests and resolved configurations:
@@ -142,10 +142,10 @@ The settings union is reused for requests and resolved configurations:
   missing history length means 1. `UpdatePublication` follows the same replacement
   rule and cannot change acquisition.
 - Resolved descriptors have no unresolved acquisition fields. Selected inputs
-  and sources use `Required`; selected optional output features become `Required`
-  and unselected ones become `Omit`. Explicitly list unavailable optional choices
-  in `StreamAccepted.omissions`. Retain the client's original requirements at
-  the server for later capability-loss decisions.
+  and sources use `Required`; selected velocities become `Required` and unselected
+  velocities become `Omit`. Explicitly list unavailable optional choices in
+  `StreamAccepted.omissions`. Retain the client's original requirements at the
+  server for later capability-loss decisions.
 - Resolve controller selections in lexicographic `(source_id, input_id)` order
   and pose selections in lexicographic `source_id` order (UTF-8 bytes). Reject
   duplicates. Subscription sharing compares resolved settings and interpretation,
@@ -160,6 +160,12 @@ does not guarantee matching actual fidelity.
 `Default` is a request preference only; reported actual fidelity is `Low` or
 `High`. Unknown actual fidelity is absent. Calibration status maps the runtime's
 valid/calibrating/invalid states; unavailable status is absent.
+
+Body samples always include actual fidelity and calibration status when the
+runtime supplies them. Their support is advertised by `BodySource`, but their
+inclusion is not configurable. Availability changes do not alter acquisition
+configuration or require a subscription switch. The acquisition fidelity
+preference remains configurable.
 
 `StreamAccepted` acknowledges both subscribe and publication-update requests.
 It carries the complete descriptor, current publication settings, and omissions
@@ -187,7 +193,7 @@ The sample kind must match the associated descriptor's acquisition union.
 | --- | --- |
 | Controller | `values[i]` matches both resolved `inputs[i]` and descriptor `inputs[i]`; its value union must match `InputDefinition.value_type`. Every selected input is present, including inactive ones. Inactive Boolean counts remain meaningful; its current value and change time do not establish live input. |
 | Pose | `poses[i]` matches resolved `sources[i]` and descriptor `pose_sources[i]`. Position and orientation validity/tracking are independent bits. `is_active = null` means the source API provides no activity flag. Selected velocities have a `Velocity` table even when both validity flags are clear; unselected velocities omit it. |
-| Body | `joints[i]` matches `SkeletonDefinition.joints[i]` for the descriptor's skeleton ID and that sample's `skeleton_version`. All joint transforms are in the selected base space. Activity/confidence apply to the body; there are no per-joint confidence or velocity fields. Optional actual fidelity and calibration status are absent when unselected or unavailable in that sample. |
+| Body | `joints[i]` matches `SkeletonDefinition.joints[i]` for the descriptor's skeleton ID and that sample's `skeleton_version`. All joint transforms are in the selected base space. Activity/confidence apply to the body; there are no per-joint confidence or velocity fields. Actual fidelity and calibration status are included whenever available in that sample. |
 
 Each sample is complete and independent. A scalar field omitted by the
 FlatBuffers builder decodes to its schema default within that sample; it never

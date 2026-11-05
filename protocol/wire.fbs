@@ -130,8 +130,6 @@ table BodySettings {
   base_space_id:ulong = null;
   target_time:TargetTime;
   fidelity_preference:Fidelity = null;
-  actual_fidelity:Requirement = Omit;
-  calibration_status:Requirement = Omit;
 }
 
 union Acquisition {
@@ -232,8 +230,7 @@ table SubscriptionDescriptor {
 
 table Omission {
   source_id:string (required);
-  // Input ID, or "velocities", "actual_fidelity", "calibration_status",
-  // or "source" for an entirely omitted pose source.
+  // Input ID, "velocities", or "source" for an entirely omitted pose source.
   capability_id:string (required);
   reason:string (required);
 }
@@ -346,6 +343,7 @@ table BodySample {
   skeleton_version:uint;
   is_active:bool;
   confidence:float = null;
+  // Included whenever available, independently of client selection.
   actual_fidelity:Fidelity = null;
   calibration_status:CalibrationStatus = null;
   joints:[JointPose] (required);

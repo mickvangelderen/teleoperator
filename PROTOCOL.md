@@ -382,8 +382,12 @@ and [reference-space changes](https://registry.khronos.org/OpenXR/specs/1.1/man/
 
 Publish the selected joint set, joint positions/orientations, per-joint location
 flags, overall activity/confidence, returned tracking time, and skeleton version.
-Include actual fidelity and calibration status when their extensions are
-available. Joint poses are expressed in the selected base space, not implicitly
+Include actual fidelity and calibration status whenever the runtime supplies
+them; represent unavailable status as absent. Capability discovery reports
+support for these fields, but clients do not select or configure their inclusion.
+Their availability does not distinguish acquisition configurations or require a
+subscription switch. The requested fidelity preference remains an acquisition
+choice. Joint poses are expressed in the selected base space, not implicitly
 relative to parent joints.
 
 Acquisition choices, subject to runtime and extension support, include the
