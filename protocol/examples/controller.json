@@ -1,0 +1,57 @@
+{
+  "message_type": "Tracking",
+  "message": {
+    "stream_id": "1",
+    "subscription_id": "7",
+    "message_number": "13",
+    "history_type": "ControllerSamples",
+    "history": {
+      "samples": [
+        {
+          "sample_number": "41",
+          "acquired_at": "9876543210123456",
+          "values": [
+            {
+              "is_active": true,
+              "last_change_at": "9876543209000000",
+              "value_type": "BooleanValue",
+              "value": { "value": true, "press_count": "7", "release_count": "6" }
+            },
+            {
+              "is_active": true,
+              "value_type": "ScalarValue",
+              "value": { "value": 0.5 }
+            },
+            {
+              "is_active": true,
+              "value_type": "Vector2Value",
+              "value": { "value": { "x": 0, "y": 0 } }
+            }
+          ]
+        },
+        {
+          "sample_number": "42",
+          "acquired_at": "9876543220123456",
+          "values": [
+            {
+              "is_active": true,
+              "last_change_at": "9876543219000000",
+              "value_type": "BooleanValue",
+              "value": { "value": false, "press_count": "7", "release_count": "7" }
+            },
+            {
+              "is_active": true,
+              "value_type": "ScalarValue",
+              "value": { "value": 0 }
+            },
+            {
+              "is_active": false,
+              "value_type": "Vector2Value",
+              "value": { "value": { "x": 0, "y": 0 } }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
