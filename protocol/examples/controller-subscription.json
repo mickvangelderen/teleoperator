@@ -49,8 +49,7 @@
           "minimum": { "x": -1, "y": -1 },
           "maximum": { "x": 1, "y": 1 }
         }
-      ],
-      "coordinates": "RightHandedYUpNegativeZForward"
+      ]
     },
     "publication": { "send_rate_hz": 50, "history_length": 2 },
     "omissions": []

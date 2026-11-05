@@ -182,10 +182,10 @@ compatible underlying OpenXR resources.
 On acceptance, send the client stream identity, its subscription association, a
 complete shared subscription descriptor, and that client's publication settings.
 The descriptor contains the resolved acquisition configuration, selected data
-definitions, payload layout, units and coordinate conventions, and references
-to required versioned metadata. The clock domain is fixed by the protocol and
-is not included in the descriptor. Deliver the corresponding skeleton and
-reference-space definitions over control as well.
+definitions, payload layout, input units and ranges, and references to required
+versioned metadata. The clock domain and geometric coordinate conventions are
+fixed by the protocol and are not included in the descriptor. Deliver the
+corresponding skeleton and reference-space definitions over control as well.
 
 Control-channel ordering does not extend to tracking messages on another channel.
 A snapshot can arrive before its descriptor or required metadata, even if the
@@ -236,6 +236,20 @@ mappings. Bind receive callbacks to their original connection context; callbacks
 from a retired connection must not update the new connection's state.
 
 ## Tracking data
+
+### Coordinate conventions
+
+All geometric data uses right-handed coordinates: +X right, +Y up, and -Z
+forward. Positions use metres, linear velocities use metres per second, and
+angular velocities use radians per second. Quaternions use `(x, y, z, w)` order
+and rotate local coordinates into the named reference frame; valid orientations
+are unit quaternions. These conventions apply to pose samples, body joints,
+skeleton rest poses, and reference-space transforms.
+
+These conventions are mandatory, cannot be configured by clients, and are not
+advertised or negotiated. The choice of base reference space remains an
+acquisition setting. Controller input units and ranges remain part of each
+input definition.
 
 ### Controller
 

@@ -87,7 +87,9 @@ client, which records t4 on receipt.
 Version 1 fixes metres, seconds, metres/second, and radians/second for geometry
 and velocities. Coordinates are right-handed, +X right, +Y up, -Z forward;
 quaternions are `(x, y, z, w)` rotations from the located source into the base
-space. Valid orientations are unit quaternions. Input definitions supply their
+space. These conventions are mandatory, cannot be configured, and are not
+advertised in capabilities or descriptors. Selecting a base space does not change
+them. Valid orientations are unit quaternions. Input definitions supply their
 own units and ranges. Scalar ranges use `Vec2.x` with `y = 0`; two-axis ranges
 use both components. Boolean inputs omit numeric ranges. Confidence is in
 `[0, 1]` when present. Rates must be finite and positive; usable numeric values

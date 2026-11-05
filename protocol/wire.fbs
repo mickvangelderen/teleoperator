@@ -1,6 +1,7 @@
 // Draft protocol version 1. See README.md for framing and semantic validation.
 // Append table fields and union members; never change existing wire values.
 // All server timestamps are signed 64-bit nanoseconds in server-monotonic.
+// Geometry uses fixed right-handed +X right, +Y up, -Z forward coordinates.
 namespace XrOperator.Wire;
 
 enum Hand:ubyte { None = 0, Left = 1, Right = 2 }
@@ -17,7 +18,6 @@ enum CalibrationStatus:ubyte { Unknown = 0, Valid = 1, Calibrating = 2, Invalid 
 enum ReferenceSpaceKind:ubyte {
   View = 0, Local = 1, Stage = 2, LocalFloor = 3, Unbounded = 4
 }
-enum Coordinates:ubyte { RightHandedYUpNegativeZForward = 0 }
 enum RejectionCode:ubyte {
   InvalidRequest = 0,
   UnsupportedCapability = 1,
@@ -226,7 +226,6 @@ table SubscriptionDescriptor {
   // Controller definitions or pose definitions in exactly the sample order.
   inputs:[InputDefinition];
   pose_sources:[PoseSource];
-  coordinates:Coordinates = RightHandedYUpNegativeZForward;
   initial_reference_space:MetadataRef;
   initial_skeleton:MetadataRef;
 }
