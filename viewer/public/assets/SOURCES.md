@@ -25,11 +25,19 @@ lighting choices. No application code was copied from that project.
 - Reused unchanged from OpenArm Teleop's attributed `operator/assets/meta_touch_plus`
   distribution at commit `a740d127255a228175c225b7c72c63a0f2a64682`. Those GLBs were converted from Meta's original Touch Plus FBXs;
   no converter/application code is included from OpenArm Teleop.
-- Preserve the authored origin and centimetre-to-metre root scale. The visual turns
-  180° around Y to face OpenXR -Z and attaches to the aim pose, following that
-  project's asset convention. Grip axes remain independent. Battery indicators
-  are hidden because no battery state is supplied. Buttons remain in their authored
-  pose; actual button states are shown in the input cards.
+- Preserve the authored origin and centimetre-to-metre root scale. The art uses
+  Meta's VrApi controller frame. Attach it to OpenXR grip using the conversion in
+  `Scripts/OVRInput.cs::_gripToVrapiOffsetInverse` from
+  [Meta Core SDK 207.0.1](https://npm.developer.oculus.com/com.meta.xr.sdk.core/-/com.meta.xr.sdk.core-207.0.1.tgz).
+  In Unity this is `inverse(TRS((0, -0.03, -0.04) m, Rx(-60°)))`.
+  Converting Unity poses to OpenXR reflects Z; Unity's FBX importer reflects X
+  ([Unity documentation](https://docs.unity3d.com/2020.2/Documentation/Manual/HOWTO-exportFBX.html)).
+  Together these give a grip-local position of `(0, -0.019641016, -0.045980762)` m
+  and rotation `Rx(-60°) × Ry(180°)` for our GLB root. `spatial.ts` applies this
+  once outside the authored hierarchy. This replaces the aim-origin assumption
+  inherited from Teleop; pointing rays still use the independent aim poses.
+  Battery indicators are hidden because no battery state is supplied. Buttons
+  remain in their authored pose; actual button states are shown in the input cards.
 
 ## Body
 

@@ -82,11 +82,11 @@ export class SpatialView {
     this.status("Loading Meta models…");
     const loader = new GLTFLoader();
     const loads = [
-      ...([ ["headset.glb", "head"], ["controller_left.glb", "left/aim"], ["controller_right.glb", "right/aim"] ] as const).map(async ([file, name]) => {
+      ...([ ["headset.glb", "head"], ["controller_left.glb", "left/grip"], ["controller_right.glb", "right/grip"] ] as const).map(async ([file, name]) => {
         const { scene } = await loader.loadAsync(`/assets/meta/${file}`);
         if (this.disposed) { dispose(scene); return; }
-        // Meta's hardware art faces +Z; OpenXR viewing/aim frames face -Z.
-        scene.rotation.y = Math.PI;
+        if (name === "head") scene.rotation.y = Math.PI; // Headset art faces +Z; OpenXR views face -Z.
+        else alignTouchPlusToGrip(scene);
         scene.traverse(object => { if (/batteryindicator/i.test(object.name)) object.visible = false; });
         this.poses.get(name)!.shape.add(scene);
       }),
@@ -209,6 +209,17 @@ export class SpatialView {
     document.removeEventListener("visibilitychange", this.invalidate);
     this.environment?.dispose(); dispose(this.scene); this.renderer.dispose();
   }
+}
+
+export function alignTouchPlusToGrip(model: Object3D) {
+  // These FBX→GLB assets retain Meta's VrApi frame, preserved by OpenArm Teleop.
+  // Meta Core SDK 207.0.1, Scripts/OVRInput.cs::_gripToVrapiOffsetInverse:
+  // https://npm.developer.oculus.com/com.meta.xr.sdk.core/-/com.meta.xr.sdk.core-207.0.1.tgz
+  // Unity uses inverse(TRS((0, -0.03, -0.04) m, Rx(-60°))). Reflect Z for OpenXR;
+  // its FBX import reflects X, so the asset basis also needs Ry(180°).
+  const pitch = -Math.PI / 3;
+  model.rotation.set(pitch, Math.PI, 0, "XYZ"); // Rx(-60°) × Ry(180°).
+  model.position.set(0, 0.03, -0.04).applyAxisAngle(new Vector3(1, 0, 0), pitch);
 }
 
 function materials(object: Object3D, visit: (material: Material) => void) {
