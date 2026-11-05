@@ -331,7 +331,8 @@ table PoseSample {
   sample_number:ulong;
   acquired_at:long;
   target_at:long = null;
-  reference_space:MetadataRef (required);
+  // Nonzero; the subscription descriptor supplies the fixed metadata ID.
+  reference_space_version:uint;
   poses:[PoseValue] (required);
 }
 
@@ -340,8 +341,9 @@ table BodySample {
   acquired_at:long;
   target_at:long = null;
   returned_at:long = null;
-  reference_space:MetadataRef (required);
-  skeleton:MetadataRef (required);
+  // Nonzero; the subscription descriptor supplies the fixed metadata IDs.
+  reference_space_version:uint;
+  skeleton_version:uint;
   is_active:bool;
   confidence:float = null;
   actual_fidelity:Fidelity = null;

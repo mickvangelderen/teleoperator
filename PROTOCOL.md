@@ -187,6 +187,14 @@ versioned metadata. The clock domain and geometric coordinate conventions are
 fixed by the protocol and are not included in the descriptor. Deliver the
 corresponding skeleton and reference-space definitions over control as well.
 
+For pose and body subscriptions, the descriptor fixes the reference-space ID
+and, for body subscriptions, the skeleton ID for the subscription's lifetime.
+The reference-space ID matches the
+resolved base-space setting. Samples carry only the nonzero versions of this
+metadata; receivers combine those versions with the descriptor's IDs. Metadata
+definitions carry both their ID and version. Changing an ID requires a different
+subscription, while version changes do not.
+
 Control-channel ordering does not extend to tracking messages on another channel.
 A snapshot can arrive before its descriptor or required metadata, even if the
 server sent that metadata first. Receiver behavior is:
@@ -358,7 +366,8 @@ by the acquisition configuration. Each located pose includes:
 - Position and orientation.
 - Separate position/orientation validity and tracking flags.
 - Optional linear/angular velocities and their validity flags.
-- Target time and a reference-space identifier/version.
+- Target time and a reference-space version, with the ID supplied by the
+  descriptor.
 - Source activity where supplied by the action API.
 
 Validity and active tracking are distinct: an inferred or last-known pose can
@@ -450,9 +459,10 @@ its sample number, acquisition timestamp, and a complete snapshot of the
 subscription's selected data. Unchanged values remain present; decoding does
 not depend on a previously received sample.
 
-The descriptor identifies the payload kind and its layout. Each sample includes
-the timing and metadata references needed for that kind. `acquiredAt` describes
-application acquisition; pose target time and body returned time are separate
+The descriptor identifies the payload kind, its layout, and its fixed metadata
+IDs. Each sample includes the timing and metadata versions needed for that kind.
+`acquiredAt` describes application acquisition; pose target time and body
+returned time are separate
 values, not assumed to equal acquisition time. All use the server clock domain
 defined in [Timestamping and clock synchronization](#timestamping-and-clock-synchronization);
 clients must map server timestamps before comparing them with their local clock.

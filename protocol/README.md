@@ -187,7 +187,7 @@ The sample kind must match the associated descriptor's acquisition union.
 | --- | --- |
 | Controller | `values[i]` matches both resolved `inputs[i]` and descriptor `inputs[i]`; its value union must match `InputDefinition.value_type`. Every selected input is present, including inactive ones. Inactive Boolean counts remain meaningful; its current value and change time do not establish live input. |
 | Pose | `poses[i]` matches resolved `sources[i]` and descriptor `pose_sources[i]`. Position and orientation validity/tracking are independent bits. `is_active = null` means the source API provides no activity flag. Selected velocities have a `Velocity` table even when both validity flags are clear; unselected velocities omit it. |
-| Body | `joints[i]` matches `SkeletonDefinition.joints[i]` for that sample's skeleton reference. All joint transforms are in the selected base space. Activity/confidence apply to the body; there are no per-joint confidence or velocity fields. Optional actual fidelity and calibration status are absent when unselected or unavailable in that sample. |
+| Body | `joints[i]` matches `SkeletonDefinition.joints[i]` for the descriptor's skeleton ID and that sample's `skeleton_version`. All joint transforms are in the selected base space. Activity/confidence apply to the body; there are no per-joint confidence or velocity fields. Optional actual fidelity and calibration status are absent when unselected or unavailable in that sample. |
 
 Each sample is complete and independent. A scalar field omitted by the
 FlatBuffers builder decodes to its schema default within that sample; it never
@@ -204,12 +204,15 @@ and `initial_reference_space`, and body descriptors require
 fields are absent. Definitions match the resolved selections exactly, and a
 body skeleton's joint set and joint inventory must match the selected joint set.
 Descriptors include complete selected input/pose definitions. Their initial
-metadata references identify definitions to send with acceptance; samples carry
-the specific versions they use. The reference-space ID must equal the resolved
-base-space ID. A skeleton ID stays fixed within a body subscription while its
-version may advance. Metadata versions are immutable, nonzero, and increase
-within their identity. Retain definitions needed by retained history. Unknown
-associations or metadata cause sample discard, not waiting or guessing.
+metadata references identify definitions to send with acceptance and fix the
+metadata IDs for the subscription's lifetime. `initial_reference_space.id` must
+equal the resolved base-space ID. Pose and body samples carry only
+`reference_space_version`; body samples also carry `skeleton_version`. Combine
+these nonzero versions with the descriptor's fixed IDs to look up definitions.
+Changing a metadata ID requires another subscription. Definitions retain their
+full `{id, version}` references. Metadata versions are immutable, nonzero, and
+increase within their identity. Retain definitions needed by retained history.
+Unknown associations or metadata cause sample discard, not waiting or guessing.
 
 `ReferenceSpaceDefinition.pose_in_previous` describes the new origin in the
 previous reference-space version and is absent when that relation is unknown.
