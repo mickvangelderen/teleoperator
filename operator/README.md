@@ -5,7 +5,7 @@ Rust Android application for Meta Quest 3. The roadmap is in [IDEA.md](../IDEA.m
 The application is built as an ARM64 shared library and packaged with
 `cargo-apk`. It runs an HTTP signaling endpoint on **port 8080** and a WebRTC
 data-channel server alongside an immersive OpenXR session with passthrough.
-Head and left/right controller grip and aim poses are acquired at 100 Hz in the
+Head and left/right controller grip and aim poses are acquired at 200 Hz in the
 runtime's Local Floor space when available, with an explicitly advertised Local
 fallback. Each sample retains independent position/orientation validity, tracking,
 and controller activity flags. Unavailable tracking is never replaced with fake
@@ -138,12 +138,15 @@ tracking available; body discovery appears after permission and skeleton acquisi
 succeed. Revoking permission closes body streams without closing pose/input streams.
 The Viewer reconnects to resubscribe after a capability is lost and restored.
 
-The current implementation advertises 100 Hz acquisition, one runtime reference space, acquisition-time
+The current implementation advertises 200 Hz acquisition, one runtime reference space, acquisition-time
 targeting, the default 70-joint body set (upper body and hands), and the runtime's
 default fidelity preference. Full 84-joint tracking, selectable fidelity, velocity
 channels, application hysteresis and Touch Plus extras are not advertised. Consumers
-can choose 1–100 Hz publication and 1–8 historical samples independently for each
-stream. The spatial Viewer uses attributed Meta models and an optional received-joint overlay.
+can choose 1–200 Hz publication and 1–8 historical samples independently for each
+stream. The default is 100 Hz publication with up to two samples per message;
+publication never waits to fill history. The 200 Hz sampler polls the OpenXR
+runtime every 5 ms; this does not imply that each sensor or body estimate updates
+at that frequency. The spatial Viewer uses attributed Meta models and an optional received-joint overlay.
 
 Runtime target, returned-body and input-change timestamps are currently absent,
 not raw `XrTime` values mislabeled as server time. Acquisition timestamps and clock

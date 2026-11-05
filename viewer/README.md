@@ -148,8 +148,9 @@ tooltip; the capture also records it.
 - **Animation frame:** time between consecutive `requestAnimationFrame` callbacks,
   independent of incoming messages and whether the scene needs drawing.
 - **Render interval:** time between actual 3D renders, including idle time.
-  Around 33 ms is expected with the default 30 Hz consumer; 200 ms is expected
-  at 5 Hz. This is not a browser refresh/FPS measurement.
+  With continuous rendering enabled by default, this follows the display refresh
+  rate (about 16.7 ms at 60 Hz). With continuous rendering off, a 5 Hz consumer
+  produces intervals around 200 ms while tracking is changing.
 - **Pose / Input / Body arrival interval:** time since the previous tracking message
   for that stream, measured at the next receive callback, before consumer coalescing.
   These include browser scheduling delays; they are not network latency measurements.
@@ -164,11 +165,12 @@ tooltip; the capture also records it.
   with one outstanding query. Unsupported browsers show an explicit status;
   disjoint, timed-out and context-lost samples are discarded, not reported as zero.
 
-The **Continuous rendering** checkbox draws on every animation frame, even when
+The **Continuous rendering** checkbox is enabled by default and draws on every animation frame, even when
 the scene is unchanged. Otherwise a frame draws only if the scene is dirty.
 Messages and consumer updates mark pending state; pose/body scene updates and
-drawing happen on the animation-frame loop. The consumer rate still determines
-how often new samples are made available to the scene.
+drawing happen on the animation-frame loop. The default **Display frame rate**
+consumer takes the latest pending sample before applying and drawing it in that
+same callback. Fixed 60/30/5 Hz consumers remain available for diagnostics.
 
 The separate transfer graph shows **kB/s** (1000 bytes per kB), calculated from
 payload bytes in the preceding **one second**, refreshed at 5 Hz. Received and sent
@@ -201,7 +203,10 @@ CHROMIUM_EXECUTABLE=/path/to/chrome pnpm test:performance
 
 The Viewer automatically subscribes to advertised pose, controller and body sources.
 Select the stream in Tracking statistics to inspect its metrics and publication settings. Publication rate
-(100/30/10 Hz), history (1/4/8), and consumption rate (60/30/5 Hz) are independent.
+(200/100/30/10 Hz), history (1/2/4/8), and consumption rate (display/60/30/5 Hz) are independent.
+Defaults are 200 Hz server acquisition, 100 Hz publication, two samples per message,
+and display-frame consumption/rendering. History is a maximum: an early publication
+can contain fewer samples, and publication never waits for the history to fill.
 Only the latest pending sample reaches the visualizer. The receive path records
 sequence gaps, reordered/duplicate messages, sample coverage, and discarded
 packets. Missing-message counts are provisional until late arrivals fill gaps;
@@ -218,7 +223,8 @@ VIEWER_URL=http://127.0.0.1:5174 CHROMIUM_EXECUTABLE=/path/to/chrome pnpm test:t
 ```
 
 This behavioral test uses the actual Connection receiver through Vite and a real
-WebRTC server. It compares concurrent fast/slow consumers, blocks one JS thread,
+WebRTC server. It measures 200 Hz acquisition, defaults and optional 200 Hz publication,
+compares concurrent fast/slow consumers, blocks one JS thread,
 changes publication/history without changing acquisition, injects explicitly
 labeled receiver drops, checks the desktop/mobile UI, and writes JSON measurements
 and screenshots to `.artifacts/tracking/`. It requires the explicit synthetic

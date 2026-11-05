@@ -18,10 +18,9 @@ export class SpatialView {
   private camera = new PerspectiveCamera(38, 1, 0.01, 100);
   private controls: OrbitControls;
   private observer: ResizeObserver;
-  private frame = 0;
   private dirty = true;
   private stateDirty = true;
-  private continuous = false;
+  private continuous = true;
   private disposed = false;
   private framed = 0;
   private view = "iso";
@@ -76,7 +75,6 @@ export class SpatialView {
     this.observer.observe(surface);
     document.addEventListener("visibilitychange", this.invalidate);
     this.renderer.domElement.addEventListener("webglcontextlost", event => { event.preventDefault(); status("3D context lost. Reload to restore the view."); });
-    this.frame = requestAnimationFrame(this.animate);
     void this.load();
   }
 
@@ -117,11 +115,8 @@ export class SpatialView {
 
   private invalidate = () => { this.dirty = true; };
 
-  private animate = (now: number) => {
+  renderFrame() {
     if (this.disposed) return;
-    this.frame = requestAnimationFrame(this.animate);
-    if (document.hidden) return;
-    profiler.animationFrame(now);
     if (this.stateDirty) {
       this.stateDirty = false;
       const timing = profiler.begin();
@@ -133,7 +128,7 @@ export class SpatialView {
       try { this.renderer.render(this.scene, this.camera); }
       finally { profiler.endRender(timing); }
     }
-  };
+  }
 
   setContinuousRendering(enabled: boolean) {
     this.continuous = enabled;
@@ -210,7 +205,6 @@ export class SpatialView {
 
   dispose() {
     this.disposed = true;
-    cancelAnimationFrame(this.frame);
     this.observer.disconnect(); this.controls.dispose();
     document.removeEventListener("visibilitychange", this.invalidate);
     this.environment?.dispose(); dispose(this.scene); this.renderer.dispose();

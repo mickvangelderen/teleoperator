@@ -1,8 +1,8 @@
 # Tracking checkpoint
 
 Implemented: OpenXR passthrough, head + left/right grip/aim poses, 27 controller
-inputs, and the default 70-joint body set; shared 100 Hz acquisition; independent
-1–100 Hz publication; 1–8 samples of consecutive history; bounded transport
+inputs, and the default 70-joint body set; shared 200 Hz acquisition; independent
+1–200 Hz publication (default 100 Hz); 1–8 samples of consecutive history (default 2); bounded transport
 buffering; Viewer spatial visualization, sequence and consumer statistics.
 The supported base (ID 1) is the runtime's Local Floor space when available,
 with an explicitly advertised Local fallback and AcquisitionTime targeting.
@@ -206,10 +206,17 @@ With all histories at 8, pose-arrival P95 rose to 58.2 ms and its maximum to
 The sender does **not** wait for history to fill. `packet()` includes the newest
 available samples up to the requested maximum, and a regression test now verifies
 immediate publication of one and then two samples with history 8 requested.
-The measured slowdown is dominated by sender backpressure: all streams share a
-16,384-byte buffered-amount threshold, while one history-8 body packet in this
-capture is 18,424 bytes. Exceeding the threshold suppresses subsequent publications
-across streams. Skips do not consume message numbers; the all-8 phase had only
+The measured slowdown is dominated by sender backpressure: all streams within a
+connection share our 16,384-byte buffered-amount cutoff, while one history-8 body
+packet in this capture is 18,424 bytes. This is an application cutoff, not a socket
+buffer capacity. In the pinned `webrtc-sctp` 0.17.2 implementation, packetization
+adds payload bytes to the stream's `buffered_amount`; processing SCTP selective
+acknowledgements releases them. It therefore includes in-flight data awaiting
+acknowledgement, not just unsent data. The check precedes sending and excludes the
+next packet's size, so a single send can cross the cutoff. Subsequent publications
+across that connection's streams are suppressed until the amount falls below it.
+The bounded acquisition history remains separate, and peers read it without
+removing samples. Skips do not consume message numbers; the all-8 phase had only
 0 / 3 / 8 sequence gaps despite the much larger number of skipped publications.
 
 This reproduces uneven delivery under larger combined histories, but does not
@@ -223,3 +230,42 @@ between recorded payload bytes and the rolling transfer totals.
 Local evidence: `.artifacts/history/quest-probe.json` (server counters and charts),
 `quest-capture.json` (decoded packet analysis), `quest-panel.png`, and recording
 `.artifacts/recordings/cb10f570-ff71-4cdc-93c6-464017f6772d.jsonl`.
+
+## Acquisition and display defaults, 2026-11-05
+
+Acquisition now runs at 200 Hz. Publication defaults to 100 Hz with up to two
+samples per message, and the Viewer offers 200 Hz publication and history length
+2 alongside the existing options. Missing startup history is still sent
+immediately. One display animation callback consumes the latest pending samples,
+applies scene changes, then renders. Continuous rendering is enabled by default;
+fixed-rate consumers and dirty-only rendering remain available for investigation.
+
+The Android APK was built and deployed to the Quest over USB ADB. An unattended
+Viewer connected over Wi-Fi and observed each configuration for roughly 12 seconds
+after settling. All streams reported 200 Hz acquisition and history length 2.
+Rates calculated from sample numbers and acquisition timestamps were approximately
+200 Hz throughout; this measures polling, not independent sensor updates at 200 Hz.
+
+| Requested pose / input / body, Hz | Received pose / input / body, Hz | Sender skips: pose / input / body |
+| --- | --- | --- |
+| 100 / 100 / 100 | 96.4 / 98.3 / 97.6 | 18 / 9 / 4 |
+| 200 / 100 / 100 | 192.5 / 96.6 / 95.0 | 76 / 37 / 40 |
+| 200 / 200 / 200 | 157.2 / 145.2 / 166.5 | 513 / 658 / 395 |
+| 100 / 100 / 100 | 99.3 / 98.3 / 98.8 | 6 / 7 / 5 |
+
+There were no send errors or malformed packets. Sequence gaps still occurred over
+the unreliable transport. All-stream 200 Hz publication hits the existing cutoff,
+so the requested rate remains a maximum rather than guaranteed throughput. The
+cutoff policy is unchanged. Animation-frame P95 stayed at 16.7–16.8 ms, and the
+display consumer applied approximately 58–60 updates per second. Body tracking was
+active, but no physical-motion or controller-interaction qualification was made.
+
+Synthetic two-peer tests measured approximately 100 Hz default delivery and 200 Hz
+acquisition; a 200 Hz pose request delivered approximately 200 Hz. The 5 Hz consumer
+coalesced updates without slowing the other peer. Fourteen Rust tests, clippy,
+22 Viewer unit tests, the production build, and browser tracking/performance checks
+passed, including display-driven consumption/rendering and WebGL failure handling.
+
+Local evidence: `.artifacts/rates/quest.json`, `quest-capture.json`,
+`quest-workspace.png`, `quest-performance.png`, and recording
+`.artifacts/recordings/7e0dfb91-4562-413a-bc72-fe02ad36945e.jsonl`.

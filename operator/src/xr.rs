@@ -1,4 +1,4 @@
-use crate::tracking::{Hub, Pose};
+use crate::tracking::{Hub, Pose, RATE};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use openxr as xr;
 use std::{
@@ -127,11 +127,12 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
     hub.set_available(true);
     let result = std::thread::scope(|scope| {
         let sampler = scope.spawn(|| {
+            let period = Duration::from_secs_f32(1.0 / RATE);
             let mut next = Instant::now();
             let mut tracker = None;
             let mut retry_body = Instant::now();
             while !stop.load(Ordering::SeqCst) {
-                next += Duration::from_millis(10);
+                next += period;
                 let mut state = gate.lock().unwrap();
                 let acquired_at = hub.now();
                 let mut body = hub

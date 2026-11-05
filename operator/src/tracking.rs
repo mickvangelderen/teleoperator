@@ -17,7 +17,7 @@ pub enum Kind {
     Body,
 }
 
-pub const RATE: f32 = 100.0;
+pub const RATE: f32 = 200.0;
 pub const HISTORY: usize = 8;
 pub const SOURCES: [&str; 5] = ["head", "left/aim", "left/grip", "right/aim", "right/grip"];
 
@@ -242,7 +242,7 @@ pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
     hub.body_fidelity.store(true, Ordering::SeqCst);
     hub.body_calibration.store(true, Ordering::SeqCst);
     let skeleton = body::synthetic_skeleton();
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs_f32(1.0 / RATE));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {

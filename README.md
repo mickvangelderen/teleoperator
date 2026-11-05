@@ -8,8 +8,9 @@ in [operator/](operator/README.md).
 
 The [Viewer](viewer/README.md) connects to the Quest over WebRTC and inspects
 the hello exchange, session identity, capabilities, and clock round trips.
-Head and controller grip/aim poses stream at 100 Hz, with bounded publication
-history, loss statistics, and a slow-consumer mode. The Android build includes
+Tracking is acquired at 200 Hz and published at 100 Hz with up to two samples per
+message by default. The Viewer consumes and renders at the display frame rate,
+with bounded history, loss statistics, and a slow-consumer mode. The Android build includes
 OpenXR passthrough. Controller buttons, touch states, triggers, grips, and thumbsticks stream alongside
 poses with shared transition counters. Body tracking exposes the default 70-joint
 set, versioned skeletons, and runtime quality information. All three streams can

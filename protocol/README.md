@@ -109,7 +109,10 @@ simultaneously. Restrictions explain permission or runtime constraints; actual
 request validation may reject a combination and supply concrete alternatives.
 Limits must be positive, with minimum send rate no greater than maximum send
 rate and maximum history length at least 1. Publication defaults resolve a
-positive send rate and history length 1. Accepted publication settings are fully
+positive send rate and history length within the advertised limit. The current
+operator advertises 100 Hz publication with history length 2 and 200 Hz acquisition.
+A supplied publication table with an omitted history field still means 1, as
+defined by the wire schema. Accepted publication settings are fully
 resolved and within both retention and encoded-message limits.
 
 `InputDefinition` keys are `(source_id, input_id)`. Meanings belong to stable

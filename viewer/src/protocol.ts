@@ -49,7 +49,7 @@ export type ClockReply = {
 export type Reference = { kind: "ReferenceSpaceDefinition"; id: bigint; version: number; spaceKind: number; effectiveAt: bigint | null; previous: {id: bigint; version: number} | null; poseInPrevious: Pose | null };
 export type InputDefinition = { source: string; id: string; type: number; label: string };
 export type Input = { active: boolean; changedAt: bigint | null; type: number; value: boolean | number | number[]; presses: bigint; releases: bigint };
-export type Accepted = { kind: "StreamAccepted"; type: "pose" | "controller" | "body"; requestId: bigint; streamId: bigint; subscriptionId: bigint; sources: string[]; inputs: InputDefinition[]; reference: { id: bigint; version: number } | null; skeleton: {id: bigint; version: number} | null; jointSet: string | null; rate: number; history: number };
+export type Accepted = { kind: "StreamAccepted"; type: "pose" | "controller" | "body"; requestId: bigint; streamId: bigint; subscriptionId: bigint; sources: string[]; inputs: InputDefinition[]; reference: { id: bigint; version: number } | null; skeleton: {id: bigint; version: number} | null; jointSet: string | null; sampleRate: number; rate: number; history: number };
 export type Pose = { position: number[]; orientation: number[]; flags: number; active: boolean | null };
 export type Body = { active: boolean; confidence: number | null; returnedAt: bigint | null; skeletonVersion: number; fidelity: number | null; calibration: number | null };
 export type Sample = { type: "pose" | "controller" | "body"; number: bigint; acquiredAt: bigint; targetAt: bigint | null; referenceVersion: number; poses: Pose[]; inputs: Input[]; body: Body | null };
@@ -61,12 +61,16 @@ export type Received = Hello | Capabilities | ClockReply | Reference | Accepted 
   | { kind: "SubscriptionRetired"; subscriptionId: bigint }
   | { kind: "ServerResumed" };
 
-export function subscribe(id: bigint, sources: string[], rate = 100, history = 1, streamId = 0n): Uint8Array<ArrayBuffer> {
+const SAMPLE_RATE = 200;
+export const DEFAULT_SEND_RATE = 100;
+export const DEFAULT_HISTORY = 2;
+
+export function subscribe(id: bigint, sources: string[], rate = DEFAULT_SEND_RATE, history = DEFAULT_HISTORY, streamId = 0n): Uint8Array<ArrayBuffer> {
   const b = new Builder(512);
   const selections = sources.map(s => PoseSelection.createPoseSelection(b, b.createString(s), Requirement.Required, Requirement.Omit));
   const vector = PoseSettings.createSourcesVector(b, selections);
   PoseSettings.startPoseSettings(b);
-  PoseSettings.addSampleRateHz(b, 100); PoseSettings.addSources(b, vector); PoseSettings.addBaseSpaceId(b, 1n);
+  PoseSettings.addSampleRateHz(b, SAMPLE_RATE); PoseSettings.addSources(b, vector); PoseSettings.addBaseSpaceId(b, 1n);
   const settings = PoseSettings.endPoseSettings(b);
   const publication = PublicationSettings.createPublicationSettings(b, rate, history);
   Subscribe.startSubscribe(b);
@@ -91,9 +95,10 @@ export function subscribeInputs(id: bigint, inputs: InputDefinition[]): Uint8Arr
     return ControlSelection.endControlSelection(b);
   });
   const vector = ControllerSettings.createInputsVector(b, selections);
-  ControllerSettings.startControllerSettings(b); ControllerSettings.addSampleRateHz(b, 100); ControllerSettings.addInputs(b, vector);
+  ControllerSettings.startControllerSettings(b); ControllerSettings.addSampleRateHz(b, SAMPLE_RATE); ControllerSettings.addInputs(b, vector);
   const settings = ControllerSettings.endControllerSettings(b);
-  Subscribe.startSubscribe(b); Subscribe.addRequestId(b, id); Subscribe.addAcquisitionType(b, Acquisition.ControllerSettings); Subscribe.addAcquisition(b, settings);
+  const publication = PublicationSettings.createPublicationSettings(b, DEFAULT_SEND_RATE, DEFAULT_HISTORY);
+  Subscribe.startSubscribe(b); Subscribe.addRequestId(b, id); Subscribe.addAcquisitionType(b, Acquisition.ControllerSettings); Subscribe.addAcquisition(b, settings); Subscribe.addPublication(b, publication);
   const request = Subscribe.endSubscribe(b);
   Packet.finishPacketBuffer(b, Packet.createPacket(b, Message.Subscribe, request));
   return new Uint8Array(b.asUint8Array());
@@ -106,9 +111,10 @@ export function unsubscribe(id: bigint, streamId: bigint): Uint8Array<ArrayBuffe
 }
 export function subscribeBody(id: bigint, source: string, jointSet: string): Uint8Array<ArrayBuffer> {
   const b = new Builder(256), sourceOffset = b.createString(source), set = b.createString(jointSet);
-  BodySettings.startBodySettings(b); BodySettings.addSourceId(b, sourceOffset); BodySettings.addJointSet(b, set); BodySettings.addBaseSpaceId(b, 1n); BodySettings.addSampleRateHz(b, 100);
+  BodySettings.startBodySettings(b); BodySettings.addSourceId(b, sourceOffset); BodySettings.addJointSet(b, set); BodySettings.addBaseSpaceId(b, 1n); BodySettings.addSampleRateHz(b, SAMPLE_RATE);
   const settings = BodySettings.endBodySettings(b);
-  Subscribe.startSubscribe(b); Subscribe.addRequestId(b, id); Subscribe.addAcquisitionType(b, Acquisition.BodySettings); Subscribe.addAcquisition(b, settings);
+  const publication = PublicationSettings.createPublicationSettings(b, DEFAULT_SEND_RATE, DEFAULT_HISTORY);
+  Subscribe.startSubscribe(b); Subscribe.addRequestId(b, id); Subscribe.addAcquisitionType(b, Acquisition.BodySettings); Subscribe.addAcquisition(b, settings); Subscribe.addPublication(b, publication);
   const request = Subscribe.endSubscribe(b);
   Packet.finishPacketBuffer(b, Packet.createPacket(b, Message.Subscribe, request));
   return new Uint8Array(b.asUint8Array());
@@ -417,8 +423,9 @@ export function decode(
     const names = type === 2 ? sources(d, 4) : type === 3 ? [settings.string(1)] : definitions.map(d => `${d.source}/${d.id}`);
     const selected = type === 2 ? sources(settings, 1) : type === 3 ? names : settings.tables(1, 128).map(s => `${s.string(0)}/${s.string(1)}`);
     requireValue(names.length > 0 && names.every(Boolean) && new Set(names).size === names.length && JSON.stringify(names) === JSON.stringify(selected));
-    const result: Accepted = { kind: "StreamAccepted", type: type === 1 ? "controller" : type === 2 ? "pose" : "body", requestId: message.integer(0), streamId: message.integer(1), subscriptionId: d.integer(0), sources: names, inputs: definitions, reference: type !== 1 ? d.metadata(5) : null, skeleton: type === 3 ? d.metadata(6) : null, jointSet: type === 3 ? settings.string(2) : null, rate: p.number(0, "f32"), history: p.number(1, "u32", 1) };
-    requireValue(result.streamId > 0n && result.subscriptionId > 0n && Number.isFinite(result.rate) && result.rate >= 1 && result.rate <= 100 && result.history >= 1 && result.history <= 8 && (!result.reference || settings.integer(type === 3 ? 3 : 2) === result.reference.id));
+    const result: Accepted = { kind: "StreamAccepted", type: type === 1 ? "controller" : type === 2 ? "pose" : "body", requestId: message.integer(0), streamId: message.integer(1), subscriptionId: d.integer(0), sources: names, inputs: definitions, reference: type !== 1 ? d.metadata(5) : null, skeleton: type === 3 ? d.metadata(6) : null, jointSet: type === 3 ? settings.string(2) : null, sampleRate: settings.number(0, "f32"), rate: p.number(0, "f32"), history: p.number(1, "u32", 1) };
+    requireValue(Number.isFinite(result.sampleRate) && result.sampleRate > 0);
+    requireValue(result.streamId > 0n && result.subscriptionId > 0n && Number.isFinite(result.rate) && result.rate >= 1 && result.rate <= 200 && result.history >= 1 && result.history <= 8 && (!result.reference || settings.integer(type === 3 ? 3 : 2) === result.reference.id));
     message.tables(4, 64);
     return result;
   }

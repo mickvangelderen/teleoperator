@@ -22,18 +22,20 @@ async function client(rate) {
   await page.waitForFunction(() => window.client.state.streams.length === 3 && window.client.state.streams.every(s => s.sample !== null) || window.client.state.status === "Error");
   assert.equal(await page.evaluate(() => window.client.state.status), "Connected");
   assert.equal(await page.evaluate(() => window.client.state.source), "synthetic");
+  assert.equal(await page.evaluate(() => window.client.state.streams.every(s => s.descriptor.sampleRate === 200 && s.descriptor.rate === 100 && s.descriptor.history === 2)), true);
   return page;
 }
 async function snapshot(page, type = "pose") {
   return page.evaluate(type => {
     const live = window.client.state.streams.find(s => s.descriptor.type === type);
     const s = live.statistics, stream = live.descriptor;
-    return { at: performance.now(), stream: String(stream.streamId), subscription: String(stream.subscriptionId), received: Number(s.messages.unique), missing: Number(s.messages.missing), reordered: Number(s.messages.reordered), duplicates: Number(s.messages.duplicates), sampleGaps: Number(s.samples.missing), coalesced: s.consumer.coalesced, consumed: s.consumer.consumed, discarded: s.discarded, ageMs: s.age, pending: s.consumer.pending ? 1 : 0 };
+    const latest = s.consumer.pending ?? live.sample;
+    return { at: performance.now(), stream: String(stream.streamId), subscription: String(stream.subscriptionId), sample: Number(latest.number), acquiredAt: Number(latest.acquiredAt) / 1e6, received: Number(s.messages.unique), missing: Number(s.messages.missing), reordered: Number(s.messages.reordered), duplicates: Number(s.messages.duplicates), sampleGaps: Number(s.samples.missing), coalesced: s.consumer.coalesced, consumed: s.consumer.consumed, discarded: s.discarded, ageMs: s.age, pending: s.consumer.pending ? 1 : 0 };
   }, type);
 }
 function delta(before, after) {
   const elapsed = (after.at - before.at) / 1000;
-  return { seconds: elapsed, messages: after.received - before.received, messagesPerSecond: (after.received - before.received) / elapsed, missing: after.missing - before.missing, coalesced: after.coalesced - before.coalesced, consumed: after.consumed - before.consumed, ageMs: after.ageMs, discarded: after.discarded - before.discarded };
+  return { seconds: elapsed, messages: after.received - before.received, messagesPerSecond: (after.received - before.received) / elapsed, acquisitionHz: (after.sample - before.sample) * 1000 / (after.acquiredAt - before.acquiredAt), missing: after.missing - before.missing, coalesced: after.coalesced - before.coalesced, consumed: after.consumed - before.consumed, ageMs: after.ageMs, discarded: after.discarded - before.discarded };
 }
 try {
   const fast = await client(60), slow = await client(5);
@@ -49,6 +51,16 @@ try {
   assert.ok(baseline.fast.messagesPerSecond > 80 && baseline.slow.messagesPerSecond > 80);
   assert.ok(baseline.slow.coalesced > 800 && baseline.slow.consumed <= 55);
   assert.equal(baseline.fast.discarded, 0); assert.equal(baseline.slow.discarded, 0);
+  for (const result of [...Object.values(baseline), ...Object.values(simultaneous)]) assert.ok(result.acquisitionHz > 185 && result.acquisitionHz < 215);
+
+  await fast.evaluate(() => window.client.setPublication(200, 2));
+  await fast.waitForFunction(() => window.client.state.streams.find(s => s.descriptor.type === "pose").descriptor.rate === 200);
+  const highRateStart = await snapshot(fast);
+  await new Promise(r => setTimeout(r, 3000));
+  const highRate = delta(highRateStart, await snapshot(fast));
+  assert.ok(highRate.messagesPerSecond > 175 && highRate.messagesPerSecond < 210);
+  await fast.evaluate(() => window.client.setPublication(100, 2));
+  await fast.waitForFunction(() => window.client.state.streams.find(s => s.descriptor.type === "pose").descriptor.rate === 100);
 
   const blockedStart = await Promise.all([snapshot(fast), snapshot(slow)]);
   // Browser SCTP still ACKs while JS is blocked: this exercises callback backlog, not network loss.
@@ -122,7 +134,7 @@ try {
   await fast.evaluate(() => window.client.close()); await slow.evaluate(() => window.client.close());
   await ui.getByRole("button", { name: "Disconnect" }).click();
   const sender = await ui.evaluate(async () => (await fetch("/api/stats")).json());
-  const report = { source: "synthetic", transport: "real local WebRTC, unordered, maxRetransmits=0", measuredAt: new Date().toISOString(), baseline, simultaneous, blocked, limited, bodyHistory, controllerCountersAt1Hz: { before: counterStart, after: counterEnd }, receiverInjection: { droppedByTest: injected, additionalMissing: injectedEnd.missing - injectedStart.missing }, sender };
+  const report = { source: "synthetic", transport: "real local WebRTC, unordered, maxRetransmits=0", measuredAt: new Date().toISOString(), baseline, simultaneous, highRate, blocked, limited, bodyHistory, controllerCountersAt1Hz: { before: counterStart, after: counterEnd }, receiverInjection: { droppedByTest: injected, additionalMissing: injectedEnd.missing - injectedStart.missing }, sender };
   assert.deepEqual(errors, []);
   await writeFile(new URL("measurements.json", output), JSON.stringify(report, null, 2) + "\n");
   console.log(JSON.stringify(report, null, 2));

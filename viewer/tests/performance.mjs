@@ -28,12 +28,17 @@ try {
   await page.waitForFunction(() => document.querySelector("#recording-status").title.startsWith("Recording ·"));
   assert.equal(await page.locator("#profile-results").isVisible(), true);
   assert.equal(await page.locator("#performance button, #performance p").count(), 0);
+  assert.equal(await page.getByLabel("Continuous rendering").isChecked(), true);
+  assert.equal(await page.getByLabel("Viewer consumer").inputValue(), "animation");
+  assert.equal(await page.locator("#send-rate").inputValue(), "100");
+  assert.equal(await page.locator("#history").inputValue(), "2");
   const renderingSince = async start => page.evaluate(async start => {
     const module = performance.getEntriesByType("resource").findLast(entry => new URL(entry.name).pathname === "/src/performance.ts");
     const { metrics } = (await import(module.name)).profiler.snapshot();
     return Object.fromEntries(metrics.map(metric => [metric.key, metric.samples.filter(sample => sample.at >= start).length]));
   }, start);
   // Animation frames keep ticking while the clean, disconnected scene stays idle.
+  await page.getByLabel("Continuous rendering").uncheck();
   await page.waitForTimeout(300);
   let start = await page.evaluate(() => performance.now());
   await page.waitForTimeout(700);
@@ -46,11 +51,16 @@ try {
   const continuous = await renderingSince(start);
   assert.ok(continuous.render > 10);
   assert.ok(Math.abs(continuous.frame - continuous.render) <= 1);
-  await page.getByLabel("Continuous rendering").uncheck();
   await page.getByRole("button", { name: /^Connect/ }).click();
   await page.waitForFunction(() => document.querySelector("#status").textContent === "Connected" && parseFloat(document.querySelector("#tracking-rate").textContent) > 0);
   await page.waitForFunction(() => ["frame", "interval", "poseArrival", "controllerArrival", "bodyArrival", "ui", "scene", "render", "receive"].every(key => document.querySelector(`#timing-${key} [data-stat='current']`).textContent !== "—"));
   await page.waitForFunction(() => ["received", "sent", "pose", "controller", "body"].every(key => Number(document.querySelector(`#transfer-${key} [data-stat='current']`).textContent) > 0));
+  start = await page.evaluate(() => performance.now());
+  await page.waitForTimeout(700);
+  const connected = await renderingSince(start);
+  assert.ok(connected.frame > 10);
+  assert.ok(Math.abs(connected.frame - connected.render) <= 1);
+  assert.ok(connected.ui >= connected.frame - 1 && connected.ui <= connected.frame + 10, "Default consumption follows animation frames, not a fixed 30/60 Hz timer");
   // A stall outside our callbacks must still appear in the render interval.
   await page.evaluate(() => { const until = performance.now() + 160; while (performance.now() < until) {} });
   await page.waitForFunction(() => Number(document.querySelector("#timing-interval [data-stat='max']").textContent) >= 150);
@@ -61,6 +71,7 @@ try {
   });
   await writeFile(new URL("chart.json", output), JSON.stringify(chart, null, 2));
   assert.ok(chart.metrics.find(m => m.key === "interval").summary.max >= 150);
+  await page.getByLabel("Continuous rendering").uncheck();
   await page.getByLabel("Viewer consumer").selectOption("5");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await page.waitForTimeout(1500);

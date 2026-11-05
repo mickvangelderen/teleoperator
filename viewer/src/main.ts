@@ -1,6 +1,6 @@
 import { Connection, initialState, initialStatistics } from "./connection";
 import type { Entry, State } from "./connection";
-import { json } from "./protocol";
+import { DEFAULT_HISTORY, DEFAULT_SEND_RATE, json } from "./protocol";
 import "./style.css";
 import type { SpatialView } from "./spatial";
 import { profiler, mountPerformancePanel } from "./performance";
@@ -39,7 +39,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <section class="panel workspace">
         <div class="panel-header"><h2><span class="panel-symbol">⌘</span> Tracking workspace</h2><span id="stream-count" class="tag">0 active streams</span></div>
         <div class="viewport"><div id="poses"></div><div class="viewport-label"><span class="mini-dot"></span> <span id="data-source">SPATIAL VIEW</span></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Your workspace is ready</h3><p id="workspace-note">Connect to discover the device’s tracking sources.</p></div><div class="viewport-footer"><span>+X right &nbsp; +Y up &nbsp; −Z forward</span><span>METRES · RIGHT-HANDED</span></div></div>
-        <div class="view-controls"><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label><input id="show-joints" type="checkbox"> Joint overlay</label><label><input id="continuous-render" type="checkbox"> Continuous rendering</label><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" role="status">Loading 3D view…</span></div><div class="sources" aria-label="Tracking capabilities">${(["head", "controller", "body"] as const).map((type, index) => `<div class="source">${icon(type)}<div><strong>${["Head & poses", "Controller inputs", "Body tracking"][index]}</strong><span class="source-state">Awaiting discovery</span></div><span class="source-dash">—</span></div>`).join("")}</div>
+        <div class="view-controls"><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label><input id="show-joints" type="checkbox"> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" role="status">Loading 3D view…</span></div><div class="sources" aria-label="Tracking capabilities">${(["head", "controller", "body"] as const).map((type, index) => `<div class="source">${icon(type)}<div><strong>${["Head & poses", "Controller inputs", "Body tracking"][index]}</strong><span class="source-state">Awaiting discovery</span></div><span class="source-dash">—</span></div>`).join("")}</div>
       </section>
       <aside class="panel session">
         <div class="panel-header"><h2>Session details</h2><span id="hello-badge" class="tag">Awaiting hello</span></div>
@@ -50,7 +50,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <section class="panel controller-panel"><div class="panel-header"><h2>Controller inputs</h2><span id="input-status" class="tag">Awaiting sources</span></div><div id="input-values" class="input-values"></div></section>
     <section class="panel tracking-stats" aria-label="Tracking statistics">
       <div class="panel-header"><h2>Tracking statistics</h2><span id="freshness" class="tag">Awaiting samples</span></div>
-      <div class="tracking-controls"><label>Stream <select id="stream-kind"><option value="pose">Poses</option><option value="controller">Controller inputs</option><option value="body">Body</option></select></label><label>Publication <select id="send-rate"><option value="100">100 Hz</option><option value="30">30 Hz</option><option value="10">10 Hz</option></select></label><label>History <select id="history"><option value="1">1 sample</option><option value="4">4 samples</option><option value="8">8 samples</option></select></label><label>Viewer consumer <select id="consumer-rate"><option value="30">30 Hz</option><option value="60">60 Hz</option><option value="5">5 Hz · slow consumer</option></select></label><button id="inspect-sample">Inspect latest sample</button></div>
+      <div class="tracking-controls"><label>Stream <select id="stream-kind"><option value="pose">Poses</option><option value="controller">Controller inputs</option><option value="body">Body</option></select></label><label>Publication <select id="send-rate"><option value="200">200 Hz</option><option value="100" selected>100 Hz</option><option value="30">30 Hz</option><option value="10">10 Hz</option></select></label><label>History <select id="history"><option value="1">1 sample</option><option value="2" selected>2 samples</option><option value="4">4 samples</option><option value="8">8 samples</option></select></label><label>Viewer consumer <select id="consumer-rate"><option value="animation">Display frame rate</option><option value="30">30 Hz</option><option value="60">60 Hz</option><option value="5">5 Hz · slow consumer</option></select></label><button id="inspect-sample">Inspect latest sample</button></div>
       <dl class="tracking-numbers"><div><dt>Received rate</dt><dd id="tracking-rate">—</dd></div><div><dt>Missing messages</dt><dd id="missing">0</dd></div><div><dt>Reordered / duplicates</dt><dd id="reordered">0 / 0</dd></div><div><dt>Samples not received</dt><dd id="sample-gaps">0</dd></div><div><dt>Viewer coalesced</dt><dd id="coalesced">0</dd></div><div><dt>Estimated sample age</dt><dd id="sample-age">—</dd></div><div><dt>Invalid / metadata discards</dt><dd id="discarded">0 / 0</dd></div><div><dt>Too late for reorder window</dt><dd id="too-late">0</dd></div></dl>
       <p class="statistics-note">Missing messages are sequence gaps and may arrive late. Sample gaps also include publication rate limits. Viewer coalescing deliberately replaces pending updates with the latest sample. Age uses an approximate clock mapping.</p>
       <div id="pose-values" class="pose-values"></div>
@@ -75,6 +75,14 @@ let lastRtt: number | null = null;
 const rtts: number[] = [];
 let messageSignature = "";
 let spatial: SpatialView | undefined;
+const animate = (now: number) => {
+  frame = requestAnimationFrame(animate);
+  if (document.hidden) return;
+  profiler.animationFrame(now);
+  connection?.animationFrame();
+  spatial?.renderFrame();
+};
+let frame = requestAnimationFrame(animate);
 const disposePerformance = mountPerformancePanel(element("performance"));
 if (import.meta.env.DEV) {
   recording.start({ type: "session", endpoint: __OPERATOR_TARGET__, viewerVersion: "0.1.0", protocolVersion: 1 }, (message, failed) => {
@@ -209,7 +217,7 @@ function renderState(state: State) {
       : "Connect to discover the device’s tracking sources.",
   );
   const names = state.capabilities?.pose ? state.capabilities.pose.sources : [];
-  document.querySelectorAll(".source-state").forEach((source, i) => { source.textContent = i === 0 && names.length ? `${names.length} pose sources · 100 Hz` : i === 1 && inputStream ? `${inputStream.descriptor.inputs.length} inputs · 100 Hz` : i === 2 && bodyStream ? `${bodyStream.sample?.poses.length ?? 0} joints · 100 Hz` : live ? "Not advertised" : "Awaiting discovery"; });
+  document.querySelectorAll(".source-state").forEach((source, i) => { source.textContent = i === 0 && names.length ? `${names.length} pose sources · ${poseStream?.descriptor.sampleRate ?? "—"} Hz` : i === 1 && inputStream ? `${inputStream.descriptor.inputs.length} inputs · ${inputStream.descriptor.sampleRate} Hz` : i === 2 && bodyStream ? `${bodyStream.sample?.poses.length ?? 0} joints · ${bodyStream.descriptor.sampleRate} Hz` : live ? "Not advertised" : "Awaiting discovery"; });
   text("stream-count", `${state.streams.length} active streams`);
   const base = state.capabilities?.spaces.find(s => s.id === stream?.reference?.id);
   const frameName = base ? ["VIEW", "LOCAL", "STAGE", "LOCAL FLOOR", "UNBOUNDED"][base.spaceKind] : "UNKNOWN";
@@ -288,9 +296,9 @@ element("connect").onclick = () => {
     return;
   }
   connection?.close();
-  element<HTMLSelectElement>("send-rate").value = "100";
-  element<HTMLSelectElement>("history").value = "1";
-  element<HTMLSelectElement>("consumer-rate").value = "30";
+  element<HTMLSelectElement>("send-rate").value = String(DEFAULT_SEND_RATE);
+  element<HTMLSelectElement>("history").value = String(DEFAULT_HISTORY);
+  element<HTMLSelectElement>("consumer-rate").value = "animation";
   selected = null;
   rtts.length = 0;
   lastRtt = null;
@@ -301,10 +309,13 @@ element("connect").onclick = () => {
   void next.connect();
 };
 element("show-probes").onchange = () => updateMessages(current);
-window.addEventListener("pagehide", () => { connection?.close(); disposePerformance(); void recording.stop("pagehide"); });
+window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); connection?.close(); disposePerformance(); void recording.stop("pagehide"); });
 render(current);
 
-element("consumer-rate").onchange = () => connection?.setConsumerRate(Number(element<HTMLSelectElement>("consumer-rate").value));
+element("consumer-rate").onchange = () => {
+  const rate = element<HTMLSelectElement>("consumer-rate").value;
+  connection?.setConsumerRate(rate === "animation" ? rate : Number(rate));
+};
 for (const id of ["send-rate", "history"]) element(id).onchange = () => connection?.setPublication(Number(element<HTMLSelectElement>("send-rate").value), Number(element<HTMLSelectElement>("history").value), element<HTMLSelectElement>("stream-kind").value);
 element("inspect-sample").onclick = () => {
   selected = { id: -1, at: new Date(), direction: "Received", channel: "tracking", kind: "Sample snapshot", bytes: 0, value: current.streams.find(s => s.descriptor.type === element<HTMLSelectElement>("stream-kind").value)?.sample ?? null };
@@ -329,4 +340,4 @@ element("continuous-render").onchange = () => {
 };
 
 element("show-joints").onchange = () => spatial?.showJoints(element<HTMLInputElement>("show-joints").checked);
-if (import.meta.hot) import.meta.hot.dispose(() => { connection?.close(); spatial?.dispose(); disposePerformance(); void recording.stop("hot-reload"); });
+if (import.meta.hot) import.meta.hot.dispose(() => { cancelAnimationFrame(frame); connection?.close(); spatial?.dispose(); disposePerformance(); void recording.stop("hot-reload"); });

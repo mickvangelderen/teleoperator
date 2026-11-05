@@ -75,6 +75,7 @@ export class Connection {
   private readonly pending = new Set<bigint>();
   private readonly references = new Map<string, Reference>();
   private consumerTimer?: ReturnType<typeof setInterval>;
+  private consumerRate: number | "animation" = "animation";
   private offset: number | null = null;
   private bestRtt = Infinity;
   private readonly requested = new Set<string>();
@@ -83,7 +84,7 @@ export class Connection {
   async connect() {
     recording.add({ type: "connection", connection: this.recordingId, status: "connecting" });
     void fetch("/api/health", { signal: this.abort.signal }).then(r => r.json()).then(data => { if (!this.stopped) this.state.source = typeof data.source === "string" ? data.source : "unknown"; }).catch(() => {});
-    this.setConsumerRate(30);
+    this.setConsumerRate("animation");
     this.state.status = "Connecting";
     this.state.detail = "Opening a WebRTC connection…";
     this.emit();
@@ -321,22 +322,27 @@ export class Connection {
     }
   }
 
-  setConsumerRate(rate: number) {
-    if (![5, 30, 60].includes(rate)) throw new Error("Unsupported consumer rate");
-    recording.add({ type: "consumer-rate", connection: this.recordingId, hz: rate });
+  setConsumerRate(rate: number | "animation") {
+    if (rate !== "animation" && ![5, 30, 60].includes(rate)) throw new Error("Unsupported consumer rate");
+    this.consumerRate = rate;
+    recording.add({ type: "consumer-rate", connection: this.recordingId, mode: rate === "animation" ? "animation-frame" : "timer", hz: rate === "animation" ? null : rate });
     clearInterval(this.consumerTimer);
-    this.consumerTimer = setInterval(() => {
-      const now = performance.now();
-      for (const live of this.state.streams) {
-        const stats = live.statistics, sample = stats.consumer.take();
-        if (sample) live.sample = sample;
-        stats.stale = !live.sample || now - live.lastReceivedAt > 500;
-        stats.age = live.sample && this.offset !== null ? now + this.offset - Number(live.sample.acquiredAt) / 1e6 : null;
-        if (now - live.rateAt >= 1000) { stats.rate = Number(stats.messages.unique - live.rateCount) * 1000 / (now - live.rateAt); live.rateAt = now; live.rateCount = stats.messages.unique; }
-      }
-      this.emit();
-    }, 1000 / rate);
+    if (rate !== "animation") this.consumerTimer = setInterval(this.consume, 1000 / rate);
   }
+  animationFrame() {
+    if (!this.stopped && this.consumerRate === "animation") this.consume();
+  }
+  private consume = () => {
+    const now = performance.now();
+    for (const live of this.state.streams) {
+      const stats = live.statistics, sample = stats.consumer.take();
+      if (sample) live.sample = sample;
+      stats.stale = !live.sample || now - live.lastReceivedAt > 500;
+      stats.age = live.sample && this.offset !== null ? now + this.offset - Number(live.sample.acquiredAt) / 1e6 : null;
+      if (now - live.rateAt >= 1000) { stats.rate = Number(stats.messages.unique - live.rateCount) * 1000 / (now - live.rateAt); live.rateAt = now; live.rateCount = stats.messages.unique; }
+    }
+    this.emit();
+  };
   setPublication(rate: number, history: number, type = "pose") {
     const stream = this.state.streams.find(s => s.descriptor.type === type)?.descriptor;
     if (!stream) return;

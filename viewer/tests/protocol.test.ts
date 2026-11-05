@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Builder, ByteBuffer } from "flatbuffers";
-import { decode, encode, MAX_PACKET } from "../src/protocol";
+import { decode, encode, MAX_PACKET, subscribe, subscribeInputs, subscribeBody } from "../src/protocol";
 import { Packet } from "../src/generated/xr-operator/wire/packet";
 import { Message } from "../src/generated/xr-operator/wire/message";
 import { ClientHello } from "../src/generated/xr-operator/wire/client-hello";
@@ -30,11 +30,30 @@ import { SkeletonDefinition } from "../src/generated/xr-operator/wire/skeleton-d
 import { MetadataRef } from "../src/generated/xr-operator/wire/metadata-ref";
 import { Transform } from "../src/generated/xr-operator/wire/transform";
 import { LocationFlags } from "../src/generated/xr-operator/wire/location-flags";
+import { Subscribe } from "../src/generated/xr-operator/wire/subscribe";
+import { PoseSettings } from "../src/generated/xr-operator/wire/pose-settings";
+import { ControllerSettings } from "../src/generated/xr-operator/wire/controller-settings";
+import { BodySettings } from "../src/generated/xr-operator/wire/body-settings";
 
 function finish(b: Builder, kind: Message, value: number) {
   Packet.finishPacketBuffer(b, Packet.createPacket(b, kind, value));
   return new Uint8Array(b.asUint8Array());
 }
+
+test("all subscription requests acquire at 200 Hz and publish at 100 Hz with two samples", () => {
+  const cases = [
+    [subscribe(1n, ["head"]), new PoseSettings()],
+    [subscribeInputs(2n, [{ source: "left", id: "trigger", label: "Trigger", type: 1 }]), new ControllerSettings()],
+    [subscribeBody(3n, "body", "default"), new BodySettings()],
+  ] as const;
+  for (const [bytes, settings] of cases) {
+    const packet = Packet.getRootAsPacket(new ByteBuffer(bytes));
+    const request = packet.message(new Subscribe()) as Subscribe;
+    assert.equal(request.acquisition(settings).sampleRateHz(), 200);
+    assert.equal(request.publication()!.sendRateHz(), 100);
+    assert.equal(request.publication()!.historyLength(), 2);
+  }
+});
 function hello(
   selected = 1,
   versions = [1],

@@ -9,6 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+const DEFAULT_SEND_RATE: f32 = 100.0;
+const DEFAULT_HISTORY: u32 = 2;
+
 pub struct Publication {
     pub bytes: Vec<u8>,
     pub references: Vec<u32>,
@@ -139,7 +142,7 @@ pub fn capabilities(hub: &Hub) -> Vec<u8> {
     } else {
         &[]
     });
-    let defaults = publication(&mut b, RATE, 1);
+    let defaults = publication(&mut b, DEFAULT_SEND_RATE, DEFAULT_HISTORY);
     let limits = wire::Limits::create(
         &mut b,
         &wire::LimitsArgs {
@@ -192,7 +195,7 @@ fn rejected(id: u64, (code, reason): Rejection, kind: wire::Acquisition) -> Vec<
             wire::Acquisition::BodySettings => Some(body::settings(&mut b).as_union_value()),
             _ => None,
         };
-        let publication = publication(&mut b, RATE, 1);
+        let publication = publication(&mut b, DEFAULT_SEND_RATE, DEFAULT_HISTORY);
         vec![wire::Alternative::create(
             &mut b,
             &wire::AlternativeArgs {
@@ -235,8 +238,10 @@ fn resolve_publication(
 ) -> Result<(f32, u32), Rejection> {
     let rate = p
         .and_then(|p| p.send_rate_hz())
-        .unwrap_or(previous.map_or(RATE, |s| s.rate));
-    let history = p.map_or(previous.map_or(1, |s| s.history), |p| p.history_length());
+        .unwrap_or(previous.map_or(DEFAULT_SEND_RATE, |s| s.rate));
+    let history = p.map_or(previous.map_or(DEFAULT_HISTORY, |s| s.history), |p| {
+        p.history_length()
+    });
     if !rate.is_finite()
         || !(1.0..=RATE).contains(&rate)
         || history == 0
@@ -244,7 +249,7 @@ fn resolve_publication(
     {
         return Err((
             wire::RejectionCode::UnsupportedSetting,
-            "Publication requires 1–100 Hz and history length 1–8",
+            "Publication requires 1–200 Hz and history length 1–8",
         ));
     }
     Ok((rate, history))
@@ -372,7 +377,7 @@ impl Connection {
                 {
                     return Err((
                         wire::RejectionCode::UnsupportedSetting,
-                        "Pose acquisition requires 100 Hz, the advertised reference space 1, and AcquisitionTime",
+                        "Pose acquisition requires 200 Hz, the advertised reference space 1, and AcquisitionTime",
                     ));
                 }
                 let requested = settings.sources();
@@ -426,7 +431,7 @@ impl Connection {
                 if settings.sample_rate_hz().is_some_and(|r| r != RATE) {
                     return Err((
                         wire::RejectionCode::UnsupportedSetting,
-                        "Controller acquisition requires 100 Hz",
+                        "Controller acquisition requires 200 Hz",
                     ));
                 }
                 let selections = settings.inputs();
@@ -494,7 +499,7 @@ impl Connection {
                 {
                     return Err((
                         wire::RejectionCode::UnsupportedSetting,
-                        "Body requires 100 Hz, the default 70-joint set, the advertised reference space 1, AcquisitionTime and default fidelity",
+                        "Body requires 200 Hz, the default 70-joint set, the advertised reference space 1, AcquisitionTime and default fidelity",
                     ));
                 }
             } else {
@@ -919,6 +924,52 @@ mod tests {
         finish(b, wire::Message::Subscribe, request.as_union_value())
     }
     #[test]
+    fn defaults_use_200_hz_acquisition_and_100_hz_two_sample_publication() {
+        let hub = Hub::new("test");
+        hub.set_available(true);
+        let bytes = capabilities(&hub);
+        let advertised = packet(&bytes).unwrap().message_as_capabilities().unwrap();
+        assert_eq!(advertised.pose().unwrap().sample_rates_hz().get(0), 200.);
+        assert_eq!(
+            advertised.controller().unwrap().sample_rates_hz().get(0),
+            200.
+        );
+        assert_eq!(advertised.limits().max_send_rate_hz(), 200.);
+        assert_eq!(advertised.publication_defaults().send_rate_hz(), Some(100.));
+        assert_eq!(advertised.publication_defaults().history_length(), 2);
+
+        let mut c = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
+        c.negotiated = true;
+        c.control(&request(1, 0, &["head"], None, 1)).unwrap();
+        assert_eq!((c.streams[0].rate, c.streams[0].history), (100., 2));
+        let poses = std::array::from_fn(|_| Pose::default());
+        for at in [0, 5_000_000, 10_000_000] {
+            hub.acquire(&poses, &[], None, at, None);
+        }
+        let bytes = c.streams[0].packet().unwrap().bytes;
+        let tracking = packet(&bytes).unwrap().message_as_tracking().unwrap();
+        let samples = tracking.history_as_pose_samples().unwrap().samples();
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples.get(0).sample_number(), 2);
+        assert_eq!(samples.get(1).sample_number(), 3);
+
+        let id = c.streams[0].stats.id;
+        c.control(&request(2, id, &["head"], Some(200.), 2))
+            .unwrap();
+        assert_eq!(c.streams[0].rate, 200.);
+        let rejected = c
+            .control(&request(3, id, &["head"], Some(201.), 2))
+            .unwrap();
+        assert!(
+            packet(&rejected[0])
+                .unwrap()
+                .message_as_request_rejected()
+                .is_some()
+        );
+        assert_eq!(c.streams[0].rate, 200.);
+    }
+
+    #[test]
     fn subscription_validation_preserves_previous_stream_and_shares_acquisition() {
         let hub = Hub::new("test");
         hub.set_available(true);
@@ -1117,7 +1168,9 @@ mod tests {
         for stream in [&mut a.streams[1], &mut b.streams[0]] {
             let bytes = stream.packet().unwrap().bytes;
             let p = packet(&bytes).unwrap().message_as_tracking().unwrap();
-            let sample = p.history_as_controller_samples().unwrap().samples().get(0);
+            let samples = p.history_as_controller_samples().unwrap().samples();
+            assert_eq!(samples.len(), 2);
+            let sample = samples.get(samples.len() - 1);
             let input = sample.values().get(0);
             let value = input.value_as_boolean_value().unwrap();
             assert_eq!((value.press_count(), value.release_count()), (2, 2));
