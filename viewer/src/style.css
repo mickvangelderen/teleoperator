@@ -842,6 +842,12 @@ label,
 }
 /* Tracking is rendered at the selected consumer rate; the receive path stays independent. */
 #poses { position: absolute; inset: 0; width: 100%; height: 100%; font: 12px monospace; }
+.controller-panel { margin-top: 24px; }
+.input-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; padding: 20px 24px; }
+.input-values > div { display: grid; gap: 8px; border: 1px solid #dce4de; border-radius: 6px; padding: 12px; font: 12px monospace; }
+.input-values strong { font: 12px sans-serif; }
+.input-values small { color: #53675b; }
+.input-values .pressed { background: #e4f0df; border-color: #72a477; }
 #empty-state[hidden] { display: none; }
 .tracking-stats { margin: 24px 0; }
 .tracking-controls { display: flex; flex-wrap: wrap; gap: 24px; padding: 20px 24px; align-items: center; }

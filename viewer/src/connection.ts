@@ -1,4 +1,4 @@
-import { decode, encode, subscribe, updatePublication, unsubscribe, MAX_PACKET } from "./protocol";
+import { decode, encode, subscribe, subscribeInputs, updatePublication, unsubscribe, MAX_PACKET } from "./protocol";
 import type { Accepted, Capabilities, Hello, Received, Sample, Tracking } from "./protocol";
 import { Sequence, Latest } from "./statistics";
 
@@ -23,11 +23,14 @@ export type State = {
   bytes: number;
   rtt: number | null;
   entries: Entry[];
-  stream: Accepted | null;
-  sample: Sample | null;
+  streams: LiveStream[];
   source: string;
-  statistics: { messages: Sequence; samples: Sequence; consumer: Latest<Sample>; discarded: number; rate: number; age: number | null; stale: boolean };
+  discarded: number;
+
 };
+export type Statistics = { messages: Sequence; samples: Sequence; consumer: Latest<Sample>; discarded: number; rate: number; age: number | null; stale: boolean };
+export const initialStatistics = (): Statistics => ({ messages: new Sequence(), samples: new Sequence(false), consumer: new Latest(), discarded: 0, rate: 0, age: null, stale: true });
+export type LiveStream = { descriptor: Accepted; sample: Sample | null; statistics: Statistics; newest: bigint; lastReceivedAt: number; rateAt: number; rateCount: bigint };
 export const initialState = (): State => ({
   status: "Disconnected",
   detail: "Connect to inspect the device.",
@@ -40,10 +43,7 @@ export const initialState = (): State => ({
   bytes: 0,
   rtt: null,
   entries: [],
-  stream: null,
-  sample: null,
-  source: "unknown",
-  statistics: { messages: new Sequence(), samples: new Sequence(false), consumer: new Latest(), discarded: 0, rate: 0, age: null, stale: true },
+  streams: [], source: "unknown", discarded: 0,
 });
 
 export class Connection {
@@ -70,12 +70,9 @@ export class Connection {
   private readonly pending = new Set<bigint>();
   private readonly references = new Set<string>();
   private consumerTimer?: ReturnType<typeof setInterval>;
-  private lastReceivedAt = 0;
-  private rateAt = performance.now();
-  private rateCount = 0n;
   private offset: number | null = null;
   private bestRtt = Infinity;
-  private newest = 0n;
+  private readonly requested = new Set<string>();
   constructor(private readonly update: (state: State) => void) {}
 
   async connect() {
@@ -152,7 +149,7 @@ export class Connection {
             this.record("Received", name, message.kind, bytes.length, message);
           this.emit();
         } catch (error) {
-          if (name === "tracking") this.state.statistics.discarded++;
+          if (name === "tracking") this.state.discarded++;
           if (name === "control")
             this.fail(
               error instanceof Error ? error.message : "Invalid control packet",
@@ -221,9 +218,13 @@ export class Connection {
       this.state.status = "Connected";
       this.state.detail = message.pose ? "Receiving head and controller poses." : "Hello accepted. No tracking sources advertised.";
       for (const space of message.spaces) this.references.add(`${space.id}:${space.version}`);
-      if (message.pose && !this.state.stream && this.pending.size === 0) {
-        const id = ++this.requestId;
-        this.sendRequest(id, "Subscribe", subscribe(id, message.pose.sources));
+      if (message.pose && !this.requested.has("pose")) {
+        this.requested.add("pose"); const id = ++this.requestId;
+        this.sendRequest(id, "Subscribe poses", subscribe(id, message.pose.sources));
+      }
+      if (message.controller && !this.requested.has("controller")) {
+        this.requested.add("controller"); const id = ++this.requestId;
+        this.sendRequest(id, "Subscribe inputs", subscribeInputs(id, message.controller.inputs));
       }
       clearTimeout(this.deadline);
       if (!this.timer) {
@@ -250,34 +251,36 @@ export class Connection {
       if (this.references.size > 128) this.references.delete(this.references.values().next().value!);
     } else if (message.kind === "StreamAccepted") {
       if (message.requestId && !this.pending.delete(message.requestId)) throw new Error("Unexpected stream acceptance");
-      const old = this.state.stream;
-      if (old?.streamId !== message.streamId) this.state.statistics.messages = new Sequence();
-      if (old?.subscriptionId !== message.subscriptionId) {
-        this.state.statistics.samples = new Sequence(false); this.state.statistics.consumer = new Latest(); this.state.sample = null; this.newest = 0n;
+      const old = this.state.streams.find(s => s.descriptor.streamId === message.streamId);
+      if (old?.descriptor.subscriptionId === message.subscriptionId) old.descriptor = message;
+      else {
+        const stream: LiveStream = { descriptor: message, sample: null, statistics: initialStatistics(), newest: 0n, lastReceivedAt: 0, rateAt: performance.now(), rateCount: 0n };
+        if (old) { stream.statistics.messages = old.statistics.messages; this.state.streams[this.state.streams.indexOf(old)] = stream; }
+        else this.state.streams.push(stream);
       }
-      this.state.stream = message;
     } else if (message.kind === "RequestRejected") {
       if (!this.pending.delete(message.requestId)) throw new Error("Unexpected request rejection");
       this.state.detail = message.reason;
     } else if (message.kind === "StreamClosed") {
       if (message.requestId && !this.pending.delete(message.requestId)) throw new Error("Unexpected stream closure");
-      if (message.streamId === this.state.stream?.streamId) { this.state.stream = null; this.state.sample = null; this.state.statistics.consumer.pending = null; }
+      this.state.streams = this.state.streams.filter(s => s.descriptor.streamId !== message.streamId);
     } else if (message.kind === "ServerResumed") {
       this.offset = null; this.bestRtt = Infinity; this.probes.clear(); this.state.rtt = null;
     }
   }
 
   private acceptTracking(message: Tracking) {
-    const stream = this.state.stream, stats = this.state.statistics;
-    if (!stream || stream.streamId !== message.streamId || stream.subscriptionId !== message.subscriptionId) { stats.discarded++; return; }
-    if (message.samples.length > stream.history || message.samples.some(s => s.poses.length !== stream.sources.length)) throw new Error("Tracking layout differs from descriptor");
+    const live = this.state.streams.find(s => s.descriptor.streamId === message.streamId && s.descriptor.subscriptionId === message.subscriptionId);
+    if (!live) { this.state.discarded++; return; }
+    const stream = live.descriptor, stats = live.statistics;
+    if (message.samples.length > stream.history || message.samples.some(s => s.type !== stream.type || (s.type === "pose" ? s.poses.length !== stream.sources.length : s.inputs.length !== stream.inputs.length || s.inputs.some((input, i) => input.type !== stream.inputs[i].type)))) throw new Error("Tracking layout differs from descriptor");
     if (!stats.messages.accept(message.messageNumber)) return;
     for (const sample of message.samples) {
-      if (!this.references.has(`${stream.reference.id}:${sample.referenceVersion}`)) { stats.discarded++; continue; }
+      if (stream.reference && !this.references.has(`${stream.reference.id}:${sample.referenceVersion}`)) { stats.discarded++; continue; }
       stats.samples.accept(sample.number);
-      if (sample.number > this.newest) {
-        this.newest = sample.number;
-        this.lastReceivedAt = performance.now();
+      if (sample.number > live.newest) {
+        live.newest = sample.number;
+        live.lastReceivedAt = performance.now();
         // History is for gap recovery; only the newest available sample reaches the consumer.
         if (sample === message.samples.at(-1)) stats.consumer.put(sample);
       }
@@ -288,24 +291,28 @@ export class Connection {
     if (![5, 30, 60].includes(rate)) throw new Error("Unsupported consumer rate");
     clearInterval(this.consumerTimer);
     this.consumerTimer = setInterval(() => {
-      const stats = this.state.statistics, now = performance.now();
-      const sample = stats.consumer.take();
-      if (sample) this.state.sample = sample;
-      stats.stale = !this.state.sample || now - this.lastReceivedAt > 500;
-      stats.age = this.state.sample && this.offset !== null ? now + this.offset - Number(this.state.sample.acquiredAt) / 1e6 : null;
-      if (now - this.rateAt >= 1000) { stats.rate = Number(stats.messages.unique - this.rateCount) * 1000 / (now - this.rateAt); this.rateAt = now; this.rateCount = stats.messages.unique; }
+      const now = performance.now();
+      for (const live of this.state.streams) {
+        const stats = live.statistics, sample = stats.consumer.take();
+        if (sample) live.sample = sample;
+        stats.stale = !live.sample || now - live.lastReceivedAt > 500;
+        stats.age = live.sample && this.offset !== null ? now + this.offset - Number(live.sample.acquiredAt) / 1e6 : null;
+        if (now - live.rateAt >= 1000) { stats.rate = Number(stats.messages.unique - live.rateCount) * 1000 / (now - live.rateAt); live.rateAt = now; live.rateCount = stats.messages.unique; }
+      }
       this.emit();
     }, 1000 / rate);
   }
-  setPublication(rate: number, history: number) {
-    if (!this.state.stream) return;
+  setPublication(rate: number, history: number, type = "pose") {
+    const stream = this.state.streams.find(s => s.descriptor.type === type)?.descriptor;
+    if (!stream) return;
     const id = ++this.requestId;
-    this.sendRequest(id, "UpdatePublication", updatePublication(id, this.state.stream.streamId, rate, history));
+    this.sendRequest(id, "UpdatePublication", updatePublication(id, stream.streamId, rate, history));
   }
-  stopTracking() {
-    if (!this.state.stream) return;
+  stopTracking(type = "pose") {
+    const stream = this.state.streams.find(s => s.descriptor.type === type)?.descriptor;
+    if (!stream) return;
     const id = ++this.requestId;
-    this.sendRequest(id, "Unsubscribe", unsubscribe(id, this.state.stream.streamId));
+    this.sendRequest(id, "Unsubscribe", unsubscribe(id, stream.streamId));
   }
   private sendRequest(id: bigint, kind: string, bytes: Uint8Array<ArrayBuffer>) {
     if (this.control.readyState !== "open" || this.control.bufferedAmount > MAX_PACKET) throw new Error("Control channel unavailable");
@@ -393,9 +400,7 @@ export class Connection {
     this.state.rtt = null;
     this.state.hello = null;
     this.state.capabilities = null;
-    this.state.stream = null; this.state.sample = null;
-    this.state.statistics.consumer.pending = null;
-    this.state.statistics.stale = true;
+    this.state.streams = [];
     this.update(this.state);
   }
 }

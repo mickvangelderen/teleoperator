@@ -3,7 +3,8 @@
 Read-only TypeScript interface for XR Operator. It displays the live hello
 exchange, full-width session identity, advertised capabilities, channel state,
 clock-probe round-trip time, message sizes, and decoded payloads. The spatial
-workspace renders head and controller poses, their validity/activity, and per-stream
+workspace renders head and controller poses, controller input states and cumulative
+transition counts, their validity/activity, and per-stream
 statistics. An explicit desktop synthetic source is labeled in the Viewer; the
 Viewer never invents poses when the headset is unavailable.
 
@@ -79,7 +80,8 @@ not a calibrated one-way latency measurement. Resume clears the estimate.
 
 ## Tracking and slow-consumer test
 
-The Viewer automatically subscribes to advertised pose sources. Publication rate
+The Viewer automatically subscribes to advertised pose and controller sources.
+Select the stream in Tracking statistics to inspect its metrics and publication settings. Publication rate
 (100/30/10 Hz), history (1/4/8), and consumption rate (60/30/5 Hz) are independent.
 Only the latest pending sample reaches the visualizer. The receive path records
 sequence gaps, reordered/duplicate messages, sample coverage, and discarded

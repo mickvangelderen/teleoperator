@@ -17,6 +17,12 @@ import { PoseSamples } from "../src/generated/xr-operator/wire/pose-samples";
 import { Tracking } from "../src/generated/xr-operator/wire/tracking";
 import { JointPose } from "../src/generated/xr-operator/wire/joint-pose";
 import { Samples } from "../src/generated/xr-operator/wire/samples";
+import { ControllerValue } from "../src/generated/xr-operator/wire/controller-value";
+import { ControllerSample } from "../src/generated/xr-operator/wire/controller-sample";
+import { ControllerSamples } from "../src/generated/xr-operator/wire/controller-samples";
+import { BooleanValue } from "../src/generated/xr-operator/wire/boolean-value";
+import { ScalarValue } from "../src/generated/xr-operator/wire/scalar-value";
+import { InputValue } from "../src/generated/xr-operator/wire/input-value";
 
 function finish(b: Builder, kind: Message, value: number) {
   Packet.finishPacketBuffer(b, Packet.createPacket(b, kind, value));
@@ -153,4 +159,26 @@ test("tracking validates nested histories and preserves pose validity and option
   assert.throws(() => decode(tracking([1n], 15, NaN), "tracking"));
   assert.throws(() => decode(tracking([1n], 15, 0, 0), "tracking"));
   assert.doesNotThrow(() => decode(tracking([1n], 0, NaN), "tracking"));
+});
+
+test("controller snapshots preserve cumulative counters and reject invalid active analog values", () => {
+  function snapshot(scalar = 0.5) {
+    const b = new Builder(512);
+    const bool = BooleanValue.createBooleanValue(b, false, 9007199254740993n, 9007199254740993n);
+    const boolInput = ControllerValue.createControllerValue(b, true, 0n, InputValue.BooleanValue, bool);
+    const analog = ScalarValue.createScalarValue(b, scalar);
+    const analogInput = ControllerValue.createControllerValue(b, true, null, InputValue.ScalarValue, analog);
+    const sample = ControllerSample.createControllerSample(b, 1n, 0n, ControllerSample.createValuesVector(b, [boolInput, analogInput]));
+    const history = ControllerSamples.createControllerSamples(b, ControllerSamples.createSamplesVector(b, [sample]));
+    return finish(b, Message.Tracking, Tracking.createTracking(b, 1n, 2n, 1n, Samples.ControllerSamples, history));
+  }
+  const data = snapshot(), result = decode(data, "tracking");
+  assert.equal(result.kind, "Tracking");
+  if (result.kind !== "Tracking") throw new Error("Expected tracking");
+  assert.equal(result.samples[0].type, "controller");
+  assert.equal(result.samples[0].inputs[0].presses, 9007199254740993n);
+  assert.equal(result.samples[0].inputs[0].changedAt, 0n);
+  assert.equal(result.samples[0].inputs[1].changedAt, null);
+  for (const value of [NaN, Infinity, -0.1, 1.1]) assert.throws(() => decode(snapshot(value), "tracking"));
+  for (let end = 0; end < data.length; end++) assert.throws(() => decode(data.subarray(0, end), "tracking"));
 });

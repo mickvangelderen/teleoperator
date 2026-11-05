@@ -1,3 +1,4 @@
+use crate::inputs::{self, Input};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
@@ -7,6 +8,12 @@ use std::{
     time::Instant,
 };
 use tokio::sync::watch;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Pose,
+    Controller,
+}
 
 pub const RATE: f32 = 100.0;
 pub const HISTORY: usize = 8;
@@ -27,9 +34,11 @@ pub struct Sample {
     pub target_at: Option<i64>,
     pub reference_version: u32,
     pub poses: Vec<Pose>,
+    pub inputs: Vec<Input>,
 }
 
 pub struct Subscription {
+    pub kind: Kind,
     pub id: u64,
     pub sources: Vec<usize>,
     pub samples: Mutex<VecDeque<Sample>>,
@@ -46,13 +55,15 @@ pub struct StreamStats {
     pub peak_buffer: AtomicU64,
 }
 
+type SubscriptionKey = (Kind, Vec<usize>);
+
 pub struct Hub {
     pub started: Instant,
     pub source: &'static str,
     pub available: AtomicBool,
     pub resumed_at: AtomicI64,
     pub reference_version: Mutex<u32>,
-    subscriptions: Mutex<HashMap<Vec<usize>, Weak<Subscription>>>,
+    subscriptions: Mutex<HashMap<SubscriptionKey, Weak<Subscription>>>,
     next_subscription: AtomicU64,
     next_stream: AtomicU64,
     pub updates: watch::Sender<u64>,
@@ -99,19 +110,23 @@ impl Hub {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
             .expect("Session identity exhausted")
     }
-    pub fn subscribe(&self, sources: Vec<usize>) -> Arc<Subscription> {
+    pub fn subscribe(&self, kind: Kind, sources: Vec<usize>) -> Arc<Subscription> {
         let mut subscriptions = self.subscriptions.lock().unwrap();
         subscriptions.retain(|_, weak| weak.strong_count() > 0);
-        if let Some(existing) = subscriptions.get(&sources).and_then(Weak::upgrade) {
+        if let Some(existing) = subscriptions
+            .get(&(kind, sources.clone()))
+            .and_then(Weak::upgrade)
+        {
             return existing;
         }
         let subscription = Arc::new(Subscription {
+            kind,
             id: Self::id(&self.next_subscription),
             sources: sources.clone(),
             samples: Mutex::new(VecDeque::new()),
             number: AtomicU64::new(0),
         });
-        subscriptions.insert(sources, Arc::downgrade(&subscription));
+        subscriptions.insert((kind, sources), Arc::downgrade(&subscription));
         subscription
     }
     pub fn stream_stats(&self) -> Arc<StreamStats> {
@@ -127,7 +142,13 @@ impl Hub {
         }
         result
     }
-    pub fn acquire(&self, poses: &[Pose; 5], acquired_at: i64, target_at: Option<i64>) {
+    pub fn acquire(
+        &self,
+        poses: &[Pose; 5],
+        inputs: &[Input],
+        acquired_at: i64,
+        target_at: Option<i64>,
+    ) {
         let version = *self.reference_version.lock().unwrap();
         let mut subscriptions = self.subscriptions.lock().unwrap();
         subscriptions.retain(|_, weak| {
@@ -138,16 +159,37 @@ impl Hub {
                 .checked_add(1)
                 .expect("Sample counter exhausted");
             let mut samples = subscription.samples.lock().unwrap();
+            let selected_inputs = if subscription.kind == Kind::Controller {
+                subscription
+                    .sources
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, &i)| {
+                        let mut value = inputs[i].clone();
+                        if let Some(previous) = samples.back() {
+                            value.count_from(&previous.inputs[slot]);
+                        }
+                        value
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             samples.push_back(Sample {
                 number,
                 acquired_at,
                 target_at,
                 reference_version: version,
-                poses: subscription
-                    .sources
-                    .iter()
-                    .map(|&i| poses[i].clone())
-                    .collect(),
+                poses: if subscription.kind == Kind::Pose {
+                    subscription
+                        .sources
+                        .iter()
+                        .map(|&i| poses[i].clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                inputs: selected_inputs,
             });
             if samples.len() > HISTORY {
                 samples.pop_front();
@@ -174,7 +216,12 @@ pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
                 let at = hub.now();
                 let phase = (at as f64 / 1e9) as f32;
                 let poses = std::array::from_fn(|i| Pose { position: [if i == 0 { 0.0 } else if i < 3 { -0.3 } else { 0.3 }, if i == 0 { 1.6 } else { 1.1 + phase.sin() * 0.1 }, if i == 0 { 0.0 } else { -0.4 }], orientation: [0.0, 0.0, 0.0, 1.0], flags: 15, active: (i > 0).then_some(true) });
-                hub.acquire(&poses, at, Some(at));
+                let inputs = inputs::definitions().iter().map(|d| Input { active: true, changed_at: None, value: match d.kind {
+                    inputs::InputType::Boolean => inputs::Value::Boolean { value: ((phase * 2.) as u32).is_multiple_of(2), presses: 0, releases: 0 },
+                    inputs::InputType::Scalar => inputs::Value::Scalar((phase.sin() + 1.) / 2.),
+                    inputs::InputType::Vector2 => inputs::Value::Vector2([phase.sin() * 0.5, phase.cos() * 0.5]),
+                } }).collect::<Vec<_>>();
+                hub.acquire(&poses, &inputs, at, Some(at));
             }
         }
     }
@@ -187,12 +234,12 @@ mod tests {
     #[test]
     fn shared_acquisition_retains_history_and_retires_identity() {
         let hub = Hub::new("test");
-        let a = hub.subscribe(vec![0, 2]);
-        let b = hub.subscribe(vec![0, 2]);
+        let a = hub.subscribe(Kind::Pose, vec![0, 2]);
+        let b = hub.subscribe(Kind::Pose, vec![0, 2]);
         assert_eq!(a.id, b.id);
         let poses = std::array::from_fn(|_| Pose::default());
         for i in 0..12 {
-            hub.acquire(&poses, i, Some(0));
+            hub.acquire(&poses, &[], i, Some(0));
         }
         let samples = a.samples.lock().unwrap();
         assert_eq!(samples.len(), 8);
@@ -208,6 +255,6 @@ mod tests {
         let old = a.id;
         drop(a);
         drop(b);
-        assert_ne!(hub.subscribe(vec![0, 2]).id, old);
+        assert_ne!(hub.subscribe(Kind::Pose, vec![0, 2]).id, old);
     }
 }

@@ -10,7 +10,8 @@ The [Viewer](viewer/README.md) connects to the Quest over WebRTC and inspects
 the hello exchange, session identity, capabilities, and clock round trips.
 Head and controller grip/aim poses stream at 100 Hz, with bounded publication
 history, loss statistics, and a slow-consumer mode. The Android build includes
-OpenXR passthrough. Controller inputs and body acquisition are the next checkpoints.
+OpenXR passthrough. Controller buttons, touch states, triggers, grips, and thumbsticks stream alongside
+poses with shared transition counters. Body acquisition is the next checkpoint.
 See [tracking validation](operator/TRACKING.md) for measurements and hardware limits.
 
 Install **flatc 25.9.23** (see [protocol setup](protocol/README.md#generate-and-check)),

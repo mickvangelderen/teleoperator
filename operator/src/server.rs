@@ -173,48 +173,59 @@ impl Peer {
             let buffered = tracking.buffered_amount().await;
             let prepared = {
                 let mut protocol = self.protocol.lock().unwrap();
-                protocol.stream.as_mut().and_then(|stream| {
-                    stream
-                        .stats
-                        .peak_buffer
-                        .fetch_max(buffered as u64, Ordering::SeqCst);
-                    if !stream.due() {
-                        return None;
-                    }
-                    // One publication in flight; skip before serialization when SCTP backs up.
-                    if buffered >= 16_384 {
-                        stream.stats.skipped.fetch_add(1, Ordering::SeqCst);
-                        return None;
-                    }
-                    stream
-                        .packet()
-                        .map(|(packet, versions)| (packet, versions, stream.stats.clone()))
-                })
+                protocol
+                    .streams
+                    .iter_mut()
+                    .filter_map(|stream| {
+                        stream
+                            .stats
+                            .peak_buffer
+                            .fetch_max(buffered as u64, Ordering::SeqCst);
+                        if !stream.due() {
+                            return None;
+                        }
+                        // One publication in flight; skip before serialization when SCTP backs up.
+                        if buffered >= 16_384 {
+                            stream.stats.skipped.fetch_add(1, Ordering::SeqCst);
+                            return None;
+                        }
+                        stream
+                            .packet()
+                            .map(|(packet, versions)| (packet, versions, stream.stats.clone()))
+                    })
+                    .collect::<Vec<_>>()
             };
-            let Some((packet, versions, stats)) = prepared else {
-                continue;
-            };
-            for &version in &versions {
-                if known_versions.insert(version)
-                    && control
-                        .send(&Bytes::from(reference_packet(version)))
-                        .await
-                        .is_err()
-                {
-                    return;
+            for (_, versions, _) in &prepared {
+                for &version in versions {
+                    if known_versions.insert(version)
+                        && control
+                            .send(&Bytes::from(reference_packet(version)))
+                            .await
+                            .is_err()
+                    {
+                        return;
+                    }
                 }
             }
-            known_versions.retain(|v| versions.contains(v));
+            if let Some(latest) = known_versions.iter().copied().max() {
+                known_versions.retain(|v| latest.saturating_sub(*v) < 32);
+            }
             drop(gate);
-            let bytes = packet.len();
-            match tracking.send(&Bytes::from(packet)).await {
-                Ok(_) => {
-                    stats.sent.fetch_add(1, Ordering::SeqCst);
-                    stats.bytes.fetch_add(bytes as u64, Ordering::SeqCst);
+            for (packet, _, stats) in prepared {
+                if tracking.buffered_amount().await >= 16_384 {
+                    stats.skipped.fetch_add(1, Ordering::SeqCst);
+                    continue;
                 }
-                Err(_) => {
-                    stats.errors.fetch_add(1, Ordering::SeqCst);
-                    return;
+                let bytes = packet.len();
+                match tracking.send(&Bytes::from(packet)).await {
+                    Ok(_) => {
+                        stats.sent.fetch_add(1, Ordering::SeqCst);
+                        stats.bytes.fetch_add(bytes as u64, Ordering::SeqCst);
+                    }
+                    Err(_) => {
+                        stats.errors.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
                 }
             }
         }

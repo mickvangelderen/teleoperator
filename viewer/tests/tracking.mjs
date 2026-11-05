@@ -19,13 +19,14 @@ async function client(rate) {
     await window.client.connect();
     window.client.setConsumerRate(rate);
   }, rate);
-  await page.waitForFunction(() => window.client.state.sample !== null);
+  await page.waitForFunction(() => window.client.state.streams.some(s => s.sample !== null));
   assert.equal(await page.evaluate(() => window.client.state.source), "synthetic");
   return page;
 }
 async function snapshot(page) {
   return page.evaluate(() => {
-    const { statistics: s, stream } = window.client.state;
+    const live = window.client.state.streams.find(s => s.descriptor.type === "pose");
+    const s = live.statistics, stream = live.descriptor;
     return { at: performance.now(), stream: String(stream.streamId), subscription: String(stream.subscriptionId), received: Number(s.messages.unique), missing: Number(s.messages.missing), reordered: Number(s.messages.reordered), duplicates: Number(s.messages.duplicates), sampleGaps: Number(s.samples.missing), coalesced: s.consumer.coalesced, consumed: s.consumer.consumed, discarded: s.discarded, ageMs: s.age, pending: s.consumer.pending ? 1 : 0 };
   });
 }
@@ -54,7 +55,7 @@ try {
   assert.ok(blockedEnd[1].pending <= 1 && blockedEnd[1].ageMs < 500);
 
   await slow.evaluate(() => window.client.setPublication(10, 8));
-  await slow.waitForFunction(() => window.client.state.stream.rate === 10);
+  await slow.waitForFunction(() => window.client.state.streams.find(s => s.descriptor.type === "pose").descriptor.rate === 10);
   const limitedStart = await snapshot(slow);
   await new Promise(r => setTimeout(r, 3000));
   const limitedEnd = await snapshot(slow);
@@ -62,13 +63,29 @@ try {
   assert.ok(limited.messagesPerSecond > 8 && limited.messagesPerSecond < 12);
   assert.equal(limitedStart.subscription, limitedEnd.subscription, "Publication changes retain acquisition identity");
 
+  await slow.evaluate(() => window.client.setPublication(1, 1, "controller"));
+  await slow.waitForFunction(() => window.client.state.streams.find(s => s.descriptor.type === "controller")?.descriptor.rate === 1);
+  const counterSnapshot = page => page.evaluate(() => {
+    const s = window.client.state.streams.find(s => s.descriptor.type === "controller");
+    const input = s.sample.inputs.find(i => i.type === 0);
+    return { presses: Number(input.presses), releases: Number(input.releases), messages: Number(s.statistics.messages.unique), subscription: String(s.descriptor.subscriptionId) };
+  });
+  const counterStart = await counterSnapshot(slow);
+  await new Promise(r => setTimeout(r, 3200));
+  const counterEnd = await counterSnapshot(slow);
+  assert.equal(counterStart.subscription, counterEnd.subscription);
+  assert.ok(counterEnd.presses - counterStart.presses >= 2 && counterEnd.releases - counterStart.releases >= 2);
+  assert.ok(counterEnd.messages - counterStart.messages <= 5);
+
   // Deterministic receiver injection verifies metrics; this is explicitly not measured network loss.
-  await fast.evaluate(() => {
+  await fast.evaluate(async () => {
+    const { decode } = await import("/src/protocol.ts");
+    const streamId = window.client.state.streams.find(s => s.descriptor.type === "pose").descriptor.streamId;
     const channel = window.client.tracking, receive = channel.onmessage;
     window.injected = 0; let n = 0;
     channel.onmessage = event => {
-      const data = new DataView(event.data), root = data.getUint32(0, true), vt = root - data.getInt32(root, true), field = data.getUint16(vt + 4, true);
-      if (data.getUint8(root + field) === 14 && ++n % 10 === 0) { window.injected++; return; }
+      const message = decode(new Uint8Array(event.data), "tracking");
+      if (message.kind === "Tracking" && message.streamId === streamId && ++n % 10 === 0) { window.injected++; return; }
       receive(event);
     };
   });
@@ -89,7 +106,7 @@ try {
   await fast.evaluate(() => window.client.close()); await slow.evaluate(() => window.client.close());
   await ui.getByRole("button", { name: "Disconnect" }).click();
   const sender = await ui.evaluate(async () => (await fetch("/api/stats")).json());
-  const report = { source: "synthetic", transport: "real local WebRTC, unordered, maxRetransmits=0", measuredAt: new Date().toISOString(), baseline, blocked, limited, receiverInjection: { droppedByTest: injected, additionalMissing: injectedEnd.missing - injectedStart.missing }, sender };
+  const report = { source: "synthetic", transport: "real local WebRTC, unordered, maxRetransmits=0", measuredAt: new Date().toISOString(), baseline, blocked, limited, controllerCountersAt1Hz: { before: counterStart, after: counterEnd }, receiverInjection: { droppedByTest: injected, additionalMissing: injectedEnd.missing - injectedStart.missing }, sender };
   await writeFile(new URL("measurements.json", output), JSON.stringify(report, null, 2) + "\n");
   assert.deepEqual(errors, []);
   console.log(JSON.stringify(report, null, 2));

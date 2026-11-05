@@ -57,6 +57,18 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
     let aim = actions.create_action::<xr::Posef>("aim", "Aim", &hands)?;
     let grip = actions.create_action::<xr::Posef>("grip", "Grip", &hands)?;
     let mut bindings = Vec::new();
+    let input_definitions = crate::inputs::definitions();
+    let input_actions = input_definitions
+        .iter()
+        .enumerate()
+        .map(|(i, d)| crate::xr_inputs::Action::create(&actions, d, i))
+        .collect::<xr::Result<Vec<_>>>()?;
+    for (action, definition) in input_actions.iter().zip(&input_definitions) {
+        bindings.push(action.binding(instance.string_to_path(&format!(
+            "/user/hand/{}/input/{}",
+            definition.source, definition.path
+        ))?));
+    }
     for hand in ["left", "right"] {
         for (name, action) in [("aim", &aim), ("grip", &grip)] {
             bindings.push(xr::Binding::new(
@@ -95,6 +107,10 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                 next += Duration::from_millis(10);
                 let mut state = gate.lock().unwrap();
                 let acquired_at = hub.now();
+                let mut inputs = input_definitions
+                    .iter()
+                    .map(|d| crate::inputs::Input::inactive(d.kind))
+                    .collect::<Vec<_>>();
                 let mut poses: [Pose; 5] = std::array::from_fn(|i| Pose {
                     active: (i > 0).then_some(false),
                     ..Default::default()
@@ -113,6 +129,9 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                     let synced = session
                         .sync_actions(&[xr::ActiveActionSet::new(&actions)])
                         .is_ok();
+                    for (input, action) in inputs.iter_mut().zip(&input_actions) {
+                        *input = action.sample(&session, synced);
+                    }
                     for (i, space) in spaces.iter().enumerate() {
                         if i > 0 {
                             let action = if i % 2 == 1 { &aim } else { &grip };
@@ -135,7 +154,7 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                     }
                 }
                 // XrTime has a runtime epoch; leave target_at absent until explicitly converted.
-                hub.acquire(&poses, acquired_at, None);
+                hub.acquire(&poses, &inputs, acquired_at, None);
                 drop(state);
                 let now = Instant::now();
                 if next > now {

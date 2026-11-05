@@ -1,11 +1,14 @@
 #[cfg(target_os = "android")]
 mod egl;
+pub mod inputs;
 pub mod protocol;
 pub mod server;
 pub mod streams;
 pub mod tracking;
 #[cfg(target_os = "android")]
 mod xr;
+#[cfg(target_os = "android")]
+mod xr_inputs;
 
 #[cfg(target_os = "android")]
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};

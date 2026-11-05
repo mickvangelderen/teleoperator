@@ -8,7 +8,9 @@ data-channel server alongside an immersive OpenXR session with passthrough.
 Head and left/right controller grip and aim poses are acquired at 100 Hz in Local
 space. Each sample retains independent position/orientation validity, tracking,
 and controller activity flags. Unavailable tracking is never replaced with fake
-headset data. Controller inputs and body samples are not implemented yet.
+headset data. A second stream exposes 27 controller inputs, including runtime
+Boolean conversions for trigger/grip presses, touch states, thumbsticks, face
+buttons and the left menu button. Body samples are not implemented yet.
 
 The protocol implements hello, capability discovery, clock probes, pose subscribe,
 replacement, publication changes, and unsubscribe. Identical acquisition requests

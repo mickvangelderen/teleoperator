@@ -1,4 +1,4 @@
-import { Connection, initialState } from "./connection";
+import { Connection, initialState, initialStatistics } from "./connection";
 import type { Entry, State } from "./connection";
 import { json } from "./protocol";
 import "./style.css";
@@ -55,9 +55,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="session-body"><label>SERVER SESSION ID</label><code id="session-id">No session established</code><dl><div><dt>Handshake</dt><dd id="handshake">Pending</dd></div><div><dt>Supported versions</dt><dd id="versions">—</dd></div><div><dt>Tracking sources</dt><dd id="source-count">—</dd></div></dl><div class="section-label">DATA CHANNELS</div><div class="channel"><span class="channel-icon">⇄</span><div><strong>Control</strong><span>Reliable · ordered</span></div><span id="control" class="channel-state">Closed</span></div><div class="channel"><span class="channel-icon">↝</span><div><strong>Tracking</strong><span>Unordered · zero retries</span></div><span id="tracking" class="channel-state">Closed</span></div><div class="session-note"><span>i</span><p id="session-note">Each connection negotiates a version and a device session before discovery.</p></div></div>
       </aside>
     </div>
+    <section class="panel controller-panel"><div class="panel-header"><h2>Controller inputs</h2><span id="input-status" class="tag">Awaiting sources</span></div><div id="input-values" class="input-values"></div></section>
     <section class="panel tracking-stats" aria-label="Tracking statistics">
       <div class="panel-header"><h2>Tracking statistics</h2><span id="freshness" class="tag">Awaiting samples</span></div>
-      <div class="tracking-controls"><label>Publication <select id="send-rate"><option value="100">100 Hz</option><option value="30">30 Hz</option><option value="10">10 Hz</option></select></label><label>History <select id="history"><option value="1">1 sample</option><option value="4">4 samples</option><option value="8">8 samples</option></select></label><label>Viewer consumer <select id="consumer-rate"><option value="30">30 Hz</option><option value="60">60 Hz</option><option value="5">5 Hz · slow consumer</option></select></label><button id="inspect-sample">Inspect latest sample</button></div>
+      <div class="tracking-controls"><label>Stream <select id="stream-kind"><option value="pose">Poses</option><option value="controller">Controller inputs</option></select></label><label>Publication <select id="send-rate"><option value="100">100 Hz</option><option value="30">30 Hz</option><option value="10">10 Hz</option></select></label><label>History <select id="history"><option value="1">1 sample</option><option value="4">4 samples</option><option value="8">8 samples</option></select></label><label>Viewer consumer <select id="consumer-rate"><option value="30">30 Hz</option><option value="60">60 Hz</option><option value="5">5 Hz · slow consumer</option></select></label><button id="inspect-sample">Inspect latest sample</button></div>
       <dl class="tracking-numbers"><div><dt>Received rate</dt><dd id="tracking-rate">—</dd></div><div><dt>Missing messages</dt><dd id="missing">0</dd></div><div><dt>Reordered / duplicates</dt><dd id="reordered">0 / 0</dd></div><div><dt>Samples not received</dt><dd id="sample-gaps">0</dd></div><div><dt>Viewer coalesced</dt><dd id="coalesced">0</dd></div><div><dt>Estimated sample age</dt><dd id="sample-age">—</dd></div></dl>
       <p class="statistics-note">Missing messages are sequence gaps and may arrive late. Sample gaps also include publication rate limits. Viewer coalescing deliberately replaces pending updates with the latest sample. Age uses an approximate clock mapping.</p>
       <div id="pose-values" class="pose-values"></div>
@@ -137,6 +138,11 @@ function updateMessages(state: State) {
 
 function render(state: State) {
   current = state;
+  const poseStream = state.streams.find(s => s.descriptor.type === "pose");
+  const inputStream = state.streams.find(s => s.descriptor.type === "controller");
+  const selectedStream = state.streams.find(s => s.descriptor.type === element<HTMLSelectElement>("stream-kind").value);
+  const sample = poseStream?.sample ?? null;
+  const stream = poseStream?.descriptor ?? null;
   const live = state.status === "Connected",
     busy = state.status === "Connecting";
   text("status", state.status);
@@ -179,20 +185,20 @@ function render(state: State) {
   text("error", state.detail);
   text(
     "workspace-title",
-    live ? (state.stream ? "Waiting for valid poses" : "Waiting for tracking sources") : "Your workspace is ready",
+    live ? (stream ? "Waiting for valid poses" : "Waiting for tracking sources") : "Your workspace is ready",
   );
   text(
     "workspace-note",
     live
-      ? state.stream ? "Invalid or inactive poses are hidden until tracking resumes." : "The device is connected. Tracking is currently unavailable."
+      ? stream ? "Invalid or inactive poses are hidden until tracking resumes." : "The device is connected. Tracking is currently unavailable."
       : "Connect to discover the device’s tracking sources.",
   );
   const names = state.capabilities?.pose ? state.capabilities.pose.sources : [];
-  document.querySelectorAll(".source-state").forEach((source, i) => { source.textContent = i === 0 && names.length ? `${names.length} pose sources · 100 Hz` : live ? "Not advertised" : "Awaiting discovery"; });
-  text("stream-count", `${state.stream ? 1 : 0} active streams`);
+  document.querySelectorAll(".source-state").forEach((source, i) => { source.textContent = i === 0 && names.length ? `${names.length} pose sources · 100 Hz` : i === 1 && inputStream ? `${inputStream.descriptor.inputs.length} inputs · 100 Hz` : live ? "Not advertised" : "Awaiting discovery"; });
+  text("stream-count", `${state.streams.length} active streams`);
   text("data-source", !live ? "SPATIAL VIEW" : state.source === "synthetic" ? "SYNTHETIC TEST SOURCE" : state.source === "openxr" ? "OPENXR · LOCAL SPACE" : "SOURCE UNAVAILABLE");
-  for (const id of ["send-rate", "history"]) element<HTMLSelectElement>(id).disabled = !state.stream;
-  const stats = state.statistics;
+  for (const id of ["send-rate", "history"]) element<HTMLSelectElement>(id).disabled = !selectedStream;
+  const stats = selectedStream?.statistics ?? initialStatistics();
   text("tracking-rate", `${stats.rate.toFixed(1)} Hz`);
   text("missing", String(stats.messages.missing));
   text("reordered", `${stats.messages.reordered} / ${stats.messages.duplicates}`);
@@ -200,13 +206,24 @@ function render(state: State) {
   text("coalesced", String(stats.consumer.coalesced));
   text("sample-age", stats.age === null ? "—" : `${Math.max(0, stats.age).toFixed(1)} ms`);
   text("freshness", stats.stale ? "Stale / awaiting samples" : "Receiving samples");
-  element("empty-state").hidden = !!state.sample?.poses.some(p => (p.flags & 2) && p.active !== false);
-  drawPoses(document.querySelector<SVGSVGElement>("#poses")!, state.sample, state.stream?.sources ?? [], stats.stale);
+  element("empty-state").hidden = !!sample?.poses.some(p => (p.flags & 2) && p.active !== false);
+  drawPoses(document.querySelector<SVGSVGElement>("#poses")!, sample, stream?.sources ?? [], stats.stale);
   const values = element("pose-values"); values.replaceChildren();
-  state.sample?.poses.forEach((pose, i) => {
+  sample?.poses.forEach((pose, i) => {
     const row = document.createElement("div");
-    row.textContent = `${state.stream?.sources[i]} · ${pose.active === false ? "inactive" : !(pose.flags & 2) ? "position invalid" : pose.position.map(n => n.toFixed(3)).join(" / ") + " m"} · ${pose.flags & 1 ? "orientation valid" : "orientation invalid"}`;
+    row.textContent = `${stream?.sources[i]} · ${pose.active === false ? "inactive" : !(pose.flags & 2) ? "position invalid" : pose.position.map(n => n.toFixed(3)).join(" / ") + " m"} · ${pose.flags & 1 ? "orientation valid" : "orientation invalid"}`;
     values.append(row);
+  });
+  text("input-status", inputStream ? `${inputStream.statistics.rate.toFixed(1)} Hz · ${inputStream.statistics.messages.missing} missing` : "Not advertised");
+  const inputs = element("input-values"); inputs.replaceChildren();
+  inputStream?.sample?.inputs.forEach((input, i) => {
+    const definition = inputStream.descriptor.inputs[i], row = document.createElement("div");
+    const label = document.createElement("strong"); label.textContent = `${definition.source} · ${definition.label}`;
+    const value = document.createElement("span"); value.textContent = inputStream.statistics.stale ? "stale" : !input.active ? "inactive" : typeof input.value === "boolean" ? (input.value ? "Pressed / touched" : "Released") : typeof input.value === "number" ? input.value.toFixed(3) : input.value.map(n => n.toFixed(3)).join(" / ");
+    row.classList.toggle("pressed", input.active && input.value === true && !inputStream.statistics.stale);
+    row.append(label, value);
+    if (input.type === 0) { const counts = document.createElement("small"); counts.textContent = `press ${input.presses} · release ${input.releases}`; row.append(counts); }
+    inputs.append(row);
   });
   text("hello-badge", live ? "Hello accepted" : "Awaiting hello");
   element("hello-badge").classList.toggle("accepted", live);
@@ -266,8 +283,14 @@ window.addEventListener("pagehide", () => connection?.close());
 render(current);
 
 element("consumer-rate").onchange = () => connection?.setConsumerRate(Number(element<HTMLSelectElement>("consumer-rate").value));
-for (const id of ["send-rate", "history"]) element(id).onchange = () => connection?.setPublication(Number(element<HTMLSelectElement>("send-rate").value), Number(element<HTMLSelectElement>("history").value));
+for (const id of ["send-rate", "history"]) element(id).onchange = () => connection?.setPublication(Number(element<HTMLSelectElement>("send-rate").value), Number(element<HTMLSelectElement>("history").value), element<HTMLSelectElement>("stream-kind").value);
 element("inspect-sample").onclick = () => {
-  selected = { id: -1, at: new Date(), direction: "Received", channel: "tracking", kind: "Pose sample snapshot", bytes: 0, value: current.sample };
+  selected = { id: -1, at: new Date(), direction: "Received", channel: "tracking", kind: "Sample snapshot", bytes: 0, value: current.streams.find(s => s.descriptor.type === element<HTMLSelectElement>("stream-kind").value)?.sample ?? null };
   updateMessages(current);
+};
+
+element("stream-kind").onchange = () => {
+  const stream = current.streams.find(s => s.descriptor.type === element<HTMLSelectElement>("stream-kind").value);
+  if (stream) { element<HTMLSelectElement>("send-rate").value = String(stream.descriptor.rate); element<HTMLSelectElement>("history").value = String(stream.descriptor.history); }
+  render(current);
 };

@@ -14,7 +14,7 @@ const MAX_REQUESTS: usize = 65_536;
 
 pub struct Connection {
     pub hub: Arc<Hub>,
-    pub stream: Option<Stream>,
+    pub streams: Vec<Stream>,
     pub advertised: bool,
     pub resumed_at: i64,
     session: wire::SessionId,
@@ -54,7 +54,7 @@ impl Connection {
     pub fn with_hub(session: wire::SessionId, hub: Arc<Hub>) -> Self {
         Self {
             hub,
-            stream: None,
+            streams: Vec::new(),
             advertised: false,
             resumed_at: 0,
             session,

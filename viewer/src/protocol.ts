@@ -11,6 +11,8 @@ import { UpdatePublication } from "./generated/xr-operator/wire/update-publicati
 import { Unsubscribe } from "./generated/xr-operator/wire/unsubscribe";
 import { Acquisition } from "./generated/xr-operator/wire/acquisition";
 import { Requirement } from "./generated/xr-operator/wire/requirement";
+import { ControllerSettings } from "./generated/xr-operator/wire/controller-settings";
+import { ControlSelection } from "./generated/xr-operator/wire/control-selection";
 
 export const MAX_PACKET = 65_536;
 export type Hello = {
@@ -23,7 +25,7 @@ export type Hello = {
 };
 export type Capabilities = {
   kind: "Capabilities";
-  controller: false;
+  controller: false | { inputs: InputDefinition[] };
   pose: false | { sources: string[] };
   body: false;
   limits: {
@@ -44,9 +46,11 @@ export type ClockReply = {
   sentAt: bigint;
 };
 export type Reference = { kind: "ReferenceSpaceDefinition"; id: bigint; version: number };
-export type Accepted = { kind: "StreamAccepted"; requestId: bigint; streamId: bigint; subscriptionId: bigint; sources: string[]; reference: { id: bigint; version: number }; rate: number; history: number };
+export type InputDefinition = { source: string; id: string; type: number; label: string };
+export type Input = { active: boolean; changedAt: bigint | null; type: number; value: boolean | number | number[]; presses: bigint; releases: bigint };
+export type Accepted = { kind: "StreamAccepted"; type: "pose" | "controller"; requestId: bigint; streamId: bigint; subscriptionId: bigint; sources: string[]; inputs: InputDefinition[]; reference: { id: bigint; version: number } | null; rate: number; history: number };
 export type Pose = { position: number[]; orientation: number[]; flags: number; active: boolean | null };
-export type Sample = { number: bigint; acquiredAt: bigint; targetAt: bigint | null; referenceVersion: number; poses: Pose[] };
+export type Sample = { type: "pose" | "controller"; number: bigint; acquiredAt: bigint; targetAt: bigint | null; referenceVersion: number; poses: Pose[]; inputs: Input[] };
 export type Tracking = { kind: "Tracking"; streamId: bigint; subscriptionId: bigint; messageNumber: bigint; samples: Sample[] };
 export type Received = Hello | Capabilities | ClockReply | Reference | Accepted | Tracking
   | { kind: "RequestRejected"; requestId: bigint; reason: string }
@@ -74,6 +78,21 @@ export function updatePublication(id: bigint, streamId: bigint, rate: number, hi
   UpdatePublication.startUpdatePublication(b); UpdatePublication.addRequestId(b, id); UpdatePublication.addStreamId(b, streamId); UpdatePublication.addPublication(b, p);
   const request = UpdatePublication.endUpdatePublication(b);
   Packet.finishPacketBuffer(b, Packet.createPacket(b, Message.UpdatePublication, request));
+  return new Uint8Array(b.asUint8Array());
+}
+export function subscribeInputs(id: bigint, inputs: InputDefinition[]): Uint8Array<ArrayBuffer> {
+  const b = new Builder(2048);
+  const selections = inputs.map(input => {
+    const source = b.createString(input.source), name = b.createString(input.id);
+    ControlSelection.startControlSelection(b); ControlSelection.addSourceId(b, source); ControlSelection.addInputId(b, name);
+    return ControlSelection.endControlSelection(b);
+  });
+  const vector = ControllerSettings.createInputsVector(b, selections);
+  ControllerSettings.startControllerSettings(b); ControllerSettings.addSampleRateHz(b, 100); ControllerSettings.addInputs(b, vector);
+  const settings = ControllerSettings.endControllerSettings(b);
+  Subscribe.startSubscribe(b); Subscribe.addRequestId(b, id); Subscribe.addAcquisitionType(b, Acquisition.ControllerSettings); Subscribe.addAcquisition(b, settings);
+  const request = Subscribe.endSubscribe(b);
+  Packet.finishPacketBuffer(b, Packet.createPacket(b, Message.Subscribe, request));
   return new Uint8Array(b.asUint8Array());
 }
 export function unsubscribe(id: bigint, streamId: bigint): Uint8Array<ArrayBuffer> {
@@ -236,6 +255,24 @@ class Table {
     const active = this.number(1, "u8"); requireValue(active <= 1 && !this.field(2, 4));
     return { position: floats.slice(0, 3), orientation: floats.slice(3), flags, active: this.field(1, 1) ? !!active : null };
   }
+  vec2(index: number): number[] {
+    const field = this.field(index, 8, true);
+    return [this.view.getFloat32(field, true), this.view.getFloat32(field + 4, true)];
+  }
+}
+
+function inputDefinition(t: Table): InputDefinition {
+  const result = { source: t.string(0), id: t.string(1), type: t.number(3, "u8"), label: t.string(8) || t.string(4) };
+  requireValue(result.source.length > 0 && result.id.length > 0 && result.type <= 2);
+  return result;
+}
+function input(t: Table): Input {
+  const kind = t.number(2, "u8"), v = t.child(3), active = t.number(0, "u8");
+  requireValue(active <= 1 && kind >= 1 && kind <= 3);
+  const value = kind === 1 ? !!v.number(0, "u8") : kind === 2 ? v.number(0, "f32") : v.vec2(0);
+  if (kind === 1) requireValue(v.number(0, "u8") <= 1);
+  else if (active) requireValue((Array.isArray(value) ? value : [value]).every(n => typeof n === "number" && Number.isFinite(n) && n >= (kind === 2 ? 0 : -1) && n <= 1));
+  return { active: !!active, changedAt: t.field(1, 8) ? t.integer(1, true) : null, type: kind - 1, value, presses: kind === 1 ? v.integer(1) : 0n, releases: kind === 1 ? v.integer(2) : 0n };
 }
 
 function reference(table: Table): Reference {
@@ -270,11 +307,11 @@ export function decode(
   const message = packet.child(1);
   if (channel === "tracking") {
     if (kind === Message.Tracking) {
-      requireValue(message.number(3, "u8") === 2);
-      const samples: Sample[] = message.child(4).tables(0, 8).map(s => ({ number: s.integer(0), acquiredAt: s.integer(1, true), targetAt: s.field(2, 8) ? s.integer(2, true) : null, referenceVersion: s.number(3, "u32"), poses: s.tables(4, 64).map(p => p.pose()) }));
+      const type = message.number(3, "u8"); requireValue(type === 1 || type === 2);
+      const samples: Sample[] = message.child(4).tables(0, 8).map(s => type === 2 ? ({ type: "pose", number: s.integer(0), acquiredAt: s.integer(1, true), targetAt: s.field(2, 8) ? s.integer(2, true) : null, referenceVersion: s.number(3, "u32"), poses: s.tables(4, 64).map(p => p.pose()), inputs: [] }) : ({ type: "controller", number: s.integer(0), acquiredAt: s.integer(1, true), targetAt: null, referenceVersion: 0, poses: [], inputs: s.tables(2, 128).map(input) }));
       requireValue(samples.length > 0);
       for (let i = 0; i < samples.length; i++) {
-        const s = samples[i]; requireValue(s.number > 0n && s.referenceVersion > 0 && s.poses.length > 0);
+        const s = samples[i]; requireValue(s.number > 0n && (s.type === "pose" ? s.referenceVersion > 0 && s.poses.length > 0 : s.inputs.length > 0));
         if (i) requireValue(s.number === samples[i - 1].number + 1n && s.acquiredAt >= samples[i - 1].acquiredAt);
       }
       const result: Tracking = { kind: "Tracking", streamId: message.integer(0), subscriptionId: message.integer(1), messageNumber: message.integer(2), samples };
@@ -329,16 +366,18 @@ export function decode(
   if (kind === Message.StreamClosed) return { kind: "StreamClosed", requestId: message.integer(0), streamId: message.integer(1) };
   if (kind === Message.StreamAccepted) {
     const d = message.child(2), p = message.child(3);
-    requireValue(d.number(1, "u8") === 2);
-    const names = sources(d, 4), settings = d.child(2);
-    requireValue(JSON.stringify(names) === JSON.stringify(sources(settings, 1)));
-    const result: Accepted = { kind: "StreamAccepted", requestId: message.integer(0), streamId: message.integer(1), subscriptionId: d.integer(0), sources: names, reference: d.metadata(5), rate: p.number(0, "f32"), history: p.number(1, "u32", 1) };
-    requireValue(result.streamId > 0n && result.subscriptionId > 0n && Number.isFinite(result.rate) && result.rate >= 1 && result.rate <= 100 && result.history >= 1 && result.history <= 8 && settings.integer(2) === result.reference.id);
+    const type = d.number(1, "u8"); requireValue(type === 1 || type === 2);
+    const definitions = type === 1 ? d.tables(3, 128).map(inputDefinition) : [];
+    const names = type === 2 ? sources(d, 4) : definitions.map(d => `${d.source}/${d.id}`), settings = d.child(2);
+    const selected = type === 2 ? sources(settings, 1) : settings.tables(1, 128).map(s => `${s.string(0)}/${s.string(1)}`);
+    requireValue(names.length > 0 && new Set(names).size === names.length && JSON.stringify(names) === JSON.stringify(selected));
+    const result: Accepted = { kind: "StreamAccepted", type: type === 1 ? "controller" : "pose", requestId: message.integer(0), streamId: message.integer(1), subscriptionId: d.integer(0), sources: names, inputs: definitions, reference: type === 2 ? d.metadata(5) : null, rate: p.number(0, "f32"), history: p.number(1, "u32", 1) };
+    requireValue(result.streamId > 0n && result.subscriptionId > 0n && Number.isFinite(result.rate) && result.rate >= 1 && result.rate <= 100 && result.history >= 1 && result.history <= 8 && (!result.reference || settings.integer(2) === result.reference.id));
     message.tables(4, 64);
     return result;
   }
   requireValue(kind === Message.Capabilities, "Unexpected control message");
-  for (const index of [0, 2])
+  for (const index of [2])
     requireValue(
       !message.field(index, 4),
       "This Viewer does not yet support tracking capabilities",
@@ -347,7 +386,7 @@ export function decode(
     limits = message.child(5);
   const result: Capabilities = {
     kind: "Capabilities",
-    controller: false,
+    controller: message.field(0, 4) ? { inputs: message.child(0).tables(1, 128).map(inputDefinition) } : false,
     pose: message.field(1, 4) ? { sources: sources(message.child(1), 0) } : false,
     body: false,
     spaces: message.tables(3, 64).map(reference),

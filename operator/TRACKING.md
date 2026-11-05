@@ -49,6 +49,19 @@ passthrough, known head/controller translations and rotations, active/invalid
 flags, pause/resume, recentering, repeated reconnects, and Wi-Fi loss/latency.
 Do not treat synthetic transport tests as validation of spatial calibration.
 
-Remaining project checkpoints: controller buttons/analog inputs and transition
-counters; body tracking, permissions, skeleton metadata and visualization; final
-hardware review. `IDEA.md` remains the project scope and has not been modified.
+The controller checkpoint adds 27 inputs and supports up to three independent
+streams per peer. Both pose and controller requests share resolved acquisition
+across peers. Controller counters accumulate at acquisition time, rebaseline
+without edges after activity loss, and survive publication-rate changes. Runtime
+Boolean conversions are advertised; application hysteresis rules and Touch Plus
+finger-sensing extensions are not advertised. Input last-change timestamps remain
+absent until runtime-time conversion is validated.
+
+A second local test with concurrent pose/input streams received 1,000 pose
+messages in 10 seconds in each client, with zero gaps; the 5 Hz consumer consumed
+50 and coalesced 950. Publishing controller inputs at 1 Hz for 3.2 seconds delivered
+three snapshots carrying three additional presses and releases, while retaining
+the same subscription. This verifies counter recovery across unreceived changes.
+
+Remaining project checkpoints: body tracking, permissions, skeleton metadata and
+visualization; final hardware review. `IDEA.md` remains the project scope and has not been modified.
