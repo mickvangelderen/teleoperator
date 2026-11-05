@@ -15,11 +15,10 @@ elif ! quest_serial=$(adb -d get-serialno 2> /dev/null); then
 fi
 export ANDROID_SERIAL="$quest_serial"
 
-adb shell settings put global adb_wifi_enabled 1
 adb shell am broadcast -a com.oculus.vrpowermanager.prox_close
 adb shell input keyevent KEYCODE_WAKEUP
 python3 prepare-loader.py
 cargo apk build --lib
 adb install target/debug/apk/xr-operator.apk
 printf '%s\n' 'Warning: If the next command hangs, check the headset for a pending approval prompt.' >&2
-adb shell am start-activity -W dev.xroperator.quest/android.app.NativeActivity
+adb shell am start-activity -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n dev.xroperator.quest/android.app.NativeActivity

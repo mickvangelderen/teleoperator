@@ -191,7 +191,9 @@ function render(state: State) {
   const names = state.capabilities?.pose ? state.capabilities.pose.sources : [];
   document.querySelectorAll(".source-state").forEach((source, i) => { source.textContent = i === 0 && names.length ? `${names.length} pose sources · 100 Hz` : i === 1 && inputStream ? `${inputStream.descriptor.inputs.length} inputs · 100 Hz` : i === 2 && bodyStream ? `${bodyStream.sample?.poses.length ?? 0} joints · 100 Hz` : live ? "Not advertised" : "Awaiting discovery"; });
   text("stream-count", `${state.streams.length} active streams`);
-  text("data-source", !live ? "SPATIAL VIEW" : state.source === "synthetic" ? "SYNTHETIC TEST SOURCE" : state.source === "openxr" ? "OPENXR · LOCAL SPACE" : "SOURCE UNAVAILABLE");
+  const base = state.capabilities?.spaces.find(s => s.id === stream?.reference?.id);
+  const frameName = base ? ["VIEW", "LOCAL", "STAGE", "LOCAL FLOOR", "UNBOUNDED"][base.spaceKind] : "UNKNOWN";
+  text("data-source", !live ? "SPATIAL VIEW" : state.source === "synthetic" ? "SYNTHETIC TEST SOURCE" : state.source === "openxr" ? `OPENXR · ${frameName} SPACE` : "SOURCE UNAVAILABLE");
   for (const id of ["send-rate", "history"]) element<HTMLSelectElement>(id).disabled = !selectedStream;
   const stats = selectedStream?.statistics ?? initialStatistics();
   text("tracking-rate", `${stats.rate.toFixed(1)} Hz`);

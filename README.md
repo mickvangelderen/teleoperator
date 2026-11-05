@@ -13,8 +13,8 @@ history, loss statistics, and a slow-consumer mode. The Android build includes
 OpenXR passthrough. Controller buttons, touch states, triggers, grips, and thumbsticks stream alongside
 poses with shared transition counters. Body tracking exposes the default 70-joint
 set, versioned skeletons, and runtime quality information. All three streams can
-be inspected together in the Viewer. The latest tracking APK builds, but still
-needs headset validation.
+be inspected together in the Viewer. The APK has been deployed and tested remotely
+on the Quest; physical movement and controller checks still need hands-on validation.
 See [tracking validation](operator/TRACKING.md) for measurements and hardware limits.
 
 Install Python 3, Node.js 22.18+ and pnpm 12.10.1. Builds automatically download

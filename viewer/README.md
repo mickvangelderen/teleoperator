@@ -124,6 +124,14 @@ and stale state fades. Mesh dimensions and retargeting are visualization aids;
 use the joint overlay and numerical poses when checking physical alignment.
 Headset origin, controller alignment and body retargeting still need Quest validation.
 
+The Quest prefers OpenXR `LOCAL_FLOOR` (via `XR_EXT_local_floor`), falling back to
+`LOCAL` if unavailable. The Viewer displays the advertised frame kind; metadata
+ID 1 identifies the selected frame for that server session. Head, controllers and
+body joints all use that same runtime frame. No guessed floor offset is applied.
+The grid marks Y = 0 of that frame; it represents the estimated floor only for a
+floor-based frame. The camera automatically frames newly available tracking and
+the view presets frame the latest data, without changing any received coordinates.
+
 Asset sources, licenses, exact revisions and conversion details are in
 [`public/assets/SOURCES.md`](public/assets/SOURCES.md). `pnpm build:body` regenerates
 the body GLB from checksum-verified upstream assets; it is not required for normal

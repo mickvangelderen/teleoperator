@@ -18,6 +18,7 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
     extensions.khr_android_create_instance = true;
     extensions.khr_opengl_es_enable = true;
     extensions.khr_convert_timespec_time = true;
+    extensions.ext_local_floor = available.ext_local_floor;
     extensions.fb_passthrough = available.fb_passthrough;
     extensions.fb_body_tracking = available.fb_body_tracking;
     extensions.meta_body_tracking_fidelity = available.meta_body_tracking_fidelity;
@@ -85,8 +86,21 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
         &bindings,
     )?;
     session.attach_action_sets(&[&actions])?;
-    let local =
-        session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
+    let base_type = if extensions.ext_local_floor
+        && session
+            .enumerate_reference_spaces()?
+            .contains(&xr::ReferenceSpaceType::LOCAL_FLOOR_EXT)
+    {
+        xr::ReferenceSpaceType::LOCAL_FLOOR_EXT
+    } else {
+        xr::ReferenceSpaceType::LOCAL
+    };
+    let base = session.create_reference_space(base_type, xr::Posef::IDENTITY)?;
+    hub.local_floor.store(
+        base_type == xr::ReferenceSpaceType::LOCAL_FLOOR_EXT,
+        Ordering::SeqCst,
+    );
+    log::info!("Tracking reference space: {base_type:?}");
     let spaces = [
         session.create_reference_space(xr::ReferenceSpaceType::VIEW, xr::Posef::IDENTITY)?,
         aim.create_space(&session, hands[0], xr::Posef::IDENTITY)?,
@@ -171,7 +185,7 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                         }
                     }
                     if let Some(tracker) = &mut tracker
-                        && let Ok(sample) = tracker.sample(&local, time, &hub)
+                        && let Ok(sample) = tracker.sample(&base, time, &hub)
                     {
                         body = Some(sample);
                     }
@@ -186,7 +200,7 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                             );
                         }
                         if (i == 0 || poses[i].active == Some(true))
-                            && let Ok(location) = space.locate(&local, time)
+                            && let Ok(location) = space.locate(&base, time)
                         {
                             let p = location.pose.position;
                             let q = location.pose.orientation;
@@ -260,7 +274,7 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                             }
                         }
                         xr::Event::ReferenceSpaceChangePending(event)
-                            if event.reference_space_type() == xr::ReferenceSpaceType::LOCAL =>
+                            if event.reference_space_type() == base_type =>
                         {
                             gate.lock().unwrap().1.push(event.change_time())
                         }

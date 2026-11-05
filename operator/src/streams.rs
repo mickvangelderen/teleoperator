@@ -85,19 +85,20 @@ fn publication<'a>(
 fn reference<'a>(
     b: &mut Builder<'a>,
     version: u32,
+    kind: wire::ReferenceSpaceKind,
 ) -> WIPOffset<wire::ReferenceSpaceDefinition<'a>> {
     wire::ReferenceSpaceDefinition::create(
         b,
         &wire::ReferenceSpaceDefinitionArgs {
             reference: Some(&wire::MetadataRef::new(1, version)),
-            kind: wire::ReferenceSpaceKind::Local,
+            kind,
             ..Default::default()
         },
     )
 }
-pub fn reference_packet(version: u32) -> Vec<u8> {
+pub fn reference_packet(version: u32, kind: wire::ReferenceSpaceKind) -> Vec<u8> {
     let mut b = Builder::new();
-    let m = reference(&mut b, version);
+    let m = reference(&mut b, version, kind);
     finish(
         b,
         wire::Message::ReferenceSpaceDefinition,
@@ -128,7 +129,11 @@ pub fn capabilities(hub: &Hub) -> Vec<u8> {
     } else {
         None
     };
-    let space = reference(&mut b, *hub.reference_version.lock().unwrap());
+    let space = reference(
+        &mut b,
+        *hub.reference_version.lock().unwrap(),
+        hub.reference_kind(),
+    );
     let spaces = b.create_vector(if available {
         std::slice::from_ref(&space)
     } else {
@@ -367,7 +372,7 @@ impl Connection {
                 {
                     return Err((
                         wire::RejectionCode::UnsupportedSetting,
-                        "Pose acquisition requires 100 Hz, Local space 1, and AcquisitionTime",
+                        "Pose acquisition requires 100 Hz, the advertised reference space 1, and AcquisitionTime",
                     ));
                 }
                 let requested = settings.sources();
@@ -489,7 +494,7 @@ impl Connection {
                 {
                     return Err((
                         wire::RejectionCode::UnsupportedSetting,
-                        "Body requires 100 Hz, the default 70-joint set, Local space 1, AcquisitionTime and default fidelity",
+                        "Body requires 100 Hz, the default 70-joint set, the advertised reference space 1, AcquisitionTime and default fidelity",
                     ));
                 }
             } else {
@@ -537,7 +542,7 @@ impl Connection {
         }
         let stream = &self.streams[index];
         let version = *self.hub.reference_version.lock().unwrap();
-        let mut replies = vec![reference_packet(version)];
+        let mut replies = vec![reference_packet(version, self.hub.reference_kind())];
         if stream.subscription.kind == Kind::Body {
             replies.push(body::definition(skeleton.as_ref().ok_or((
                 wire::RejectionCode::UnsupportedCapability,
@@ -646,6 +651,17 @@ impl Stream {
     pub fn due(&mut self) -> bool {
         let now = Instant::now();
         if now < self.next_send {
+            return false;
+        }
+        // Acquisition may finish just after this tick; keep this slot until a new sample exists.
+        if self
+            .subscription
+            .samples
+            .lock()
+            .unwrap()
+            .back()
+            .is_none_or(|s| s.number == self.last_sample)
+        {
             return false;
         }
         let period = Duration::from_secs_f32(1.0 / self.rate);
@@ -838,6 +854,34 @@ impl Stream {
 mod tests {
     use super::*;
     use crate::{protocol::packet, tracking::Pose};
+    #[test]
+    fn reference_metadata_identifies_runtime_floor_or_local_fallback() {
+        for (floor, kind) in [
+            (true, wire::ReferenceSpaceKind::LocalFloor),
+            (false, wire::ReferenceSpaceKind::Local),
+        ] {
+            let hub = Hub::new("test");
+            hub.local_floor.store(floor, Ordering::SeqCst);
+            hub.set_available(true);
+            let bytes = capabilities(&hub);
+            let p = packet(&bytes).unwrap();
+            let space = p
+                .message_as_capabilities()
+                .unwrap()
+                .reference_spaces()
+                .get(0);
+            assert_eq!(space.kind(), kind);
+            assert_eq!(space.reference().id(), 1);
+            hub.reset_reference();
+            let bytes =
+                reference_packet(*hub.reference_version.lock().unwrap(), hub.reference_kind());
+            let p = packet(&bytes).unwrap();
+            let space = p.message_as_reference_space_definition().unwrap();
+            assert_eq!(space.kind(), kind);
+            assert_eq!(space.reference().version(), 2);
+        }
+    }
+
     fn request(id: u64, stream: u64, sources: &[&str], rate: Option<f32>, history: u32) -> Vec<u8> {
         let mut b = Builder::new();
         let sources: Vec<_> = sources
@@ -925,6 +969,29 @@ mod tests {
             assert_eq!(a.streams.first().unwrap().rate, 30.);
         }
     }
+    #[test]
+    fn publication_waits_for_fresh_acquisition_without_losing_its_slot() {
+        let hub = Hub::new("test");
+        hub.set_available(true);
+        let mut c = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
+        c.negotiated = true;
+        c.control(&request(1, 0, &["head"], Some(100.), 1)).unwrap();
+        let stream = &mut c.streams[0];
+        let deadline = Instant::now() - Duration::from_millis(10);
+        stream.next_send = deadline;
+        assert!(!stream.due());
+        assert_eq!(stream.next_send, deadline);
+        let poses = std::array::from_fn(|_| Pose::default());
+        hub.acquire(&poses, &[], None, 1, None);
+        assert!(stream.due());
+        assert!(stream.packet().is_some());
+        stream.next_send = deadline;
+        assert!(!stream.due());
+        assert_eq!(stream.next_send, deadline);
+        hub.acquire(&poses, &[], None, 2, None);
+        assert!(stream.due());
+    }
+
     #[test]
     fn skipped_publications_do_not_consume_message_numbers_and_history_is_consecutive() {
         let hub = Hub::new("test");

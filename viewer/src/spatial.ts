@@ -1,5 +1,5 @@
 import {
-  ACESFilmicToneMapping, AxesHelper, BufferGeometry, Color, Float32BufferAttribute,
+  ACESFilmicToneMapping, AxesHelper, Box3, BufferGeometry, Color, Float32BufferAttribute,
   GridHelper, Group, HemisphereLight, Line, LineBasicMaterial, LineSegments,
   Mesh, MeshStandardMaterial, PerspectiveCamera, PMREMGenerator, Scene,
   SphereGeometry, Vector3, WebGLRenderer,
@@ -19,6 +19,9 @@ export class SpatialView {
   private observer: ResizeObserver;
   private frame = 0;
   private disposed = false;
+  private framed = 0;
+  private view = "iso";
+  private zoom = 1;
   private poses = new Map<string, { group: Group; shape: Group }>();
   private body?: BodyModel;
   private joints = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0x244e40, transparent: true, opacity: 0.75, depthTest: false }));
@@ -114,9 +117,22 @@ export class SpatialView {
   };
 
   setView(view: string, zoom: number) {
+    this.view = view; this.zoom = zoom;
+    const [sample, , , body] = this.latest;
+    const points = [...(sample?.poses ?? []), ...(body?.body?.active ? body.poses : [])]
+      .filter(p => (p.flags & 2) && p.active !== false)
+      .map(p => new Vector3(...p.position));
+    const bounds = new Box3().setFromPoints(points);
     this.controls.target.set(0, 1.3, 0);
+    let distance = 2.4;
+    if (!bounds.isEmpty()) {
+      bounds.getCenter(this.controls.target);
+      const radius = Math.max(0.5, bounds.getSize(new Vector3()).length() / 2 + 0.15);
+      const halfFov = this.camera.fov * Math.PI / 360;
+      distance = radius / Math.sin(Math.min(halfFov, Math.atan(Math.tan(halfFov) * this.camera.aspect)));
+    }
     const direction = view === "front" ? [0, 0.15, -1] : view === "side" ? [1, 0.15, 0] : [0.8, 0.35, -1];
-    this.camera.position.copy(this.controls.target).add(new Vector3(...direction).normalize().multiplyScalar(2.4 / zoom));
+    this.camera.position.copy(this.controls.target).add(new Vector3(...direction).normalize().multiplyScalar(distance / zoom));
     this.controls.update();
     this.invalidate();
   }
@@ -151,6 +167,13 @@ export class SpatialView {
     this.jointPositions.array.set(lines);
     this.jointPositions.needsUpdate = true;
     this.joints.geometry.setDrawRange(0, lines.length / 3);
+    const frameLevel = body?.body?.active && body.poses.some(p => p.flags & 2) ? 2 : count ? 1 : 0;
+    if (!sample && !body) this.framed = 0;
+    // Frame newly available tracking once; leave subsequent orbit/pan under user control.
+    if (frameLevel > this.framed) {
+      this.framed = frameLevel;
+      this.setView(this.view, this.zoom);
+    }
     this.invalidate();
   }
 

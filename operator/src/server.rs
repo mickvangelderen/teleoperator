@@ -172,6 +172,7 @@ impl Peer {
                 }
             }
             let buffered = tracking.buffered_amount().await;
+            let reference_kind = self.protocol.lock().unwrap().hub.reference_kind();
             let prepared = {
                 let mut protocol = self.protocol.lock().unwrap();
                 protocol
@@ -200,7 +201,7 @@ impl Peer {
                 for &version in &publication.references {
                     if known_versions.insert(version)
                         && control
-                            .send(&Bytes::from(reference_packet(version)))
+                            .send(&Bytes::from(reference_packet(version, reference_kind)))
                             .await
                             .is_err()
                     {

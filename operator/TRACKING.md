@@ -4,8 +4,9 @@ Implemented: OpenXR passthrough, head + left/right grip/aim poses, 27 controller
 inputs, and the default 70-joint body set; shared 100 Hz acquisition; independent
 1–100 Hz publication; 1–8 samples of consecutive history; bounded transport
 buffering; Viewer spatial visualization, sequence and consumer statistics.
-The only supported base is Local (ID 1), with
-AcquisitionTime targeting. Velocities are not advertised. Unavailable optional
+The supported base (ID 1) is the runtime's Local Floor space when available,
+with an explicitly advertised Local fallback and AcquisitionTime targeting.
+Velocities are not advertised. Unavailable optional
 pose selections are explicitly omitted; unsupported required settings are rejected.
 
 The OpenXR loader is Khronos 1.1.65, downloaded from Maven Central and checked
@@ -57,11 +58,10 @@ Repeat with `pnpm test:tracking` as described in the Viewer README.
 
 ## Validation still requiring the Quest
 
-The Android APK builds, but this tracking checkpoint has not been deployed or
-validated on hardware: the headset went to sleep and is unreachable. Verify
-passthrough, known head/controller translations and rotations, active/invalid
-flags, pause/resume, recentering, repeated reconnects, and Wi-Fi loss/latency.
-Do not treat synthetic transport tests as validation of spatial calibration.
+The APK has now been deployed and tested remotely on the Quest; see the hardware
+results below. Hands-on checks still need passthrough appearance, known
+head/controller translations and rotations, button transitions, body alignment,
+and deliberate recentering. Remote transport tests do not validate physical calibration.
 
 The controller checkpoint adds 27 inputs and supports up to three independent
 streams per peer. Both pose and controller requests share resolved acquisition
@@ -84,9 +84,10 @@ The Viewer rejects unknown metadata, malformed geometry, cyclic skeletons and
 metadata versions whose contents change.
 
 All original core implementation steps now have code and local validation.
-Remaining qualification is on the Quest: passthrough appearance, actual controller
-bindings, permission UI, body activation, skeleton coordinates, recenter/resume,
-and real network loss/latency. The Viewer now uses Meta hardware and Movement meshes with a Three.js
+Remaining hands-on qualification includes passthrough appearance, actual controller
+bindings, first-run permission UI, skeleton alignment and deliberate recentering.
+Remote body activation, lifecycle and network checks are recorded below.
+The Viewer now uses Meta hardware and Movement meshes with a Three.js
 renderer; its source/license manifest and rendering checks are in the Viewer README. Optional protocol settings are listed in the Operator
 README and are rejected when unavailable rather than silently substituted. `IDEA.md` remains the project scope and has not been modified.
 
@@ -103,3 +104,72 @@ receivers measured about 100 messages/sec with zero observed sequence gaps. This
 remains synthetic acquisition, not Quest or Wi-Fi qualification. The synthetic
 head/controller fixtures move independently of the body fixture, so their meshes
 do not represent a single person wearing and holding the devices.
+
+## Quest validation, 2026-11-05
+
+Deployed to the Quest 3 over authorized USB ADB, with no requested user interaction.
+Signaling used `192.168.2.9:8080`; the selected WebRTC UDP candidate was verified
+against the headset's Wi-Fi interface. There was no USB data tunnel. The Oculus
+runtime reported version 209.166.0, and `LOCAL_FLOOR` was available through
+`XR_EXT_local_floor`. All pose and body locations now use this runtime frame,
+advertised as `LocalFloor` under session-scoped metadata ID 1. `Local` remains the
+explicit fallback on runtimes without the extension. No guessed height offset is used.
+
+The final 30-second delivery observation started at 17:48 UTC. Two separate
+Chromium processes subscribed to all three streams; consumption was 60 Hz and
+5 Hz respectively. These are observed rates, not a latency or loss guarantee.
+
+| Stream | Fast receive rate | Fast sequence gaps | Slow receive rate | Slow sequence gaps |
+| --- | ---: | ---: | ---: | ---: |
+| Poses | 99.51 Hz | 14 | 99.01 Hz | 27 |
+| Controller inputs | 99.74 Hz | 8 | 99.34 Hz | 18 |
+| Body joints | 98.31 Hz | 51 | 98.11 Hz | 54 |
+
+The gaps were approximately 0.27–1.80% of accepted message sequences. There were
+no sender backpressure skips or send errors during this observation, and no
+malformed/unmatched packets or unknown-metadata sample discards. Message numbering
+advances only when WebRTC accepts a send, so sender skips do not explain these gaps.
+This establishes end-to-end unreliable transport loss, not its precise network
+layer or radio cause. Later arrival can still fill a sequence gap.
+
+The slow consumer used 150 updates per stream, coalescing 2,796–2,832 while retaining
+at most one pending sample. Blocking its JS thread for two seconds left the fast
+receiver at 95.87–99.20 Hz; the slow receiver recovered with a single pending sample
+and about 19 ms estimated sample age. Updates to 10 Hz pose, 1 Hz input and 30 Hz
+body publication measured 10.00, 1.00 and 29.19 Hz respectively. Body history length
+8 was decoded successfully. This block test does not simulate an unresponsive
+SCTP stack: browser networking continues independently of JavaScript.
+
+An earlier shared-browser stress run briefly fell to 64–67 Hz with backpressure
+and failed its throughput threshold. The separate-process repeat above passed
+the transport thresholds; differing runs do not isolate a single cause for that
+dip. Raw reports retain both outcomes. A separate publishing timing issue found
+during testing is fixed: a due publication now waits for fresh acquisition rather
+than spending its slot on an unchanged sample. Regression tests cover this and
+correct Local Floor/fallback metadata, including reference-version changes.
+
+Final focused lifecycle checks at 17:53 UTC passed: sleeping made poses invalid
+while preserving the WebRTC session; waking restored valid poses and advanced the
+reference version. Home destroyed the activity in the final run; relaunch and a
+new Viewer connection restored tracking with a new server session. Use the full
+`MAIN`/`LAUNCHER` intent in `deploy.sh`; a bare component-only remote start earlier
+left tracking inactive. USB deployment no longer enables wireless ADB, avoiding
+an unrelated network-authorization dialog.
+
+The Viewer browser checks passed against the device: hello/discovery/probes,
+repeated reconnects, WebGL assets/orbit controls, mobile layout and error states.
+Its camera now frames valid received points automatically without changing their
+coordinates. A browser assertion checked 71 recorded head/body points, including
+negative Local-space heights, and preserved subsequent manual camera control.
+The final UI displayed `OPENXR · LOCAL FLOOR SPACE` and active body tracking;
+the runtime reported calibration in progress. Controller availability varied
+while unattended, so physical input and tracking alignment remain unqualified.
+
+Reports and actual-device captures are in `.artifacts/quest/`: the separate-browser
+measurement report, the retained shared-browser result, `final-check.json`,
+`home-check.json`, and `viewer.png`/`workspace.png`/`joints.png`/`mobile.png`.
+The combined measurement script's final assertion incorrectly assumed Home always
+recreates the server session; this did not invalidate its recorded transport
+measurements. The final focused lifecycle checks above tested actual validity
+and session behavior instead. Thirteen Rust tests, clippy, twelve Viewer tests,
+the Viewer production build and Android APK build also passed.

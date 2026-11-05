@@ -5,8 +5,9 @@ Rust Android application for Meta Quest 3. The roadmap is in [IDEA.md](../IDEA.m
 The application is built as an ARM64 shared library and packaged with
 `cargo-apk`. It runs an HTTP signaling endpoint on **port 8080** and a WebRTC
 data-channel server alongside an immersive OpenXR session with passthrough.
-Head and left/right controller grip and aim poses are acquired at 100 Hz in Local
-space. Each sample retains independent position/orientation validity, tracking,
+Head and left/right controller grip and aim poses are acquired at 100 Hz in the
+runtime's Local Floor space when available, with an explicitly advertised Local
+fallback. Each sample retains independent position/orientation validity, tracking,
 and controller activity flags. Unavailable tracking is never replaced with fake
 headset data. A second stream exposes 27 controller inputs, including runtime
 Boolean conversions for trigger/grip presses, touch states, thumbsticks, face
@@ -70,8 +71,9 @@ The script defaults to the SDK paths above when `ANDROID_HOME` or
 The script updates the installed app while preserving its data. It prefers USB;
 otherwise, it discovers and connects to modern wireless ADB through mDNS.
 To select a device explicitly, use `ANDROID_SERIAL=YOUR_QUEST_SERIAL ./deploy.sh`.
-Deploy over USB once to enable wireless debugging, accepting the headset's
-network authorization prompt if shown. Subsequent deployments can use Wi-Fi.
+Wireless ADB must already be enabled and authorized in the headset's developer
+settings. USB deployment leaves that setting unchanged, so it does not open a
+wireless-debugging permission dialog.
 
 The script overrides proximity detection to treat the headset as worn and wakes
 it, keeping it active off-head. This also keeps the display awake.
@@ -98,7 +100,7 @@ It binds `127.0.0.1:8080` by default. Override with `XR_OPERATOR_BIND=IP:PORT`
 when needed. Ctrl+C closes the listener and peers. The Quest binds `0.0.0.0:8080`
 and closes networking when the activity is destroyed. Pausing the XR session does not shut down networking. Samples become invalid or
 inactive while the runtime is unavailable. Resume invalidates clock mapping and
-starts another Local reference-space version.
+starts another reference-space version.
 
 ## Transport
 
@@ -136,7 +138,7 @@ tracking available; body discovery appears after permission and skeleton acquisi
 succeed. Revoking permission closes body streams without closing pose/input streams.
 The Viewer reconnects to resubscribe after a capability is lost and restored.
 
-The current implementation advertises 100 Hz acquisition, Local space, acquisition-time
+The current implementation advertises 100 Hz acquisition, one runtime reference space, acquisition-time
 targeting, the default 70-joint body set (upper body and hands), and the runtime's
 default fidelity preference. Full 84-joint tracking, selectable fidelity, velocity
 channels, application hysteresis and Touch Plus extras are not advertised. Consumers

@@ -68,6 +68,8 @@ pub struct Hub {
     pub skeleton: Mutex<Option<Arc<Skeleton>>>,
     pub body_fidelity: AtomicBool,
     pub body_calibration: AtomicBool,
+    // Selected before tracking becomes available; immutable for this server session.
+    pub local_floor: AtomicBool,
     next_skeleton: AtomicU32,
     pub reference_version: Mutex<u32>,
     subscriptions: Mutex<HashMap<SubscriptionKey, Weak<Subscription>>>,
@@ -87,6 +89,7 @@ impl Hub {
             skeleton: Mutex::new(None),
             body_fidelity: AtomicBool::new(false),
             body_calibration: AtomicBool::new(false),
+            local_floor: AtomicBool::new(false),
             next_skeleton: AtomicU32::new(1),
             reference_version: Mutex::new(1),
             subscriptions: Mutex::new(HashMap::new()),
@@ -100,6 +103,13 @@ impl Hub {
         self.next_skeleton
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
             .expect("Skeleton version exhausted")
+    }
+    pub fn reference_kind(&self) -> crate::protocol::wire::ReferenceSpaceKind {
+        if self.local_floor.load(Ordering::SeqCst) {
+            crate::protocol::wire::ReferenceSpaceKind::LocalFloor
+        } else {
+            crate::protocol::wire::ReferenceSpaceKind::Local
+        }
     }
     pub fn now(&self) -> i64 {
         self.started
