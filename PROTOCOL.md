@@ -2,8 +2,10 @@
 
 This document describes the intended protocol for publishing OpenXR tracking
 from the device application to WebRTC clients, initially on Quest. It defines
-responsibilities, negotiation, data semantics, and delivery behavior. Unresolved
-wire formats, defaults, and target-device limits are listed under
+responsibilities, negotiation, data semantics, and delivery behavior. A concrete
+FlatBuffers draft is in [protocol/wire.fbs](protocol/wire.fbs), with proposed
+encoding choices and validation rules in [protocol/README.md](protocol/README.md).
+Unresolved defaults and target-device limits are listed under
 [open decisions and validation](#open-decisions-and-validation).
 
 The priority is fresh input with low latency. Clients must be able to use newer
@@ -101,15 +103,18 @@ and [WebRTC send buffering](https://www.w3.org/TR/webrtc/#dom-rtcdatachannel-buf
 
 The operational flow is connection, discovery, subscription negotiation,
 descriptor delivery, then snapshot consumption. Control requests carry request
-identifiers and receive explicit accepted or rejected results. Operation names
-and message layouts remain wire-format decisions.
+identifiers and receive explicit accepted or rejected results. The FlatBuffers
+draft proposes operation names and message layouts for review.
 
 ### Connect and discover
 
 Establish the WebRTC connection and its control and tracking channels. Negotiate
-a mutually supported protocol version before processing subscription requests;
-report incompatibility if there is no common version. The server identifies its
-application session and publishes capabilities over control.
+a mutually supported protocol version and advertise `serverSessionId` once during
+connection setup, before processing subscription requests. Report incompatibility
+if there is no common version. The selected version and server session identity
+become immutable context shared by that connection's control and tracking
+channels; subsequent messages do not repeat them. A new connection establishes
+this context again. The server publishes capabilities over control.
 
 Capability discovery describes what the server can expose through its supported
 bindings and runtime configuration. It includes:
@@ -224,8 +229,10 @@ subscriptions still used by others. Retire unused subscriptions without reusing
 their IDs within the server session. On reconnect, negotiate again, establish new
 client streams, obtain descriptors and metadata, and baseline current state and
 counters. Rejoining a retained shared subscription does not reset its samples or
-counters. An application restart changes `serverSessionId` and invalidates prior
-session identities and clock mappings.
+counters. An application restart requires a new WebRTC connection and handshake,
+changes `serverSessionId`, and invalidates prior session identities and clock
+mappings. Bind receive callbacks to their original connection context; callbacks
+from a retired connection must not update the new connection's state.
 
 ## Tracking data
 
@@ -380,7 +387,7 @@ and [fidelity requests](https://registry.khronos.org/OpenXR/specs/1.1/man/html/x
 
 | Field | Scope and meaning |
 | --- | --- |
-| `serverSessionId` | Identifies this server application session; changes on application restart |
+| `serverSessionId` | Identifies this server application session; advertised once during connection setup and inherited from connection context; changes on application restart |
 | `subscriptionId` | Identifies a shared server acquisition subscription and its immutable configuration within that session |
 | `sampleNumber` | Increases once per application-acquired sample within a subscription; identical for every client receiving that sample |
 | `streamId` | Identifies one client's publication stream; a recreated stream gets a new identity |
@@ -389,6 +396,9 @@ and [fidelity requests](https://registry.khronos.org/OpenXR/specs/1.1/man/html/x
 A sample's identity is
 `(serverSessionId, subscriptionId, sampleNumber)`. A message's
 identity is `(serverSessionId, streamId, messageNumber)`.
+These tuples describe logical identity, not a requirement to encode every
+component in each message. Receivers obtain `serverSessionId` from the
+connection context established during setup.
 
 Assign sample numbers at acquisition time. Repeating a sample in history preserves
 its number and contents. A newly created subscription starts a new sample-number
@@ -418,8 +428,9 @@ publication rate are separate quantities.
 ### Snapshot contents and history
 
 Each tracking message has an envelope and a **nonempty `samples` array**, even
-when it contains only one snapshot. The envelope identifies the server session,
-client stream, shared subscription, and message number. Every sample contains
+when it contains only one snapshot. The envelope identifies the client stream,
+shared subscription, and message number. The connection context supplies the
+server session identity and negotiated protocol version. Every sample contains
 its sample number, acquisition timestamp, and a complete snapshot of the
 subscription's selected data. Unchanged values remain present; decoding does
 not depend on a previously received sample.
@@ -512,7 +523,9 @@ either endpoint suspends/resumes. If a connection survives headset suspend, the
 server should notify clients of resume over control so they can invalidate the
 old mapping. See [Linux clock semantics](https://man7.org/linux/man-pages/man2/clock_gettime.2.html).
 
-Wire encoding remains undecided but must preserve the integer timestamps exactly.
+The FlatBuffers draft encodes these timestamps as signed 64-bit integers and
+uses nullable fields for runtime timestamps that may be unavailable or invalid.
+Any chosen wire encoding must preserve the integer timestamps exactly.
 TypeScript clients should retain them as `bigint` and subtract a nearby reference
 before converting differences to floating-point milliseconds. If using JSON,
 encode 64-bit timestamps as decimal strings rather than JSON numbers.
@@ -529,7 +542,8 @@ be skipped without retransmission or delaying tracking.
    retaining `t1` under the request ID.
 2. The server records receive time `t2` in `server-monotonic`.
 3. The server records `t3` immediately before sending a response containing
-   `serverSessionId`, the request ID, `t2`, and `t3`.
+   the request ID, `t2`, and `t3`. The client obtains `serverSessionId` from
+   connection context.
 4. The client records local receive time `t4` and matches the response to `t1`.
 
 Record timestamps as close to application send/receive boundaries as possible,
@@ -573,8 +587,9 @@ predicted pose target time from arrival time does not measure acquisition latenc
 The behavior above defines the design direction. The following details are not
 fixed by this document:
 
-- Wire encoding, exact control and descriptor schemas, version-negotiation
-  messages, non-timestamp numeric widths, and rollover rules.
+- Review and adopt or revise the proposed FlatBuffers encoding, control and
+  descriptor schemas, version negotiation, numeric widths, and no-wrap rules in
+  [the wire-format draft](protocol/README.md).
 - Canonical control identifiers and normalization rules, device binding coverage,
   and default client action mappings. Boolean activation requires a decision
   between runtime conversion and application-defined thresholds/hysteresis.
@@ -585,8 +600,8 @@ fixed by this document:
   larger body payloads.
 - Recovery behavior after capability loss, permission changes, and device/profile
   changes, including whether optional inputs are automatically renegotiated.
-- Clock-probe and resume-notification layouts, probe cadence, and client clock
-  estimator tuning.
+- Review the draft clock-probe and resume-notification layouts; decide probe
+  cadence and client clock estimator tuning.
 
 Runtime capability and performance measurements on the target headset are still
 needed. Verify profile and extension support, control semantics, simultaneous
