@@ -15,6 +15,11 @@ const DEFAULT_HISTORY: u32 = 2;
 pub struct Publication {
     pub bytes: Vec<u8>,
     pub skeletons: Vec<Arc<body::Skeleton>>,
+    pub message: u64,
+    pub first_sample: u64,
+    pub sample: u64,
+    pub acquired_at: i64,
+    pub prepared_at: i64,
 }
 
 pub struct Stream {
@@ -615,16 +620,17 @@ impl Stream {
             );
             (wire::Samples::PoseSamples, history.as_union_value())
         };
+        let message = self
+            .stats
+            .sent
+            .load(Ordering::SeqCst)
+            .checked_add(1)
+            .expect("Message counter exhausted");
         let m = wire::Tracking::create(
             &mut b,
             &wire::TrackingArgs {
                 stream_id: self.stats.id,
-                message_number: self
-                    .stats
-                    .sent
-                    .load(Ordering::SeqCst)
-                    .checked_add(1)
-                    .expect("Message counter exhausted"),
+                message_number: message,
                 history_type,
                 history: Some(history),
             },
@@ -632,6 +638,11 @@ impl Stream {
         Some(Publication {
             bytes: finish(b, wire::Message::Tracking, m.as_union_value()),
             skeletons,
+            message,
+            first_sample: samples.first().unwrap().number,
+            sample: latest.number,
+            acquired_at: latest.acquired_at,
+            prepared_at: self.hub.now(),
         })
     }
 }

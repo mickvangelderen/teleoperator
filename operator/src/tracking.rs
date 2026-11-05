@@ -66,6 +66,7 @@ pub struct Hub {
     next_stream: AtomicU64,
     pub updates: watch::Sender<()>,
     pub stats: Mutex<VecDeque<Arc<StreamStats>>>,
+    pub trace: crate::diagnostics::Diagnostics,
 }
 
 impl Hub {
@@ -85,6 +86,7 @@ impl Hub {
             next_stream: AtomicU64::new(1),
             updates: watch::channel(()).0,
             stats: Mutex::new(VecDeque::new()),
+            trace: Default::default(),
         })
     }
     pub fn next_skeleton_version(&self) -> u32 {
@@ -169,6 +171,14 @@ impl Hub {
             samples.pop_front();
         }
         drop(samples);
+        self.trace.record(
+            self.now(),
+            crate::diagnostics::Event::Acquisition {
+                sample: number,
+                acquired_ms: acquired_at as f64 / 1e6,
+                body_available: body.is_some(),
+            },
+        );
         self.notify();
     }
     pub fn diagnostics(&self) -> serde_json::Value {

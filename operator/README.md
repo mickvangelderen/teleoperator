@@ -85,6 +85,46 @@ To stream the app's logs:
 adb -s YOUR_QUEST_SERIAL logcat 'xr-operator:I' '*:S'
 ```
 
+## Diagnostic recordings
+
+The operator records diagnostics locally by default, independently of the Viewer.
+On Quest the files are in the app's private `files/diagnostics/` directory. Pull
+them after reproducing a hiccup; no live collector is needed:
+
+```sh
+mkdir -p ../.artifacts/quest-diagnostics
+adb -s YOUR_QUEST_SERIAL exec-out run-as dev.xroperator.quest \
+  tar -C files -cf - diagnostics > ../.artifacts/quest-diagnostics/capture.tar
+tar -xf ../.artifacts/quest-diagnostics/capture.tar -C ../.artifacts/quest-diagnostics
+```
+
+`run-as` works with the debug APK built above. `trace.0.jsonl` is current;
+`trace.1.jsonl` through `trace.3.jsonl` are older, newest first. Each file has a
+session header matching the WebRTC ServerHello session ID (high then low, hex).
+Timestamps are milliseconds in Hub's monotonic epoch; divide wire acquisition
+and clock-reply nanoseconds by 1,000,000 to compare. Match tracking events to
+Viewer packets by session, stream ID and message number. Retrieval while running
+can include an unfinished last line; the copied files remain usable up to it.
+
+Events record acquisition completion and OpenXR phases, publisher wakeup and
+metadata waits, send start/completion, buffer skips, stream/sample/message IDs,
+the newest sample available at each send decision, and WebRTC counters at 5 Hz.
+`send-end` means accepted by the WebRTC library, not delivered or acknowledged.
+Differences between send start/end expose blocking sends; `prepared_ms` and
+`available_sample` expose a prepared packet that aged while awaiting metadata.
+Body, pose and input streams still share the tracking channel's 64 KiB budget.
+An unsuccessful publication does not consume a message number; `skip-buffer`
+may therefore repeat the number used by a later successful send.
+
+Serialization and file writes run on a dedicated thread. An 8,192-event queue
+uses nonblocking submission; `dropped_events` and sequence gaps identify lost
+diagnostics if the writer cannot keep up. Recording failures go to logcat.
+Four 64 MiB files bound storage to 256 MiB; rotation and app restarts replace the
+oldest files, so pull a capture before further testing overwrites it. Buffered
+writes flush at least once per second and on clean shutdown. A crash or forced
+stop can lose the latest buffered data. Desktop runs use
+repository-root `.artifacts/operator-recordings/` with the same format.
+
 ## Desktop development and tests
 
 The same server runs on the host, without Android or hardware:

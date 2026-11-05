@@ -20,5 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = tokio::signal::ctrl_c().await;
         let _ = stop.send(true);
     });
-    xr_operator::server::serve(listener, shutdown, hub).await
+    let recordings =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.artifacts/operator-recordings");
+    xr_operator::server::serve(listener, shutdown, hub, recordings).await
 }
