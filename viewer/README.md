@@ -16,8 +16,9 @@ The attributed controller art is reused; all rendering code here is new.
 
 ## Run
 
-Install Node.js 22.18+ and pnpm 12.10.1, plus
-[flatc 25.9.23](../protocol/README.md#generate-and-check). Then:
+Install Python 3, Node.js 22.18+ and pnpm 12.10.1. `dev`, `build`, `test` and
+`generate` automatically prepare the pinned `flatc` compiler; see
+[protocol setup](../protocol/README.md#generate-and-check). Then:
 
 ```sh
 cd viewer

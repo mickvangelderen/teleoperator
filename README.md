@@ -17,8 +17,9 @@ be inspected together in the Viewer. The latest tracking APK builds, but still
 needs headset validation.
 See [tracking validation](operator/TRACKING.md) for measurements and hardware limits.
 
-Install **flatc 25.9.23** (see [protocol setup](protocol/README.md#generate-and-check)),
-then, from `viewer/`:
+Install Python 3, Node.js 22.18+ and pnpm 12.10.1. Builds automatically download
+and cache the pinned **flatc 25.9.23** compiler (see
+[protocol setup](protocol/README.md#generate-and-check)). From `viewer/`:
 
 ```sh
 pnpm install --frozen-lockfile

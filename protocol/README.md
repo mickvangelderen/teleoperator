@@ -262,15 +262,29 @@ follow [FlatBuffers schema evolution](https://flatbuffers.dev/evolution/).
 ## Generate and check
 
 Both applications pin **flatc 25.9.23** and matching Rust/TypeScript runtimes.
-Install the compiler from the [official release](https://github.com/google/flatbuffers/releases/tag/v25.9.23)
-for your platform, put `flatc` on PATH, or set `FLATC` to its absolute path.
-The builds reject a different compiler version. Generated files are ignored:
+Install **Python 3**; no separate compiler installation is required. Cargo builds
+(including `cargo apk build`) and the Viewer's `dev`, `build`, `test` and `generate`
+commands invoke [`tools/flatc.py`](../tools/flatc.py). It reuses a matching compiler
+on PATH, otherwise downloads an [official prebuilt binary](https://github.com/google/flatbuffers/releases/tag/v25.9.23),
+checks its pinned SHA-256 and version, and caches it under
+`.artifacts/tools/flatc-25.9.23/<host>/`. A different system version is skipped.
+The first download needs network access; subsequent builds reuse the cache offline.
+No CMake or C++ toolchain is required.
+
+Automatic downloads support Linux x86-64, macOS Intel/Apple Silicon, and Windows
+x86-64, using the build host rather than the Android target. On other hosts, build
+the pinned version from source and set `FLATC` to its executable. An explicit
+`FLATC` override takes precedence and fails clearly if its version is wrong.
+
+Generated files are ignored:
 Rust writes to Cargo's `OUT_DIR`, and `pnpm generate` writes to `viewer/src/generated`.
 Nothing generated is checked in. To check the schema directly from the repository root:
 
 ```sh
-flatc --rust --ts -o .artifacts/protocol/generated protocol/wire.fbs
+python3 tools/flatc.py --rust --ts -o .artifacts/protocol/generated protocol/wire.fbs
 ```
+
+The compiler setup checks run with `python3 -m unittest discover -s tools`.
 
 The implemented signaling contract, channel labels, and connection limits are
 documented in [operator/README.md](../operator/README.md#transport). The Viewer

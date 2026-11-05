@@ -22,7 +22,7 @@ share a subscription; publication is independent per client. See
 
 ## Build
 
-Install [flatc 25.9.23](../protocol/README.md#generate-and-check), Rust through rustup,
+Install Python 3, Rust through rustup,
 a JDK (tested with OpenJDK 21), and the Android SDK
 with Platform 32, Build Tools 36.1.0, Platform Tools, and NDK 29.0.14206865.
 With the Android SDK command-line tools on your PATH:
@@ -46,6 +46,10 @@ cargo apk build --lib
 The APK is `target/debug/apk/xr-operator.apk`. `cargo-apk` signs debug builds
 with the local Android debug keystore (`~/.android/debug.keystore`), creating
 it if needed. Do not use that key for distribution.
+
+Cargo automatically prepares the pinned host `flatc` compiler for both Android
+and desktop builds. No system `flatc` installation or `FLATC` setting is needed;
+see [protocol setup](../protocol/README.md#generate-and-check) for caching and overrides.
 
 ## Deploy to Quest 3
 

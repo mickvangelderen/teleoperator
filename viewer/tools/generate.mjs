@@ -2,18 +2,12 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const compiler = process.env.FLATC || "flatc";
-const version = spawnSync(compiler, ["--version"], { encoding: "utf8" });
-if (version.stdout?.trim() !== "flatc version 25.9.23") {
-  throw new Error(
-    "Install flatc 25.9.23 or set FLATC to its path; see protocol/README.md",
-  );
-}
 const output = fileURLToPath(new URL("../src/generated", import.meta.url));
 mkdirSync(output, { recursive: true });
 const result = spawnSync(
-  compiler,
+  "python3",
   [
+    fileURLToPath(new URL("../../tools/flatc.py", import.meta.url)),
     "--ts",
     "-o",
     output,
@@ -21,4 +15,9 @@ const result = spawnSync(
   ],
   { stdio: "inherit" },
 );
+if (result.error) {
+  throw new Error("Python 3 is required to prepare flatc; see protocol/README.md", {
+    cause: result.error,
+  });
+}
 if (result.status !== 0) throw new Error("FlatBuffers generation failed");
