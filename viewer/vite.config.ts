@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import type { ProxyOptions } from "vite";
 
-const target = process.env.XR_OPERATOR_URL || "http://127.0.0.1:8080";
+const target = process.env.XR_OPERATOR_URL || "http://192.168.2.9:8080";
 const url = new URL(target);
 if (
   !["http:", "https:"].includes(url.protocol) ||
