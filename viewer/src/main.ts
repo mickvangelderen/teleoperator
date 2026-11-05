@@ -75,25 +75,17 @@ let lastRtt: number | null = null;
 const rtts: number[] = [];
 let messageSignature = "";
 let spatial: SpatialView | undefined;
-const disposePerformance = mountPerformancePanel(element("performance"), () => ({
-  endpoint: __OPERATOR_TARGET__, source: current.source, connection: current.status,
-  consumerHz: Number(element<HTMLSelectElement>("consumer-rate").value),
-  streams: current.streams.map(s => ({ type: s.descriptor.type, publicationHz: s.descriptor.rate, history: s.descriptor.history })),
-}));
+const disposePerformance = mountPerformancePanel(element("performance"));
 if (import.meta.env.DEV) {
   recording.start({ type: "session", endpoint: __OPERATOR_TARGET__, viewerVersion: "0.1.0", protocolVersion: 1 }, (message, failed) => {
-    text("recording-status", message);
-    element("recording-status").classList.toggle("recording-failed", failed);
-    element<HTMLButtonElement>("recording-stop").disabled = !recording.active;
+    const status = element("recording-status");
+    status.hidden = false;
+    status.textContent = failed ? "Recording incomplete" : recording.active ? "Recording" : "Saved";
+    status.title = message;
+    status.setAttribute("aria-label", message);
+    status.classList.toggle("recording-failed", failed);
   });
-} else {
-  text("recording-status", "Disk recording is available with pnpm dev.");
-  element("recording-stop").hidden = true;
 }
-element("recording-stop").onclick = () => {
-  element<HTMLButtonElement>("recording-stop").disabled = true;
-  void recording.stop("user");
-};
 void import("./spatial").then(({ SpatialView }) => {
   spatial = new SpatialView(element("poses"), message => text("graphics-status", message));
   render(current);

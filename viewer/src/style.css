@@ -871,15 +871,8 @@ label,
 @media (min-width: 900px) { .viewport { height: 440px; } }
 
 .performance-panel { margin-top: 24px; }
-.performance-panel .panel-header { flex-wrap: wrap; height: auto; min-height: 60px; gap: 12px; padding-top: 12px; padding-bottom: 12px; }
-.profiling-controls { display: flex; gap: 8px; }
-.profiling-controls { flex-wrap: wrap; }
-#recording-status { overflow-wrap: anywhere; }
 #recording-status.recording-failed { color: #a33232; font-weight: 600; }
-.profiling-controls button { padding: 7px 10px; border: 1px solid #c4d1c7; border-radius: 6px; background: #fff; color: #293c31; font-size: 12px; }
-.profiling-controls button:disabled { opacity: 0.5; cursor: default; }
-.profiling-controls button[aria-pressed="true"] { background: #e4f0df; border-color: #72a477; }
-.timing-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 1fr); gap: 24px; padding: 20px 24px 0; }
+.timing-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 1fr); gap: 24px; padding: 20px 24px; }
 #timing-chart { display: block; width: 100%; height: 190px; }
 .timing-summary { width: 100%; border-collapse: collapse; font-size: 11px; }
 .timing-summary th, .timing-summary td { padding: 6px 4px; text-align: right; white-space: nowrap; }

@@ -83,9 +83,10 @@ not a calibrated one-way latency measurement. Resume clears the estimate.
 
 `pnpm dev` automatically records each page load to
 `.artifacts/recordings/<uuid>.jsonl` at the repository root. No separate recording
-process or command is needed. The **Performance** panel shows the file name,
-acknowledged size and any recording failure. Select **Save and stop recording**
-before closing the page when a complete capture matters; reload to start another.
+process or command is needed. A compact status badge in the **Performance** panel
+shows recording activity or failure; its tooltip contains the file name,
+acknowledged size or failure details. Recording runs continuously for the page's
+lifetime, with best-effort flushing on page unload.
 
 The recording contains the original FlatBuffers bytes (base64) of every sent and
 received data-channel packet, including packets rejected by the decoder. It also
@@ -138,12 +139,11 @@ The **Performance** panel uses the same approach as OpenArm Teleop: a rolling
 GPU queries. The implementation is specific to this Viewer; no additional package
 is required. Both viewers currently pin Three.js `0.186.1`.
 
-Connect, select **Show live timings**, reproduce the hiccup, then **Pause chart**
-to freeze the window. **Download chart** saves the raw samples, latest/median/
-P95/max timings, Three.js revision, browser, GPU timer status and current stream
-settings as JSON. Starting again clears the chart. Switching browser tab clears
-the chart history so background throttling does not look like a rendering stall.
-Disk recording continues independently of whether the chart is visible or paused.
+The chart and latest/median/P95/max values run automatically. Switching browser
+tab clears the chart history so background throttling does not look like a
+rendering stall. Disk recording retains the individual measurements independently
+of the chart's rolling window. GPU timing availability appears in the GPU row's
+tooltip; the capture also records it.
 
 - **Render interval:** time between actual 3D renders, including idle time.
   Around 33 ms is expected with the default 30 Hz consumer; 200 ms is expected
@@ -156,8 +156,8 @@ Disk recording continues independently of whether the chart is visible or paused
   with one outstanding query. Unsupported browsers show an explicit status;
   disjoint, timed-out and context-lost samples are discarded, not reported as zero.
 
-Performance recording is on by default in dev. The chart updates at 5 Hz when
-enabled and its history is bounded. It does not force extra 3D renders. GPU sampling can miss isolated
+Performance recording is on by default in dev. The chart updates at 5 Hz and its
+history is bounded. It does not force extra 3D renders. GPU sampling can miss isolated
 spikes; browser layout/paint, garbage collection and other tasks outside the
 instrumented callbacks require a browser DevTools Performance trace. Compare
 interval spikes with the CPU/GPU rows and the existing transport statistics.
@@ -165,7 +165,7 @@ The panel measures the browser, not acquisition or rendering on the Quest.
 
 With a running dev Viewer and tracking source, the profiling browser check exercises
 default packet/timing recording, lost-acknowledgement retries, an injected
-main-thread stall, pause/export, slow-consumer cadence, mobile layout, unavailable
+main-thread stall, slow-consumer cadence, mobile layout, unavailable
 GPU timing and a failed recording endpoint. It saves results in
 repository-root `.artifacts/performance/`:
 

@@ -102,7 +102,6 @@ class Profiler {
   private histories = Object.fromEntries(keys.map(key => [key, new TimingHistory()])) as Record<Metric, TimingHistory>;
   private gpu?: GpuTimer;
   private previousRender: number | null = null;
-  private stoppedAt = 0;
   private generation = 0;
   attach(gl: WebGL2RenderingContext, revision: string) {
     this.gpu?.cancel();
@@ -120,8 +119,7 @@ class Profiler {
     for (const history of Object.values(this.histories)) history.clear();
   }
   start() { this.reset(); this.enabled = true; }
-  visibilityChanged() { this.previousRender = null; if (this.enabled) this.reset(); }
-  stop() { this.enabled = false; this.stoppedAt = performance.now(); if (!recording.active) this.gpu?.cancel(); }
+  stop() { this.enabled = false; if (!recording.active) this.gpu?.cancel(); }
   begin() { return (this.enabled && !document.hidden) || recording.active ? performance.now() : null; }
   private sample(metric: Metric, start: number, ms: number, generation = this.generation) {
     recording.add({ type: "timing", metric, startMs: start, durationMs: ms });
@@ -145,7 +143,7 @@ class Profiler {
     });
   }
   snapshot() {
-    const end = this.enabled ? performance.now() : this.stoppedAt;
+    const end = performance.now();
     return {
       end, windowMs, threeRevision: this.threeRevision, gpuStatus: this.gpuStatus,
       metrics: keys.map(key => {
@@ -157,29 +155,23 @@ class Profiler {
 }
 export const profiler = new Profiler();
 
-export function mountPerformancePanel(container: HTMLElement, metadata: () => unknown) {
-  container.innerHTML = `<div class="panel-header"><h2>Performance</h2><div class="profiling-controls"><button id="profile-toggle" aria-pressed="false">Show live timings</button><button id="profile-download" disabled>Download chart</button><button id="recording-stop">Save and stop recording</button></div></div>
-    <p class="statistics-note" id="recording-status" role="status">Starting dev recording…</p>
-    <div id="profile-results" hidden><div class="timing-layout"><canvas id="timing-chart" role="img" aria-label="Last ten seconds of Viewer timings in milliseconds. Exact summaries are in the adjacent table."></canvas>
-    <table class="timing-summary" aria-label="Viewer timings in milliseconds"><thead><tr><th>ms · last 10 s</th><th>Latest</th><th>Median</th><th>P95</th><th>Max</th></tr></thead><tbody>${keys.map(key => `<tr id="timing-${key}"><th scope="row" style="color:${metrics[key].color}">${metrics[key].label}</th>${["current", "median", "p95", "max"].map(stat => `<td data-stat="${stat}">—</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>
-    <p class="statistics-note" id="profiling-status" role="status">Show live timings to inspect the last ten seconds. Pausing the chart does not pause dev recording.</p>
-    <p class="statistics-note">Render interval includes idle time: expect about 33 ms at the default 30 Hz consumer, or 200 ms at 5 Hz. UI + poses includes DOM updates and body animation; Three.js CPU measures render submission. Message CPU includes decoding and handling (and any synchronous UI work). These timings overlap and should not be added together. GPU queries sample only some renders.</p>`;
-  const toggle = container.querySelector<HTMLButtonElement>("#profile-toggle")!;
-  const download = container.querySelector<HTMLButtonElement>("#profile-download")!;
+export function mountPerformancePanel(container: HTMLElement) {
+  container.innerHTML = `<div class="panel-header"><h2>Performance</h2><span class="tag" id="recording-status" role="status" hidden></span></div>
+    <div id="profile-results" class="timing-layout"><canvas id="timing-chart" role="img" aria-label="Last ten seconds of Viewer timings in milliseconds. Exact summaries are in the adjacent table."></canvas>
+    <table class="timing-summary" aria-label="Viewer timings in milliseconds"><thead><tr><th>ms · last 10 s</th><th>Latest</th><th>Median</th><th>P95</th><th>Max</th></tr></thead><tbody>${keys.map(key => `<tr id="timing-${key}"><th scope="row" style="color:${metrics[key].color}">${metrics[key].label}</th>${["current", "median", "p95", "max"].map(stat => `<td data-stat="${stat}">—</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
   const canvas = container.querySelector<HTMLCanvasElement>("canvas")!;
   const ctx = canvas.getContext("2d");
-  const status = container.querySelector<HTMLElement>("#profiling-status")!;
   const refresh = () => {
     const capture = profiler.snapshot();
-    if (!container.querySelector<HTMLElement>("#profile-results")!.hidden) {
-      status.textContent = `${profiler.enabled ? "Recording" : "Paused"} · Three.js r${capture.threeRevision} · ${capture.gpuStatus}`;
-      for (const metric of capture.metrics) {
-        container.querySelectorAll<HTMLElement>(`#timing-${metric.key} [data-stat]`).forEach(cell => {
-          cell.textContent = metric.summary ? metric.summary[cell.dataset.stat as keyof typeof metric.summary].toFixed(2) : "—";
-        });
-      }
-      draw(capture);
+    const gpuLabel = container.querySelector<HTMLElement>("#timing-gpu th")!;
+    gpuLabel.title = capture.gpuStatus;
+    gpuLabel.setAttribute("aria-label", `GPU render: ${capture.gpuStatus}`);
+    for (const metric of capture.metrics) {
+      container.querySelectorAll<HTMLElement>(`#timing-${metric.key} [data-stat]`).forEach(cell => {
+        cell.textContent = metric.summary ? metric.summary[cell.dataset.stat as keyof typeof metric.summary].toFixed(2) : "—";
+      });
     }
+    draw(capture);
   };
   const draw = (capture: ReturnType<Profiler["snapshot"]>) => {
     if (!ctx) return;
@@ -209,23 +201,11 @@ export function mountPerformancePanel(container: HTMLElement, metadata: () => un
       if (metric.key === "gpu") for (const sample of metric.samples) ctx.fillRect(x(sample.at) - 1, y(sample.ms) - 1, 3, 3);
     }
   };
-  toggle.onclick = () => {
-    if (profiler.enabled) profiler.stop(); else profiler.start();
-    toggle.textContent = profiler.enabled ? "Pause chart" : "Show live timings";
-    toggle.setAttribute("aria-pressed", String(profiler.enabled));
-    container.querySelector<HTMLElement>("#profile-results")!.hidden = false;
-    download.disabled = false; refresh();
-  };
-  download.onclick = () => {
-    const capture = { capturedAt: new Date().toISOString(), timeOrigin: performance.timeOrigin, userAgent: navigator.userAgent, configuration: metadata(), ...profiler.snapshot() };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(capture, null, 2)], { type: "application/json" }));
-    const link = document.createElement("a"); link.href = url; link.download = "xr-viewer-profile.json"; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
   const visibility = () => {
     recording.add({ type: "visibility", state: document.visibilityState });
-    profiler.visibilityChanged();
+    profiler.reset();
   };
+  profiler.start();
   document.addEventListener("visibilitychange", visibility);
   const timer = setInterval(() => { if (profiler.enabled && !document.hidden) refresh(); }, 200);
   return () => { clearInterval(timer); document.removeEventListener("visibilitychange", visibility); profiler.stop(); };
