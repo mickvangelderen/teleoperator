@@ -142,13 +142,15 @@ export class Connection {
           if (!(event.data instanceof ArrayBuffer))
             throw new Error("Expected a binary protocol packet");
           const bytes = new Uint8Array(event.data);
-          recording.packet(this.recordingId, "received", name, bytes, started ?? performance.now());
+          const arrivedAt = started ?? performance.now();
+          profiler.transfer("received", bytes.length, arrivedAt);
+          recording.packet(this.recordingId, "received", name, bytes, arrivedAt);
           const message = decode(bytes, name);
           if (name === "tracking" && !this.state.capabilities) return;
           if (name === "control")
             this.record("Received", name, message.kind, bytes.length, message);
           if (message.kind === "Tracking") {
-            this.acceptTracking(message);
+            this.acceptTracking(message, bytes.length, arrivedAt);
             this.state.received++; this.state.bytes += bytes.length;
             return;
           }
@@ -295,11 +297,12 @@ export class Connection {
     if (this.references.size > 128) this.references.delete(this.references.keys().next().value!);
   }
 
-  private acceptTracking(message: Tracking) {
+  private acceptTracking(message: Tracking, bytes: number, arrivedAt: number) {
     const live = this.state.streams.find(s => s.descriptor.streamId === message.streamId && s.descriptor.subscriptionId === message.subscriptionId);
     if (!live) { this.state.discarded++; return; }
     const stream = live.descriptor, stats = live.statistics;
     if (message.samples.length > stream.history || message.samples.some(s => s.type !== stream.type || (s.type === "pose" && s.poses.length !== stream.sources.length) || (s.type === "controller" && (s.inputs.length !== stream.inputs.length || s.inputs.some((input, i) => input.type !== stream.inputs[i].type))))) throw new Error("Tracking layout differs from descriptor");
+    profiler.trackingArrival(stream.type, `${this.recordingId}:${stream.streamId}:${stream.subscriptionId}`, bytes, arrivedAt);
     if (!stats.messages.accept(message.messageNumber)) return;
     for (const sample of message.samples) {
       if (stream.reference && !this.references.has(`${stream.reference.id}:${sample.referenceVersion}`)) { stats.discarded++; continue; }
@@ -415,6 +418,7 @@ export class Connection {
       throw error;
     }
     recording.packet(this.recordingId, "sent", channel.label, bytes, at);
+    profiler.transfer("sent", bytes.length, at);
   }
   private emit() {
     const state = `${this.state.status}: ${this.state.detail}`;

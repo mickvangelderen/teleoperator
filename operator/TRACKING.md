@@ -173,3 +173,53 @@ recreates the server session; this did not invalidate its recorded transport
 measurements. The final focused lifecycle checks above tested actual validity
 and session behavior instead. Thirteen Rust tests, clippy, twelve Viewer tests,
 the Viewer production build and Android APK build also passed.
+
+## History and rendering investigation, 2026-11-05
+
+The Viewer now applies pending scene updates on `requestAnimationFrame` and draws
+only dirty frames, with a continuous-rendering option for measuring idle frames.
+The profiler separates animation-frame cadence, actual draw intervals, scene CPU,
+and per-stream arrival intervals. A separate graph measures payload bytes over a
+rolling second. Arrival intervals and transfer rates are included in dev recordings.
+
+An unattended Wi-Fi comparison requested 100 Hz publication for all three streams,
+used a 60 Hz consumer and continuous rendering, and changed history lengths with
+roughly 12-second observations after each change. Another existing Viewer peer
+remained connected; it was not interrupted. The Quest reported inactive/invalid
+poses, so this is a transport observation, not physical-motion rendering validation.
+
+| History: pose / input / body | Received pose / input / body, Hz | Median total payload, kB/s | Sender skips: pose / input / body |
+| --- | --- | ---: | --- |
+| 1 / 1 / 1 | 99.7 / 99.3 / 97.2 | 378 | 0 / 0 / 0 |
+| 4 / 1 / 1 | 98.7 / 98.4 / 97.6 | 456 | 1 / 1 / 0 |
+| 8 / 1 / 1 | 98.3 / 98.4 / 97.2 | 550 | 4 / 6 / 8 |
+| 1 / 1 / 1 | 99.6 / 98.7 / 96.5 | 376 | 1 / 1 / 4 |
+| 8 / 8 / 8 | 40.6 / 45.5 / 33.5 | 1031 | 716 / 654 / 791 |
+| 1 / 1 / 1 | 99.8 / 99.8 / 97.8 | 382 | 0 / 0 / 0 |
+
+Receive rates use raw recording phase boundaries; sender counters use the nearby
+HTTP snapshots, and median payload rates summarize the last ten seconds. These
+windows differ slightly. Animation-frame P95 stayed at 16.7–16.8 ms throughout.
+With all histories at 8, pose-arrival P95 rose to 58.2 ms and its maximum to
+143.5 ms. Message callback P95 remained at or below 0.5 ms.
+
+The sender does **not** wait for history to fill. `packet()` includes the newest
+available samples up to the requested maximum, and a regression test now verifies
+immediate publication of one and then two samples with history 8 requested.
+The measured slowdown is dominated by sender backpressure: all streams share a
+16,384-byte buffered-amount threshold, while one history-8 body packet in this
+capture is 18,424 bytes. Exceeding the threshold suppresses subsequent publications
+across streams. Skips do not consume message numbers; the all-8 phase had only
+0 / 3 / 8 sequence gaps despite the much larger number of skipped publications.
+
+This reproduces uneven delivery under larger combined histories, but does not
+establish the exact cause of the earlier pose-only hiccups. No send-buffer policy
+was changed in this checkpoint; increasing its size alone could trade skipped
+publications for greater latency. Physical-motion and hardware-GPU validation
+remain outstanding. Browser checks passed with both this Quest and the synthetic
+source, including continuous/dirty rendering, slow consumption, and exact agreement
+between recorded payload bytes and the rolling transfer totals.
+
+Local evidence: `.artifacts/history/quest-probe.json` (server counters and charts),
+`quest-capture.json` (decoded packet analysis), `quest-panel.png`, and recording
+`.artifacts/recordings/cb10f570-ff71-4cdc-93c6-464017f6772d.jsonl`.

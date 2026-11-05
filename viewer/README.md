@@ -145,16 +145,40 @@ rendering stall. Disk recording retains the individual measurements independentl
 of the chart's rolling window. GPU timing availability appears in the GPU row's
 tooltip; the capture also records it.
 
+- **Animation frame:** time between consecutive `requestAnimationFrame` callbacks,
+  independent of incoming messages and whether the scene needs drawing.
 - **Render interval:** time between actual 3D renders, including idle time.
   Around 33 ms is expected with the default 30 Hz consumer; 200 ms is expected
   at 5 Hz. This is not a browser refresh/FPS measurement.
-- **UI + poses CPU:** synchronous UI update, including pose/body animation.
+- **Pose / Input / Body arrival interval:** time since the previous tracking message
+  for that stream, measured at the next receive callback, before consumer coalescing.
+  These include browser scheduling delays; they are not network latency measurements.
+  The first message of a new subscription has no interval. During silence, no new
+  interval is plotted; the gap appears when the next message arrives.
+- **UI CPU:** synchronous UI update.
+- **Poses + body CPU:** applying the latest consumed state to the scene on an animation frame.
 - **Three.js CPU:** synchronous render submission; it does not wait for the GPU.
 - **Message CPU:** one data-channel callback, including decoding and handling.
   Control callbacks can also update the UI, so the CPU rows overlap; do not sum them.
 - **GPU render:** elapsed GPU query time around a render, sampled at most 5 Hz
   with one outstanding query. Unsupported browsers show an explicit status;
   disjoint, timed-out and context-lost samples are discarded, not reported as zero.
+
+The **Continuous rendering** checkbox draws on every animation frame, even when
+the scene is unchanged. Otherwise a frame draws only if the scene is dirty.
+Messages and consumer updates mark pending state; pose/body scene updates and
+drawing happen on the animation-frame loop. The consumer rate still determines
+how often new samples are made available to the scene.
+
+The separate transfer graph shows **kB/s** (1000 bytes per kB), calculated from
+payload bytes in the preceding **one second**, refreshed at 5 Hz. Received and sent
+totals cover both data channels; pose/input/body lines break down received tracking
+traffic. Totals include received packets even if decoding rejects them; stream
+lines require an accepted descriptor and valid tracking layout. Rates fall to zero
+during silence, independently of the consumer. They exclude signaling, recording
+uploads and WebRTC/UDP/IP overhead. Startup uses the same full one-second divisor.
+Latest/median/P95/max summarize these rolling rates over the last ten seconds.
+Recordings include `transfer-rate` events with `bytesPerSecond` and `windowMs`.
 
 Performance recording is on by default in dev. The chart updates at 5 Hz and its
 history is bounded. It does not force extra 3D renders. GPU sampling can miss isolated

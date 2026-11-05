@@ -970,12 +970,12 @@ mod tests {
         }
     }
     #[test]
-    fn publication_waits_for_fresh_acquisition_without_losing_its_slot() {
+    fn publication_waits_for_fresh_acquisition_but_never_for_full_history() {
         let hub = Hub::new("test");
         hub.set_available(true);
         let mut c = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
         c.negotiated = true;
-        c.control(&request(1, 0, &["head"], Some(100.), 1)).unwrap();
+        c.control(&request(1, 0, &["head"], Some(100.), 8)).unwrap();
         let stream = &mut c.streams[0];
         let deadline = Instant::now() - Duration::from_millis(10);
         stream.next_send = deadline;
@@ -984,12 +984,35 @@ mod tests {
         let poses = std::array::from_fn(|_| Pose::default());
         hub.acquire(&poses, &[], None, 1, None);
         assert!(stream.due());
-        assert!(stream.packet().is_some());
+        let bytes = stream.packet().unwrap().bytes;
+        assert_eq!(
+            packet(&bytes)
+                .unwrap()
+                .message_as_tracking()
+                .unwrap()
+                .history_as_pose_samples()
+                .unwrap()
+                .samples()
+                .len(),
+            1
+        );
         stream.next_send = deadline;
         assert!(!stream.due());
         assert_eq!(stream.next_send, deadline);
         hub.acquire(&poses, &[], None, 2, None);
         assert!(stream.due());
+        let bytes = stream.packet().unwrap().bytes;
+        assert_eq!(
+            packet(&bytes)
+                .unwrap()
+                .message_as_tracking()
+                .unwrap()
+                .history_as_pose_samples()
+                .unwrap()
+                .samples()
+                .len(),
+            2
+        );
     }
 
     #[test]

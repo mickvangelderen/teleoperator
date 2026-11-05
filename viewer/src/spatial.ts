@@ -19,6 +19,9 @@ export class SpatialView {
   private controls: OrbitControls;
   private observer: ResizeObserver;
   private frame = 0;
+  private dirty = true;
+  private stateDirty = true;
+  private continuous = false;
   private disposed = false;
   private framed = 0;
   private view = "iso";
@@ -73,6 +76,7 @@ export class SpatialView {
     this.observer.observe(surface);
     document.addEventListener("visibilitychange", this.invalidate);
     this.renderer.domElement.addEventListener("webglcontextlost", event => { event.preventDefault(); status("3D context lost. Reload to restore the view."); });
+    this.frame = requestAnimationFrame(this.animate);
     void this.load();
   }
 
@@ -107,20 +111,34 @@ export class SpatialView {
     const failed = results.filter(r => r.status === "rejected");
     this.surface.dataset.assets = failed.length ? "error" : "ready";
     this.status(failed.length ? "3D assets could not load. Reload to retry; tracking data remains available below." : "Meta models · drag to orbit · scroll to zoom");
-    this.update(...this.latest);
+    this.stateDirty = true;
+    this.invalidate();
   }
 
-  private invalidate = () => {
-    if (this.frame || this.disposed) return;
-    this.frame = requestAnimationFrame(() => {
-      this.frame = 0;
-      if (!document.hidden) {
-        const timing = profiler.beginRender();
-        try { this.renderer.render(this.scene, this.camera); }
-        finally { profiler.endRender(timing); }
-      }
-    });
+  private invalidate = () => { this.dirty = true; };
+
+  private animate = (now: number) => {
+    if (this.disposed) return;
+    this.frame = requestAnimationFrame(this.animate);
+    if (document.hidden) return;
+    profiler.animationFrame(now);
+    if (this.stateDirty) {
+      this.stateDirty = false;
+      const timing = profiler.begin();
+      try { this.applyState(); } finally { profiler.end("scene", timing); }
+    }
+    if (this.dirty || this.continuous) {
+      this.dirty = false;
+      const timing = profiler.beginRender();
+      try { this.renderer.render(this.scene, this.camera); }
+      finally { profiler.endRender(timing); }
+    }
   };
+
+  setContinuousRendering(enabled: boolean) {
+    this.continuous = enabled;
+    this.invalidate();
+  }
 
   setView(view: string, zoom: number) {
     this.view = view; this.zoom = zoom;
@@ -146,7 +164,15 @@ export class SpatialView {
   showJoints(show: boolean) { this.joints.visible = show; this.invalidate(); }
 
   update(sample: Sample | null, sources: string[], stale: boolean, body: Sample | null = null, skeleton?: Skeleton, bodyStale = true) {
+    const previous = this.latest;
+    if (sample === previous[0] && sources.length === previous[1].length && sources.every((source, i) => source === previous[1][i]) && stale === previous[2] && body === previous[3] && skeleton === previous[4] && bodyStale === previous[5]) return;
     this.latest = [sample, sources, stale, body, skeleton, bodyStale];
+    this.stateDirty = true;
+    this.invalidate();
+  }
+
+  private applyState() {
+    const [sample, sources, stale, body = null, skeleton, bodyStale = true] = this.latest;
     let count = 0;
     for (const [name, object] of this.poses) {
       const pose = sample?.poses[sources.indexOf(name)];
@@ -180,7 +206,6 @@ export class SpatialView {
       this.framed = frameLevel;
       this.setView(this.view, this.zoom);
     }
-    this.invalidate();
   }
 
   dispose() {

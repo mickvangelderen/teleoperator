@@ -840,7 +840,7 @@ label,
 .section-label {
   font-size: 10px;
 }
-/* Tracking is rendered at the selected consumer rate; the receive path stays independent. */
+/* Consumption and animation-frame rendering stay independent of the receive path. */
 #poses { position: absolute; inset: 0; width: 100%; height: 100%; font: 12px monospace; }
 .controller-panel { margin-top: 24px; }
 .view-controls { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; padding: 12px 20px; border-bottom: 1px solid #dce4de; font-size: 11px; color: #53675b; }
@@ -873,7 +873,7 @@ label,
 .performance-panel { margin-top: 24px; }
 #recording-status.recording-failed { color: #a33232; font-weight: 600; }
 .timing-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 1fr); gap: 24px; padding: 20px 24px; }
-#timing-chart { display: block; width: 100%; height: 190px; }
+.timing-layout canvas { display: block; width: 100%; height: 220px; }
 .timing-summary { width: 100%; border-collapse: collapse; font-size: 11px; }
 .timing-summary th, .timing-summary td { padding: 6px 4px; text-align: right; white-space: nowrap; }
 .timing-summary th { font-size: 11px; letter-spacing: normal; }

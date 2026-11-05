@@ -28,9 +28,29 @@ try {
   await page.waitForFunction(() => document.querySelector("#recording-status").title.startsWith("Recording ·"));
   assert.equal(await page.locator("#profile-results").isVisible(), true);
   assert.equal(await page.locator("#performance button, #performance p").count(), 0);
+  const renderingSince = async start => page.evaluate(async start => {
+    const module = performance.getEntriesByType("resource").findLast(entry => new URL(entry.name).pathname === "/src/performance.ts");
+    const { metrics } = (await import(module.name)).profiler.snapshot();
+    return Object.fromEntries(metrics.map(metric => [metric.key, metric.samples.filter(sample => sample.at >= start).length]));
+  }, start);
+  // Animation frames keep ticking while the clean, disconnected scene stays idle.
+  await page.waitForTimeout(300);
+  let start = await page.evaluate(() => performance.now());
+  await page.waitForTimeout(700);
+  const idle = await renderingSince(start);
+  assert.ok(idle.frame > 10);
+  assert.equal(idle.render, 0);
+  await page.getByLabel("Continuous rendering").check();
+  start = await page.evaluate(() => performance.now());
+  await page.waitForTimeout(700);
+  const continuous = await renderingSince(start);
+  assert.ok(continuous.render > 10);
+  assert.ok(Math.abs(continuous.frame - continuous.render) <= 1);
+  await page.getByLabel("Continuous rendering").uncheck();
   await page.getByRole("button", { name: /^Connect/ }).click();
-  await page.waitForFunction(() => document.querySelector("#status").textContent === "Connected" && Number(document.querySelector("#poses").dataset.poseCount) > 0);
-  await page.waitForFunction(() => ["interval", "ui", "render", "receive"].every(key => document.querySelector(`#timing-${key} [data-stat='current']`).textContent !== "—"));
+  await page.waitForFunction(() => document.querySelector("#status").textContent === "Connected" && parseFloat(document.querySelector("#tracking-rate").textContent) > 0);
+  await page.waitForFunction(() => ["frame", "interval", "poseArrival", "controllerArrival", "bodyArrival", "ui", "scene", "render", "receive"].every(key => document.querySelector(`#timing-${key} [data-stat='current']`).textContent !== "—"));
+  await page.waitForFunction(() => ["received", "sent", "pose", "controller", "body"].every(key => Number(document.querySelector(`#transfer-${key} [data-stat='current']`).textContent) > 0));
   // A stall outside our callbacks must still appear in the render interval.
   await page.evaluate(() => { const until = performance.now() + 160; while (performance.now() < until) {} });
   await page.waitForFunction(() => Number(document.querySelector("#timing-interval [data-stat='max']").textContent) >= 150);
@@ -69,12 +89,19 @@ try {
     assert.equal(bytes.length, packet.length);
     assert.equal(bytes.subarray(4, 8).toString(), "XROP");
   }
-  for (const metric of ["interval", "ui", "render", "receive"]) assert.ok(records.some(r => r.type === "timing" && r.metric === metric));
+  for (const metric of ["frame", "interval", "poseArrival", "controllerArrival", "bodyArrival", "ui", "scene", "render", "receive"]) assert.ok(records.some(r => r.type === "timing" && r.metric === metric));
+  const rates = records.filter(r => r.type === "transfer-rate" && ["received", "sent"].includes(r.metric));
+  assert.ok(rates.length > 10);
+  for (const rate of rates) {
+    const bytes = packets.filter(p => p.direction === rate.metric && p.atMs > rate.atMs - 1000 && p.atMs <= rate.atMs).reduce((sum, p) => sum + p.length, 0);
+    assert.equal(rate.bytesPerSecond, bytes, `${rate.metric} rate matches raw packets in its rolling second`);
+  }
   assert.ok(records.some(r => r.type === "timing" && r.atMs > chart.end), "Disk timings continue after the chart window resets");
   const gpu = records.filter(r => r.type === "timing" && r.metric === "gpu");
   console.log(gpu.length ? `GPU query samples: ${gpu.length} (headless browser; not a hardware benchmark)` : "SKIP: GPU query readback unavailable in this browser; fallback is tested separately");
   await writeFile(new URL("result.json", output), JSON.stringify({ file, events: records.length, packets: packets.length, gpuSamples: gpu.length, slowIntervalMs: interval }, null, 2));
   await page.getByRole("button", { name: "Disconnect" }).click();
+  await page.waitForFunction(() => ["received", "sent", "pose", "controller", "body"].every(key => document.querySelector(`#transfer-${key} [data-stat='current']`).textContent === "0.00"));
   await page.close();
 
   const fallback = await browser.newPage();
