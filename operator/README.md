@@ -27,6 +27,28 @@ records the acquisition-group work still needed. See
 [supported settings](#body-permission-and-supported-settings) for current choices
 and [tracking validation](TRACKING.md) for historical measurements.
 
+## Threads and lifecycle
+
+The backend has three threads: `android_main` handles Android lifecycle and input
+queues; `xr` owns EGL, OpenXR events, session lifecycle and the frame loop;
+`xr-acquisition` samples at 200 Hz, independently of display rate, waiting for
+commands or absolute deadlines and skipping missed slots.
+
+A zero-capacity command channel synchronizes lifecycle changes between samples.
+Session begin completes before acquisition starts; pause stops XR queries before
+session end and publishes one inactive sample. Publishers have their own send
+deadlines. Dropping the command sender stops acquisition, which is joined before
+XR resources and EGL are destroyed. Android Destroy stops and joins the XR thread.
+Normal XR termination wakes Android to close the activity and networking; XR errors
+leave signaling available until Android Destroy.
+There is no shared acquisition/frame mutex; history keeps its own lock.
+
+OpenXR events are serviced between frames, or every 20 ms while idle.
+`xrWaitFrame` blocks only the XR thread; shutdown still depends on it returning.
+Session begin/end stay with EGL because Quest initializes GL entry points during
+`xrBeginSession`. Independent body and controller acquisition groups remain future
+protocol work.
+
 ## Build
 
 Install Python 3, Rust through rustup,
@@ -155,7 +177,8 @@ cargo clippy --all-targets -- -D warnings
 
 It binds `127.0.0.1:8080` by default. Override with `XR_OPERATOR_BIND=IP:PORT`
 when needed. Ctrl+C closes the listener and peers. The Quest binds `0.0.0.0:8080`
-and closes networking when the activity is destroyed. Pausing the XR session does not shut down networking. Samples become invalid or
+and closes networking when the activity is destroyed or OpenXR requests exit.
+Pausing the XR session does not shut down networking. Samples become invalid or
 inactive while the runtime is unavailable. Resume invalidates clock mapping and
 starts another reference-space version.
 
@@ -164,10 +187,10 @@ starts another reference-space version.
 - `GET /health` reports source provenance and tracking availability.
 - `GET /stats` reports accepted sends, backpressure skips, send errors, bytes, and
   peak buffered bytes for the latest 64 streams. Counters are decimal strings.
-  Publishing wakes on acquisition or control changes, orders controller/pose/body,
+  Publishing wakes on acquisition, control changes, or a pending send deadline, orders controller/pose/body,
   and budgets each complete sample packet against a 64 KiB buffered-byte ceiling.
   This permits history-eight body packets; it does not isolate streams from shared
-  SCTP congestion. Publication deadlines are checked at acquisition wakeups.
+  SCTP congestion. A publication deadline is armed only when a fresh sample is pending.
 - `POST /offer` takes JSON `{ "type": "offer", "sdp": "..." }` and returns an
   answer with gathered host ICE candidates. Both endpoints gather completely;
   there is no trickle endpoint. Requests and protocol packets are limited to 64 KiB.

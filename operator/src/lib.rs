@@ -54,14 +54,22 @@ fn android_main(app: AndroidApp) {
             Err(error) => log::error!("Could not listen on port 8080: {error}"),
         }
     });
-    let mut running = match crate::xr::run(&app, hub) {
-        Ok(()) => false,
-        Err(error) => {
-            log::error!("OpenXR stopped: {error}");
-            true
-        }
-    };
-    while running {
+    let (stop_xr, shutdown_xr) = std::sync::mpsc::channel();
+    let (quit, quitting) = std::sync::mpsc::channel();
+    let waker = app.create_waker();
+    let xr_app = app.clone();
+    let xr = std::thread::Builder::new()
+        .name("xr".into())
+        .spawn(move || match crate::xr::run(&xr_app, &hub, shutdown_xr) {
+            Ok(()) => {
+                let _ = quit.send(());
+                waker.wake();
+            }
+            Err(error) => log::error!("OpenXR stopped: {error}"),
+        })
+        .expect("OpenXR thread");
+    let mut running = true;
+    while running && quitting.try_recv().is_err() {
         // Keep signaling available after an XR initialization failure.
         app.poll_events(None, |event| {
             if let PollEvent::Main(event) = event {
@@ -79,6 +87,10 @@ fn android_main(app: AndroidApp) {
                 }
             }
         });
+    }
+    drop(stop_xr);
+    if xr.join().is_err() {
+        log::error!("OpenXR thread panicked");
     }
     let _ = stop.send(true);
     runtime.block_on(async {

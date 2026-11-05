@@ -1,16 +1,29 @@
-use crate::tracking::{Hub, Pose, RATE};
-use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
+use crate::tracking::{Hub, Pose, RATE, next_deadline};
+use android_activity::AndroidApp;
 use openxr as xr;
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError},
     },
     time::{Duration, Instant},
 };
 use xr::sys::Handle;
 
-pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Error>> {
+enum Command {
+    Start,
+    Pause,
+    ReferenceChange(xr::Time),
+}
+
+pub fn run(
+    app: &AndroidApp,
+    hub: &Arc<Hub>,
+    stop: Receiver<()>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+    let _attached = vm.attach_current_thread()?;
     let platform = unsafe { xr::AndroidPlatformInfo::new(app.vm_as_ptr(), app.activity_as_ptr()) };
     let entry = unsafe { xr::Entry::load(&platform) }?;
     let available = entry.enumerate_extensions()?;
@@ -114,8 +127,6 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
         xr::PassthroughFlagsFB::IS_RUNNING_AT_CREATION,
         xr::PassthroughLayerPurposeFB::RECONSTRUCTION,
     )?;
-    let gate = Mutex::new((false, Vec::<xr::Time>::new()));
-    let stop = AtomicBool::new(false);
     let body_permission = Arc::new(AtomicBool::new(false));
     if extensions.fb_body_tracking {
         crate::xr_body::poll_permission(app, body_permission.clone(), true);
@@ -126,150 +137,167 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
         .store(extensions.meta_body_tracking_calibration, Ordering::SeqCst);
     hub.set_available(true);
     let result = std::thread::scope(|scope| {
-        let sampler = scope.spawn(|| {
-            let period = Duration::from_secs_f32(1.0 / RATE);
-            let mut next = Instant::now();
-            let mut tracker = None;
-            let mut retry_body = Instant::now();
-            while !stop.load(Ordering::SeqCst) {
-                next += period;
-                let mut state = gate.lock().unwrap();
-                let acquired_at = hub.now();
-                let mut body = hub
-                    .skeleton
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map(|s| crate::body::Body::inactive(s.clone()));
-                if !body_permission.load(Ordering::SeqCst) {
-                    tracker = None;
-                    body = None;
-                }
-                let mut inputs = input_definitions
-                    .iter()
-                    .map(|d| crate::inputs::Input::inactive(d.kind))
-                    .collect::<Vec<_>>();
-                let mut poses: [Pose; 5] = std::array::from_fn(|i| Pose {
-                    active: (i > 0).then_some(false),
-                    ..Default::default()
-                });
-                if state.0
-                    && let Ok(time) = instance.now()
-                {
-                    state.1.retain(|change| {
-                        if change.as_nanos() <= time.as_nanos() {
-                            hub.reset_reference();
-                            false
-                        } else {
-                            true
+        // Rendezvous commands are received only between complete acquisition ticks.
+        let (acquire, commands) = mpsc::sync_channel(0);
+        let sampler = std::thread::Builder::new()
+            .name("xr-acquisition".into())
+            .spawn_scoped(scope, || {
+                let commands = commands;
+                let period = Duration::from_secs_f32(1.0 / RATE);
+                let mut next = Instant::now();
+                let mut tracker = None;
+                let mut retry_body = Instant::now();
+                let mut running = false;
+                let mut has_run = false;
+                let mut reference_changes = Vec::<xr::Time>::new();
+                loop {
+                    let command = if running {
+                        commands.recv_timeout(next.saturating_duration_since(Instant::now()))
+                    } else {
+                        commands.recv().map_err(RecvTimeoutError::from)
+                    };
+                    match command {
+                        Ok(Command::Start) => {
+                            if has_run {
+                                hub.reset_reference();
+                                hub.resumed_at.store(hub.now(), Ordering::SeqCst);
+                            }
+                            has_run = true;
+                            running = true;
+                            next = Instant::now();
+                            continue;
                         }
+                        Ok(Command::ReferenceChange(time)) => {
+                            reference_changes.push(time);
+                            continue;
+                        }
+                        Ok(Command::Pause) => running = false,
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                    let acquired_at = hub.now();
+                    let mut body = hub
+                        .skeleton
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|s| crate::body::Body::inactive(s.clone()));
+                    if !body_permission.load(Ordering::SeqCst) {
+                        // Pause publishes without XR calls, including tracker destruction.
+                        if running {
+                            tracker = None;
+                        }
+                        body = None;
+                    }
+                    let mut inputs = input_definitions
+                        .iter()
+                        .map(|d| crate::inputs::Input::inactive(d.kind))
+                        .collect::<Vec<_>>();
+                    let mut poses: [Pose; 5] = std::array::from_fn(|i| Pose {
+                        active: (i > 0).then_some(false),
+                        ..Default::default()
                     });
-                    let synced = session
-                        .sync_actions(&[xr::ActiveActionSet::new(&actions)])
-                        .is_ok();
-                    for (input, action) in inputs.iter_mut().zip(&input_actions) {
-                        *input = action.sample(&session, synced);
-                    }
-                    if extensions.fb_body_tracking
-                        && body_permission.load(Ordering::SeqCst)
-                        && tracker.is_none()
-                        && Instant::now() >= retry_body
-                    {
-                        retry_body = Instant::now() + Duration::from_secs(1);
-                        match crate::xr_body::Tracker::new(
-                            &session,
-                            extensions.meta_body_tracking_fidelity,
-                            extensions.meta_body_tracking_calibration,
-                        ) {
-                            Ok(created) => tracker = Some(created),
-                            Err(error) => log::warn!("Body tracker unavailable: {error}"),
+                    if running && let Ok(time) = instance.now() {
+                        reference_changes.retain(|change| {
+                            if change.as_nanos() <= time.as_nanos() {
+                                hub.reset_reference();
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        let synced = session
+                            .sync_actions(&[xr::ActiveActionSet::new(&actions)])
+                            .is_ok();
+                        for (input, action) in inputs.iter_mut().zip(&input_actions) {
+                            *input = action.sample(&session, synced);
                         }
-                    }
-                    if let Some(tracker) = &mut tracker
-                        && let Ok(sample) = tracker.sample(&base, time, &hub)
-                    {
-                        body = Some(sample);
-                    }
-                    for (i, space) in spaces.iter().enumerate() {
-                        if i > 0 {
-                            let action = if i % 2 == 1 { &aim } else { &grip };
-                            poses[i].active = Some(
-                                synced
-                                    && action
-                                        .is_active(&session, hands[(i - 1) / 2])
-                                        .unwrap_or(false),
-                            );
-                        }
-                        if (i == 0 || poses[i].active == Some(true))
-                            && let Ok(location) = space.locate(&base, time)
+                        if extensions.fb_body_tracking
+                            && body_permission.load(Ordering::SeqCst)
+                            && tracker.is_none()
+                            && Instant::now() >= retry_body
                         {
-                            let p = location.pose.position;
-                            let q = location.pose.orientation;
-                            poses[i].position = [p.x, p.y, p.z];
-                            poses[i].orientation = [q.x, q.y, q.z, q.w];
-                            poses[i].flags = location.location_flags.into_raw() as u16;
+                            retry_body = Instant::now() + Duration::from_secs(1);
+                            match crate::xr_body::Tracker::new(
+                                &session,
+                                extensions.meta_body_tracking_fidelity,
+                                extensions.meta_body_tracking_calibration,
+                            ) {
+                                Ok(created) => tracker = Some(created),
+                                Err(error) => log::warn!("Body tracker unavailable: {error}"),
+                            }
+                        }
+                        if let Some(tracker) = &mut tracker
+                            && let Ok(sample) = tracker.sample(&base, time, hub)
+                        {
+                            body = Some(sample);
+                        }
+                        for (i, space) in spaces.iter().enumerate() {
+                            if i > 0 {
+                                let action = if i % 2 == 1 { &aim } else { &grip };
+                                poses[i].active = Some(
+                                    synced
+                                        && action
+                                            .is_active(&session, hands[(i - 1) / 2])
+                                            .unwrap_or(false),
+                                );
+                            }
+                            if (i == 0 || poses[i].active == Some(true))
+                                && let Ok(location) = space.locate(&base, time)
+                            {
+                                let p = location.pose.position;
+                                let q = location.pose.orientation;
+                                poses[i].position = [p.x, p.y, p.z];
+                                poses[i].orientation = [q.x, q.y, q.z, q.w];
+                                poses[i].flags = location.location_flags.into_raw() as u16;
+                            }
                         }
                     }
+                    // XrTime has a runtime epoch; leave target_at absent until explicitly converted.
+                    hub.acquire(&poses, &inputs, body.as_ref(), acquired_at, None);
+                    if running {
+                        next = next_deadline(next, period, Instant::now());
+                    }
                 }
-                // XrTime has a runtime epoch; leave target_at absent until explicitly converted.
-                hub.acquire(&poses, &inputs, body.as_ref(), acquired_at, None);
-                drop(state);
-                let now = Instant::now();
-                if next > now {
-                    std::thread::sleep(next - now);
-                } else {
-                    next = now;
-                }
-            }
-        });
+            })?;
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let mut events = xr::EventDataBuffer::new();
-            let mut alive = true;
-            let mut has_run = false;
+            let mut running = false;
             let mut permission_poll = Instant::now();
-            while alive {
+            loop {
+                // Frames pace the running loop; idle sessions still need OpenXR event polling.
+                let wait = if running {
+                    Duration::ZERO
+                } else {
+                    Duration::from_millis(20)
+                };
+                if !matches!(stop.recv_timeout(wait), Err(RecvTimeoutError::Timeout)) {
+                    return Ok(());
+                }
+                if sampler.is_finished() {
+                    return Err("OpenXR acquisition thread stopped".into());
+                }
                 if extensions.fb_body_tracking && Instant::now() >= permission_poll {
                     permission_poll = Instant::now() + Duration::from_secs(1);
                     crate::xr_body::poll_permission(app, body_permission.clone(), false);
                 }
-                let running = gate.lock().unwrap().0;
-                app.poll_events(
-                    Some(Duration::from_millis(if running { 0 } else { 20 })),
-                    |event| {
-                        if let PollEvent::Main(event) = event {
-                            match event {
-                                MainEvent::Destroy => alive = false,
-                                MainEvent::InputAvailable => {
-                                    if let Ok(mut events) = app.input_events_iter() {
-                                        while events.next(|_| InputStatus::Unhandled) {}
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    },
-                );
                 while let Some(event) = instance.poll_event(&mut events)? {
                     match event {
                         xr::Event::SessionStateChanged(event) => {
                             log::info!("OpenXR session: {:?}", event.state());
-                            let mut state = gate.lock().unwrap();
                             match event.state() {
                                 xr::SessionState::READY => {
                                     session.begin(xr::ViewConfigurationType::PRIMARY_STEREO)?;
-                                    if has_run {
-                                        hub.reset_reference();
-                                        hub.resumed_at.store(hub.now(), Ordering::SeqCst);
-                                    }
-                                    has_run = true;
-                                    state.0 = true;
+                                    acquire.send(Command::Start)?;
+                                    running = true;
                                 }
                                 xr::SessionState::STOPPING => {
-                                    state.0 = false;
+                                    running = false;
+                                    acquire.send(Command::Pause)?;
                                     session.end()?;
                                 }
                                 xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
-                                    alive = false
+                                    return Ok(());
                                 }
                                 _ => {}
                             }
@@ -277,13 +305,13 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                         xr::Event::ReferenceSpaceChangePending(event)
                             if event.reference_space_type() == base_type =>
                         {
-                            gate.lock().unwrap().1.push(event.change_time())
+                            acquire.send(Command::ReferenceChange(event.change_time()))?;
                         }
-                        xr::Event::InstanceLossPending(_) => alive = false,
+                        xr::Event::InstanceLossPending(_) => return Ok(()),
                         _ => {}
                     }
                 }
-                if !alive || !gate.lock().unwrap().0 {
+                if !running {
                     continue;
                 }
                 let frame = waiter.wait()?;
@@ -315,11 +343,12 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                     return Err(result.into());
                 }
             }
-            Ok(())
         })();
-        stop.store(true, Ordering::SeqCst);
-        sampler.join().expect("OpenXR acquisition thread panicked");
-        result
+        drop(acquire);
+        let joined = sampler
+            .join()
+            .map_err(|_| "OpenXR acquisition thread panicked".into());
+        result.and(joined)
     });
     hub.set_available(false);
     result

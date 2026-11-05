@@ -175,7 +175,18 @@ impl Peer {
     async fn publish(&self) {
         let mut updates = self.hub.updates.subscribe();
         let mut known_skeletons = std::collections::HashSet::new();
-        while updates.changed().await.is_ok() {
+        let mut next_publication: Option<std::time::Instant> = None;
+        loop {
+            tokio::select! {
+                changed = updates.changed() => if changed.is_err() { return; },
+                _ = async {
+                    match next_publication {
+                        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                        None => std::future::pending().await,
+                    }
+                } => {}
+            }
+            next_publication = None;
             let (Some(control), Some(tracking)) = (
                 self.control.lock().unwrap().upgrade(),
                 self.tracking.lock().unwrap().upgrade(),
@@ -200,6 +211,11 @@ impl Peer {
                         stream.packet().map(|packet| (packet, stream.stats.clone()))
                     })
                     .collect::<Vec<_>>();
+                next_publication = protocol
+                    .streams
+                    .iter()
+                    .filter_map(crate::streams::Stream::pending_deadline)
+                    .min();
                 (notifications, prepared)
             };
             for (publication, _) in &prepared {

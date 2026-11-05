@@ -455,15 +455,23 @@ impl Stream {
         );
         finish(b, wire::Message::StreamAccepted, m.as_union_value())
     }
+    pub fn pending_deadline(&self) -> Option<Instant> {
+        let samples = self.hub.samples.lock().unwrap();
+        let latest = samples.back()?;
+        self.has_pending(latest).then_some(self.next_send)
+    }
+
+    fn has_pending(&self, latest: &crate::tracking::Sample) -> bool {
+        latest.number != self.last_sample && (self.kind != Kind::Body || latest.body.is_some())
+    }
+
     pub fn due(&mut self) -> bool {
         let now = Instant::now();
-        if now < self.next_send {
-            return false;
-        }
-        // Acquisition may finish just after this tick; keep this slot until a new sample exists.
-        if self.hub.samples.lock().unwrap().back().is_none_or(|s| {
-            s.number == self.last_sample || self.kind == Kind::Body && s.body.is_none()
-        }) {
+        // An expired slot without new data must wait for an acquisition notification.
+        if self
+            .pending_deadline()
+            .is_none_or(|deadline| now < deadline)
+        {
             return false;
         }
         let period = Duration::from_secs_f32(1.0 / self.rate);
@@ -476,7 +484,7 @@ impl Stream {
     pub fn packet(&mut self) -> Option<Publication> {
         let samples = self.hub.samples.lock().unwrap();
         let latest = samples.back()?;
-        if latest.number == self.last_sample || self.kind == Kind::Body && latest.body.is_none() {
+        if !self.has_pending(latest) {
             return None;
         }
         self.last_sample = latest.number;
@@ -826,6 +834,7 @@ mod tests {
         let stream = &mut c.streams[0];
         let deadline = Instant::now() - Duration::from_millis(10);
         stream.next_send = deadline;
+        assert_eq!(stream.pending_deadline(), None);
         assert!(!stream.due());
         assert_eq!(stream.next_send, deadline);
         let poses = std::array::from_fn(|_| Pose::default());
@@ -844,6 +853,7 @@ mod tests {
             1
         );
         stream.next_send = deadline;
+        assert_eq!(stream.pending_deadline(), None);
         assert!(!stream.due());
         assert_eq!(stream.next_send, deadline);
         hub.acquire(&poses, &[], None, 2, None);
@@ -860,6 +870,42 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn final_inactive_sample_has_a_deadline_without_another_acquisition() {
+        let hub = Hub::new("test");
+        hub.set_available(true);
+        let mut connection = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
+        connection.negotiated = true;
+        connection
+            .control(&request(1, &["head"], Some(100.), 1))
+            .unwrap();
+        let stream = &mut connection.streams[0];
+        let poses = std::array::from_fn(|_| Pose::default());
+        hub.acquire(&poses, &[], None, 1, None);
+        stream.packet().unwrap();
+        assert_eq!(stream.pending_deadline(), None);
+
+        stream.next_send = Instant::now() + Duration::from_millis(10);
+        hub.acquire(&poses, &[], None, 2, None);
+        let deadline = stream.pending_deadline().unwrap();
+        assert_eq!(deadline, stream.next_send);
+        tokio::time::sleep_until(deadline.into()).await;
+        assert!(stream.due());
+        let bytes = stream.packet().unwrap().bytes;
+        let sample = packet(&bytes)
+            .unwrap()
+            .message_as_tracking()
+            .unwrap()
+            .history_as_pose_samples()
+            .unwrap()
+            .samples()
+            .get(0);
+        assert_eq!(sample.sample_number(), 2);
+        assert_eq!(stream.pending_deadline(), None);
+        stream.next_send = Instant::now() - Duration::from_secs(1);
+        assert_eq!(stream.pending_deadline(), None);
     }
 
     #[test]

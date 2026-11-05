@@ -21,6 +21,19 @@ pub const RATE: f32 = 200.0;
 pub const HISTORY: usize = 8;
 pub const SOURCES: [&str; 5] = ["head", "left/aim", "left/grip", "right/aim", "right/grip"];
 
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn next_deadline(
+    previous: Instant,
+    period: std::time::Duration,
+    now: Instant,
+) -> Instant {
+    let mut next = previous + period;
+    while next <= now {
+        next += period;
+    }
+    next
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Pose {
     pub position: [f32; 3],
@@ -217,6 +230,19 @@ pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deadlines_keep_their_phase_and_skip_missed_slots() {
+        use std::time::Duration;
+        let start = Instant::now();
+        let period = Duration::from_millis(5);
+        for (elapsed, expected) in [(1, 5), (5, 10), (16, 20), (1001, 1005)] {
+            assert_eq!(
+                next_deadline(start, period, start + Duration::from_millis(elapsed)),
+                start + Duration::from_millis(expected)
+            );
+        }
+    }
+
     #[test]
     fn acquisition_retains_one_complete_bounded_history_without_subscribers() {
         let hub = Hub::new("test");
