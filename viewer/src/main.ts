@@ -5,6 +5,7 @@ import "./style.css";
 import type { SpatialView } from "./spatial";
 import { profiler, mountPerformancePanel } from "./performance";
 import { recording } from "./recording";
+import { setAttribute, setText } from "./dom";
 
 declare const __OPERATOR_TARGET__: string;
 
@@ -65,7 +66,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 const element = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 const text = (id: string, value: string) => {
-  element(id).textContent = value;
+  setText(element(id), value);
 };
 text("target", __OPERATOR_TARGET__);
 let connection: Connection | null = null;
@@ -74,31 +75,44 @@ let selected: Entry | null = null;
 let lastRtt: number | null = null;
 const rtts: number[] = [];
 let messageSignature = "";
+let displayedEntry: Entry | null | undefined;
 let spatial: SpatialView | undefined;
+let uiDirty = true;
+let resetControls = false;
+let selectPublication = false;
+let graphicsStatus = "Loading 3D view…";
+let recordingStatus: { message: string; label: string; failed: boolean } | undefined;
+const emptyStatistics = initialStatistics();
+const poseRows: HTMLDivElement[] = [];
+const inputRows: { row: HTMLDivElement; label: HTMLElement; value: HTMLSpanElement; counts: HTMLElement }[] = [];
+const invalidateUI = () => { uiDirty = true; };
+const setGraphicsStatus = (message: string) => { graphicsStatus = message; invalidateUI(); };
 const animate = (now: number) => {
   frame = requestAnimationFrame(animate);
   if (document.hidden) return;
   profiler.animationFrame(now);
   connection?.animationFrame();
+  if (uiDirty) {
+    uiDirty = false;
+    const started = profiler.begin();
+    try { renderState(current); } finally { profiler.end("ui", started); }
+  }
   spatial?.renderFrame();
+  performancePanel.renderFrame();
 };
 let frame = requestAnimationFrame(animate);
-const disposePerformance = mountPerformancePanel(element("performance"));
+const performancePanel = mountPerformancePanel(element("performance"));
 if (import.meta.env.DEV) {
   recording.start({ type: "session", endpoint: __OPERATOR_TARGET__, viewerVersion: "0.1.0", protocolVersion: 1 }, (message, failed) => {
-    const status = element("recording-status");
-    status.hidden = false;
-    status.textContent = failed ? "Recording incomplete" : recording.active ? "Recording" : "Saved";
-    status.title = message;
-    status.setAttribute("aria-label", message);
-    status.classList.toggle("recording-failed", failed);
+    recordingStatus = { message, failed, label: failed ? "Recording incomplete" : recording.active ? "Recording" : "Saved" };
+    invalidateUI();
   });
 }
 void import("./spatial").then(({ SpatialView }) => {
-  spatial = new SpatialView(element("poses"), message => text("graphics-status", message));
+  spatial = new SpatialView(element("poses"), setGraphicsStatus);
   spatial.setContinuousRendering(element<HTMLInputElement>("continuous-render").checked);
-  render(current);
-}).catch(() => text("graphics-status", "WebGL is unavailable. Tracking data remains available below."));
+  invalidateUI();
+}).catch(() => setGraphicsStatus("WebGL is unavailable. Tracking data remains available below."));
 
 function updateMessages(state: State) {
   const showProbes = element<HTMLInputElement>("show-probes").checked;
@@ -111,36 +125,39 @@ function updateMessages(state: State) {
       entries[0] ??
       null;
   text("message-count", `${state.received + state.sent}`);
-  const signature = `${entries.map((entry) => entry.id).join(",")}:${selected?.id}:${entries[0]?.at.getTime()}`;
-  if (signature === messageSignature) return;
-  messageSignature = signature;
-  element("messages-empty").hidden = entries.length > 0;
   const tbody = element("message-rows");
-  tbody.replaceChildren();
-  for (const entry of entries.toReversed()) {
-    const row = document.createElement("tr");
-    row.classList.toggle("selected", selected?.id === entry.id);
-    const time = document.createElement("td");
-    time.className = "mono";
-    time.textContent = entry.at.toLocaleTimeString("en-GB", { hour12: false });
-    const message = document.createElement("td");
-    const button = document.createElement("button");
-    button.className = "message-button";
-    button.textContent = `${entry.direction === "Received" ? "↓" : "↑"}  ${entry.kind}`;
-    button.setAttribute("aria-label", `Inspect ${entry.kind} ${entry.id}`);
-    button.onclick = () => {
-      selected = entry;
-      updateMessages(current);
-    };
-    message.append(button);
-    const channel = document.createElement("td");
-    channel.textContent = entry.channel;
-    const bytes = document.createElement("td");
-    bytes.className = "right mono";
-    bytes.textContent = `${entry.bytes} B`;
-    row.append(time, message, channel, bytes);
-    tbody.append(row);
+  const signature = `${entries.map((entry) => entry.id).join(",")}:${entries[0]?.at.getTime()}`;
+  if (signature !== messageSignature) {
+    messageSignature = signature;
+    setAttribute(element("messages-empty"), "hidden", entries.length ? "" : null);
+    tbody.replaceChildren();
+    for (const entry of entries.toReversed()) {
+      const row = document.createElement("tr");
+      const time = document.createElement("td");
+      time.className = "mono";
+      time.textContent = entry.at.toLocaleTimeString("en-GB", { hour12: false });
+      const message = document.createElement("td");
+      const button = document.createElement("button");
+      button.className = "message-button";
+      button.textContent = `${entry.direction === "Received" ? "↓" : "↑"}  ${entry.kind}`;
+      button.setAttribute("aria-label", `Inspect ${entry.kind} ${entry.id}`);
+      button.onclick = () => {
+        selected = entry;
+        invalidateUI();
+      };
+      message.append(button);
+      const channel = document.createElement("td");
+      channel.textContent = entry.channel;
+      const bytes = document.createElement("td");
+      bytes.className = "right mono";
+      bytes.textContent = `${entry.bytes} B`;
+      row.append(time, message, channel, bytes);
+      tbody.append(row);
+    }
   }
+  for (let i = 0; i < entries.length; i++) tbody.children[i].classList.toggle("selected", entries[entries.length - 1 - i] === selected);
+  if (displayedEntry === selected) return;
+  displayedEntry = selected;
   text(
     "payload-title",
     selected
@@ -153,17 +170,33 @@ function updateMessages(state: State) {
   );
 }
 
-function render(state: State) {
-  const started = profiler.begin();
-  try { renderState(state); } finally { profiler.end("ui", started); }
-}
-
 function renderState(state: State) {
-  current = state;
+  text("graphics-status", graphicsStatus);
+  if (recordingStatus) {
+    const status = element("recording-status");
+    setAttribute(status, "hidden", null);
+    setText(status, recordingStatus.label);
+    setAttribute(status, "title", recordingStatus.message);
+    setAttribute(status, "aria-label", recordingStatus.message);
+    status.classList.toggle("recording-failed", recordingStatus.failed);
+  }
+  if (resetControls) {
+    resetControls = false;
+    element<HTMLSelectElement>("send-rate").value = String(DEFAULT_SEND_RATE);
+    element<HTMLSelectElement>("history").value = String(DEFAULT_HISTORY);
+    element<HTMLSelectElement>("consumer-rate").value = "animation";
+  }
   const poseStream = state.streams.find(s => s.descriptor.type === "pose");
   const bodyStream = state.streams.find(s => s.descriptor.type === "body");
   const inputStream = state.streams.find(s => s.descriptor.type === "controller");
   const selectedStream = state.streams.find(s => s.descriptor.type === element<HTMLSelectElement>("stream-kind").value);
+  if (selectPublication) {
+    selectPublication = false;
+    if (selectedStream) {
+      element<HTMLSelectElement>("send-rate").value = String(selectedStream.descriptor.rate);
+      element<HTMLSelectElement>("history").value = String(selectedStream.descriptor.history);
+    }
+  }
   const sample = poseStream?.sample ?? null;
   const stream = poseStream?.descriptor ?? null;
   const live = state.status === "Connected",
@@ -187,16 +220,13 @@ function renderState(state: State) {
     lastRtt = state.rtt;
   }
   const ceiling = Math.max(10, ...rtts);
-  element("sparkline")
-    .querySelector("polyline")!
-    .setAttribute(
-      "points",
-      live
-        ? rtts
-            .map((rtt, i) => `${i * 4},${26 - (rtt / ceiling) * 22}`)
-            .join(" ")
-        : "",
-    );
+  setAttribute(
+    element("sparkline").querySelector("polyline")!,
+    "points",
+    live
+      ? rtts.map((rtt, i) => `${i * 4},${26 - (rtt / ceiling) * 22}`).join(" ")
+      : "",
+  );
   text("received", state.received.toLocaleString());
   text(
     "received-bytes",
@@ -204,7 +234,7 @@ function renderState(state: State) {
   );
   text("connect", live ? "Disconnect" : busy ? "Cancel" : "Connect ↗");
   element("connect").classList.toggle("secondary", live || busy);
-  element("error").hidden = state.status !== "Error";
+  setAttribute(element("error"), "hidden", state.status !== "Error" ? "" : null);
   text("error", state.detail);
   text(
     "workspace-title",
@@ -217,13 +247,13 @@ function renderState(state: State) {
       : "Connect to discover the device’s tracking sources.",
   );
   const names = state.capabilities?.pose ? state.capabilities.pose.sources : [];
-  document.querySelectorAll(".source-state").forEach((source, i) => { source.textContent = i === 0 && names.length ? `${names.length} pose sources · ${poseStream?.descriptor.sampleRate ?? "—"} Hz` : i === 1 && inputStream ? `${inputStream.descriptor.inputs.length} inputs · ${inputStream.descriptor.sampleRate} Hz` : i === 2 && bodyStream ? `${bodyStream.sample?.poses.length ?? 0} joints · ${bodyStream.descriptor.sampleRate} Hz` : live ? "Not advertised" : "Awaiting discovery"; });
+  document.querySelectorAll(".source-state").forEach((source, i) => setText(source, i === 0 && names.length ? `${names.length} pose sources · ${poseStream?.descriptor.sampleRate ?? "—"} Hz` : i === 1 && inputStream ? `${inputStream.descriptor.inputs.length} inputs · ${inputStream.descriptor.sampleRate} Hz` : i === 2 && bodyStream ? `${bodyStream.sample?.poses.length ?? 0} joints · ${bodyStream.descriptor.sampleRate} Hz` : live ? "Not advertised" : "Awaiting discovery"));
   text("stream-count", `${state.streams.length} active streams`);
   const base = state.capabilities?.spaces.find(s => s.id === stream?.reference?.id);
   const frameName = base ? ["VIEW", "LOCAL", "STAGE", "LOCAL FLOOR", "UNBOUNDED"][base.spaceKind] : "UNKNOWN";
   text("data-source", !live ? "SPATIAL VIEW" : state.source === "synthetic" ? "SYNTHETIC TEST SOURCE" : state.source === "openxr" ? `OPENXR · ${frameName} SPACE` : "SOURCE UNAVAILABLE");
-  for (const id of ["send-rate", "history"]) element<HTMLSelectElement>(id).disabled = !selectedStream;
-  const stats = selectedStream?.statistics ?? initialStatistics();
+  for (const id of ["send-rate", "history"]) setAttribute(element(id), "disabled", selectedStream ? null : "");
+  const stats = selectedStream?.statistics ?? emptyStatistics;
   text("tracking-rate", `${stats.rate.toFixed(1)} Hz`);
   text("missing", String(stats.messages.missing));
   text("reordered", `${stats.messages.reordered} / ${stats.messages.duplicates}`);
@@ -233,27 +263,34 @@ function renderState(state: State) {
   text("too-late", String(stats.messages.tooLate));
   text("sample-age", stats.age === null ? "—" : `${Math.max(0, stats.age).toFixed(1)} ms`);
   text("freshness", stats.stale ? "Stale / awaiting samples" : "Receiving samples");
-  element("empty-state").hidden = !!sample?.poses.some(p => (p.flags & 2) && p.active !== false) || !!bodyStream?.sample?.body?.active;
+  setAttribute(element("empty-state"), "hidden", sample?.poses.some(p => (p.flags & 2) && p.active !== false) || bodyStream?.sample?.body?.active ? "" : null);
   const body = bodyStream?.sample?.body;
   const skeleton = body ? state.skeletons.get(`${bodyStream?.descriptor.skeleton?.id}:${body.skeletonVersion}`) : undefined;
   spatial?.update(sample, stream?.sources ?? [], poseStream?.statistics.stale ?? true, bodyStream?.sample ?? null, skeleton, bodyStream?.statistics.stale ?? true);
   text("body-quality", body ? `${body.active ? "Body active" : "Body inactive"} · confidence ${body.confidence === null ? "unknown" : (body.confidence * 100).toFixed(0) + "%"} · ${body.fidelity === 2 ? "high" : body.fidelity === 1 ? "low" : "unknown"} fidelity · calibration ${["unknown", "valid", "calibrating", "invalid"][body.calibration ?? 0]}` : "Body tracking unavailable");
-  const values = element("pose-values"); values.replaceChildren();
+  while (poseRows.length > (sample?.poses.length ?? 0)) poseRows.pop()!.remove();
   sample?.poses.forEach((pose, i) => {
-    const row = document.createElement("div");
-    row.textContent = `${stream?.sources[i]} · ${pose.active === false ? "inactive" : !(pose.flags & 2) ? "position invalid" : pose.position.map(n => n.toFixed(3)).join(" / ") + " m"} · ${pose.flags & 1 ? "orientation valid" : "orientation invalid"}`;
-    values.append(row);
+    if (!poseRows[i]) {
+      poseRows[i] = document.createElement("div");
+      element("pose-values").append(poseRows[i]);
+    }
+    setText(poseRows[i], `${stream?.sources[i]} · ${pose.active === false ? "inactive" : !(pose.flags & 2) ? "position invalid" : pose.position.map(n => n.toFixed(3)).join(" / ") + " m"} · ${pose.flags & 1 ? "orientation valid" : "orientation invalid"}`);
   });
   text("input-status", inputStream ? `${inputStream.statistics.rate.toFixed(1)} Hz · ${inputStream.statistics.messages.missing} missing` : "Not advertised");
-  const inputs = element("input-values"); inputs.replaceChildren();
+  while (inputRows.length > (inputStream?.sample?.inputs.length ?? 0)) inputRows.pop()!.row.remove();
   inputStream?.sample?.inputs.forEach((input, i) => {
-    const definition = inputStream.descriptor.inputs[i], row = document.createElement("div");
-    const label = document.createElement("strong"); label.textContent = `${definition.source} · ${definition.label}`;
-    const value = document.createElement("span"); value.textContent = inputStream.statistics.stale ? "stale" : !input.active ? "inactive" : typeof input.value === "boolean" ? (input.value ? "Pressed / touched" : "Released") : typeof input.value === "number" ? input.value.toFixed(3) : input.value.map(n => n.toFixed(3)).join(" / ");
+    if (!inputRows[i]) {
+      const row = document.createElement("div"), label = document.createElement("strong"), value = document.createElement("span"), counts = document.createElement("small");
+      row.append(label, value, counts);
+      element("input-values").append(row);
+      inputRows[i] = { row, label, value, counts };
+    }
+    const { row, label, value, counts } = inputRows[i], definition = inputStream.descriptor.inputs[i];
+    setText(label, `${definition.source} · ${definition.label}`);
+    setText(value, inputStream.statistics.stale ? "stale" : !input.active ? "inactive" : typeof input.value === "boolean" ? (input.value ? "Pressed / touched" : "Released") : typeof input.value === "number" ? input.value.toFixed(3) : input.value.map(n => n.toFixed(3)).join(" / "));
     row.classList.toggle("pressed", input.active && input.value === true && !inputStream.statistics.stale);
-    row.append(label, value);
-    if (input.type === 0) { const counts = document.createElement("small"); counts.textContent = `press ${input.presses} · release ${input.releases}`; row.append(counts); }
-    inputs.append(row);
+    setAttribute(counts, "hidden", input.type === 0 ? null : "");
+    if (input.type === 0) setText(counts, `press ${input.presses} · release ${input.releases}`);
   });
   text("hello-badge", live ? "Hello accepted" : "Awaiting hello");
   element("hello-badge").classList.toggle("accepted", live);
@@ -296,21 +333,18 @@ element("connect").onclick = () => {
     return;
   }
   connection?.close();
-  element<HTMLSelectElement>("send-rate").value = String(DEFAULT_SEND_RATE);
-  element<HTMLSelectElement>("history").value = String(DEFAULT_HISTORY);
-  element<HTMLSelectElement>("consumer-rate").value = "animation";
+  resetControls = true;
   selected = null;
   rtts.length = 0;
   lastRtt = null;
   const next = new Connection((state) => {
-    if (connection === next) render(state);
+    if (connection === next) { current = state; invalidateUI(); }
   });
   connection = next;
   void next.connect();
 };
-element("show-probes").onchange = () => updateMessages(current);
-window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); connection?.close(); disposePerformance(); void recording.stop("pagehide"); });
-render(current);
+element("show-probes").onchange = invalidateUI;
+window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); connection?.close(); performancePanel.dispose(); void recording.stop("pagehide"); });
 
 element("consumer-rate").onchange = () => {
   const rate = element<HTMLSelectElement>("consumer-rate").value;
@@ -319,18 +353,17 @@ element("consumer-rate").onchange = () => {
 for (const id of ["send-rate", "history"]) element(id).onchange = () => connection?.setPublication(Number(element<HTMLSelectElement>("send-rate").value), Number(element<HTMLSelectElement>("history").value), element<HTMLSelectElement>("stream-kind").value);
 element("inspect-sample").onclick = () => {
   selected = { id: -1, at: new Date(), direction: "Received", channel: "tracking", kind: "Sample snapshot", bytes: 0, value: current.streams.find(s => s.descriptor.type === element<HTMLSelectElement>("stream-kind").value)?.sample ?? null };
-  updateMessages(current);
+  invalidateUI();
 };
 
 element("stream-kind").onchange = () => {
-  const stream = current.streams.find(s => s.descriptor.type === element<HTMLSelectElement>("stream-kind").value);
-  if (stream) { element<HTMLSelectElement>("send-rate").value = String(stream.descriptor.rate); element<HTMLSelectElement>("history").value = String(stream.descriptor.history); }
-  render(current);
+  selectPublication = true;
+  invalidateUI();
 };
 
 for (const id of ["view-angle", "view-zoom"]) element(id).oninput = () => {
   spatial?.setView(element<HTMLSelectElement>("view-angle").value, Number(element<HTMLInputElement>("view-zoom").value));
-  render(current);
+  invalidateUI();
 };
 
 element("continuous-render").onchange = () => {
@@ -340,4 +373,4 @@ element("continuous-render").onchange = () => {
 };
 
 element("show-joints").onchange = () => spatial?.showJoints(element<HTMLInputElement>("show-joints").checked);
-if (import.meta.hot) import.meta.hot.dispose(() => { cancelAnimationFrame(frame); connection?.close(); spatial?.dispose(); disposePerformance(); void recording.stop("hot-reload"); });
+if (import.meta.hot) import.meta.hot.dispose(() => { cancelAnimationFrame(frame); connection?.close(); spatial?.dispose(); performancePanel.dispose(); void recording.stop("hot-reload"); });

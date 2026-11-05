@@ -1,5 +1,6 @@
 // Uses the same browser timing APIs as OpenArm Teleop, with independent Viewer instrumentation.
 import { recording } from "./recording";
+import { setAttribute, setText } from "./dom";
 export const metrics = {
   frame: { label: "Animation frame", color: "#656565" },
   interval: { label: "Render interval", color: "#6276b0" },
@@ -229,13 +230,13 @@ export function mountPerformancePanel(container: HTMLElement) {
   const refresh = () => {
     const capture = profiler.snapshot();
     const gpuLabel = container.querySelector<HTMLElement>("#timing-gpu th")!;
-    gpuLabel.title = capture.gpuStatus;
-    gpuLabel.setAttribute("aria-label", `GPU render: ${capture.gpuStatus}`);
+    setAttribute(gpuLabel, "title", capture.gpuStatus);
+    setAttribute(gpuLabel, "aria-label", `GPU render: ${capture.gpuStatus}`);
     for (const panel of panels) {
       const series = panel.id === "timing" ? capture.metrics : capture.transfer;
       for (const metric of series) {
         container.querySelectorAll<HTMLElement>(`#${panel.id}-${metric.key} [data-stat]`).forEach(cell => {
-          cell.textContent = metric.summary ? metric.summary[cell.dataset.stat as keyof typeof metric.summary].toFixed(2) : "—";
+          setText(cell, metric.summary ? metric.summary[cell.dataset.stat as keyof typeof metric.summary].toFixed(2) : "—");
         });
       }
       draw(container.querySelector<HTMLCanvasElement>(`#${panel.id}-chart`)!, series, capture.end, panel.unit);
@@ -270,15 +271,24 @@ export function mountPerformancePanel(container: HTMLElement) {
       if (metric.key === "gpu") for (const sample of metric.samples) ctx.fillRect(x(sample.at) - 1, y(sample.value) - 1, 3, 3);
     }
   };
+  let dirty = true;
   const visibility = () => {
     recording.add({ type: "visibility", state: document.visibilityState });
     profiler.reset();
+    dirty = true;
   };
   profiler.start();
   document.addEventListener("visibilitychange", visibility);
   const timer = setInterval(() => {
     profiler.sampleTransfer();
-    if (profiler.enabled && !document.hidden) refresh();
+    dirty = true;
   }, 200);
-  return () => { clearInterval(timer); document.removeEventListener("visibilitychange", visibility); profiler.stop(); };
+  return {
+    renderFrame() {
+      if (!dirty || !profiler.enabled || document.hidden) return;
+      dirty = false;
+      refresh();
+    },
+    dispose() { clearInterval(timer); document.removeEventListener("visibilitychange", visibility); profiler.stop(); },
+  };
 }

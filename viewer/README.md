@@ -156,11 +156,11 @@ tooltip; the capture also records it.
   These include browser scheduling delays; they are not network latency measurements.
   The first message of a new subscription has no interval. During silence, no new
   interval is plotted; the gap appears when the next message arrives.
-- **UI CPU:** synchronous UI update.
+- **UI CPU:** dirty UI reconciliation, at most once per animation frame.
 - **Poses + body CPU:** applying the latest consumed state to the scene on an animation frame.
 - **Three.js CPU:** synchronous render submission; it does not wait for the GPU.
 - **Message CPU:** one data-channel callback, including decoding and handling.
-  Control callbacks can also update the UI, so the CPU rows overlap; do not sum them.
+  DOM reconciliation is deferred to the animation-frame loop.
 - **GPU render:** elapsed GPU query time around a render, sampled at most 5 Hz
   with one outstanding query. Unsupported browsers show an explicit status;
   disjoint, timed-out and context-lost samples are discarded, not reported as zero.
@@ -171,6 +171,11 @@ Messages and consumer updates mark pending state; pose/body scene updates and
 drawing happen on the animation-frame loop. The default **Display frame rate**
 consumer takes the latest pending sample before applying and drawing it in that
 same callback. Fixed 60/30/5 Hz consumers remain available for diagnostics.
+Connection, inspector, recording and graphics status updates also reconcile in
+that callback. Pose/input rows and their text nodes are retained, and unchanged
+text/attributes are left alone. The profiler's 5 Hz timer samples transfer rates
+and marks its display dirty; the next animation frame updates its tables/charts.
+Packet recording and receive measurements retain their original event timing.
 
 The separate transfer graph shows **kB/s** (1000 bytes per kB), calculated from
 payload bytes in the preceding **one second**, refreshed at 5 Hz. Received and sent
@@ -197,7 +202,14 @@ repository-root `.artifacts/performance/`:
 
 ```sh
 CHROMIUM_EXECUTABLE=/path/to/chrome pnpm test:performance
+CHROMIUM_EXECUTABLE=/path/to/chrome pnpm test:reconciliation
 ```
+
+The reconciliation check uses a synthetic tracking server. It verifies retained
+DOM rows/text nodes while idle and connected, suppresses unchanged text writes,
+and pauses animation callbacks while reception and a 5 Hz consumer continue.
+The DOM must remain unchanged until the callbacks resume. Results are saved in
+`.artifacts/reconciliation/`.
 
 ## Tracking and slow-consumer test
 

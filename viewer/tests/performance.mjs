@@ -60,7 +60,7 @@ try {
   const connected = await renderingSince(start);
   assert.ok(connected.frame > 10);
   assert.ok(Math.abs(connected.frame - connected.render) <= 1);
-  assert.ok(connected.ui >= connected.frame - 1 && connected.ui <= connected.frame + 10, "Default consumption follows animation frames, not a fixed 30/60 Hz timer");
+  assert.ok(Math.abs(connected.ui - connected.frame) <= 1, "UI reconciles at most once per animation frame");
   // A stall outside our callbacks must still appear in the render interval.
   await page.evaluate(() => { const until = performance.now() + 160; while (performance.now() < until) {} });
   await page.waitForFunction(() => Number(document.querySelector("#timing-interval [data-stat='max']").textContent) >= 150);
@@ -104,7 +104,8 @@ try {
   const rates = records.filter(r => r.type === "transfer-rate" && ["received", "sent"].includes(r.metric));
   assert.ok(rates.length > 10);
   for (const rate of rates) {
-    const bytes = packets.filter(p => p.direction === rate.metric && p.atMs > rate.atMs - 1000 && p.atMs <= rate.atMs).reduce((sum, p) => sum + p.length, 0);
+    // Browser clock precision can give a later packet the same timestamp as this sample.
+    const bytes = packets.filter(p => p.sequence < rate.sequence && p.direction === rate.metric && p.atMs > rate.atMs - 1000 && p.atMs <= rate.atMs).reduce((sum, p) => sum + p.length, 0);
     assert.equal(rate.bytesPerSecond, bytes, `${rate.metric} rate matches raw packets in its rolling second`);
   }
   assert.ok(records.some(r => r.type === "timing" && r.atMs > chart.end), "Disk timings continue after the chart window resets");

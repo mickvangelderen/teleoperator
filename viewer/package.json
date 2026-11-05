@@ -16,6 +16,7 @@
     "test:browser": "node tests/browser.mjs",
     "test:tracking": "node tests/tracking.mjs",
     "test:performance": "node tests/performance.mjs",
+    "test:reconciliation": "node tests/reconciliation.mjs",
     "build:body": "node tools/build-body-model.mjs"
   },
   "dependencies": {

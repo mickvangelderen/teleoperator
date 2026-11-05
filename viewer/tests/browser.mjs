@@ -35,7 +35,7 @@ try {
   await page.screenshot({ path: output + "disconnected.png", fullPage: true });
   await page.getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(
-    () => document.querySelector("#status").textContent !== "Connecting",
+    () => ["Connected", "Error"].includes(document.querySelector("#status").textContent),
   );
   assert.equal(
     await page.locator("#status").textContent(),
@@ -48,9 +48,10 @@ try {
   // More reconnects than the peer limit catches slots leaked by a closed session.
   for (let attempt = 0; attempt < 3; attempt++) {
     await page.getByRole("button", { name: "Disconnect" }).click();
+    await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected");
     await page.getByRole("button", { name: "Connect" }).click();
     await page.waitForFunction(
-      () => document.querySelector("#status").textContent !== "Connecting",
+      () => ["Connected", "Error"].includes(document.querySelector("#status").textContent),
     );
     assert.equal(
       await page.locator("#status").textContent(),
@@ -71,18 +72,21 @@ try {
   const session = await page.locator("#session-id").textContent();
   assert.match(session, /^[a-f0-9]{16} [a-f0-9]{16}$/);
   await page.getByRole("button", { name: /Inspect ServerHello/ }).click();
+  await page.waitForFunction(() => document.querySelector("#payload").textContent.includes('"selectedVersion": 1'));
   assert.match(
     await page.locator("#payload").textContent(),
     /"selectedVersion": 1/,
   );
   await page.screenshot({ path: output + "connected.png", fullPage: true });
   await page.getByLabel("Show clock probes").check();
+  await page.getByRole("button", { name: /Inspect ClockReply/ }).first().waitFor();
   assert.ok(
     (await page.getByRole("button", { name: /Inspect ClockReply/ }).count()) >
       0,
   );
   await page.getByLabel("Show clock probes").uncheck();
   await page.getByRole("button", { name: "Disconnect" }).click();
+  await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected");
   assert.equal(
     await page.locator("#session-id").textContent(),
     "No session established",
@@ -90,7 +94,7 @@ try {
   assert.equal(await page.locator("#rtt").textContent(), "—");
   await page.getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(
-    () => document.querySelector("#status").textContent !== "Connecting",
+    () => ["Connected", "Error"].includes(document.querySelector("#status").textContent),
   );
   assert.equal(
     await page.locator("#status").textContent(),
@@ -115,6 +119,7 @@ try {
   );
   await page.screenshot({ path: output + "mobile.png", fullPage: true });
   await page.getByRole("button", { name: "Disconnect" }).click();
+  await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected");
   await page.route("**/api/offer", (route) =>
     route.fulfill({ status: 503, body: "Device unavailable" }),
   );
@@ -132,7 +137,7 @@ try {
   );
   await page.route("**/assets/meta/headset.glb", route => route.fulfill({ status: 404, body: "Missing asset" }));
   await page.reload();
-  await page.waitForFunction(() => document.querySelector("#poses").dataset.assets === "error");
+  await page.waitForFunction(() => document.querySelector("#graphics-status").textContent.includes("could not load"));
   assert.match(await page.locator("#graphics-status").textContent(), /could not load/);
   assert.equal(await page.getByRole("button", { name: "Connect" }).isEnabled(), true);
   assert.deepEqual(errors, []);
