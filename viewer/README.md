@@ -79,6 +79,100 @@ RTT subtracts server processing time from the local round trip. The lowest-RTT
 probe estimates a clock offset for the displayed sample age; this is approximate,
 not a calibrated one-way latency measurement. Resume clears the estimate.
 
+## Recording and performance
+
+`pnpm dev` automatically records each page load to
+`.artifacts/recordings/<uuid>.jsonl` at the repository root. No separate recording
+process or command is needed. The **Performance** panel shows the file name,
+acknowledged size and any recording failure. Select **Save and stop recording**
+before closing the page when a complete capture matters; reload to start another.
+
+The recording contains the original FlatBuffers bytes (base64) of every sent and
+received data-channel packet, including packets rejected by the decoder. It also
+contains individual CPU timings, render intervals, sampled GPU timings, signaling
+offers/answers, connection events, consumer-rate changes, visibility changes,
+browser/Three.js versions and the source Git revision. Packets are recorded before
+consumer coalescing, so a 5 Hz visualizer still records every packet received.
+Each reconnect has its own connection ID within the page recording.
+
+Browser records have a contiguous `sequence`, a `type`, and `atMs` relative to the
+session's `performance.timeOrigin`. Timing records additionally have `startMs`
+and `durationMs`; GPU results arrive later and refer back to the measured render.
+Packet records contain `direction`, `channel`, `length` and `base64`. A sent packet
+means the browser accepted `RTCDataChannel.send`, not that the Quest received it.
+Clock probe/reply packets preserve the information needed to estimate clock
+alignment. The file starts with a server recording header followed by a browser
+session header; an acknowledged `recording-end` marks a cleanly stopped capture.
+
+Encoding and uploads run in a Web Worker, batching every 250 ms or 256 KiB.
+The dev-only `POST /__dev/recordings/<uuid>` endpoint accepts same-origin NDJSON
+with `X-XR-Recording: 1` and a zero-based `X-Recording-Batch` header. It appends
+ordered batches, acknowledges after writing, and deduplicates retries of the last
+batch. It does not expose recordings for download over HTTP. Production builds
+and `pnpm preview` have no recording endpoint and do not start disk recording.
+
+Browser queues are limited to 4 MiB, requests to 1 MiB, and the recordings directory
+to 2 GiB per dev-server instance (including existing JSONL files at startup).
+Files are never automatically deleted. Move old captures elsewhere and restart
+the dev server when the limit is reached. Queue overflow, write failures and
+unavailable endpoints visibly mark a capture incomplete while tracking continues.
+There is no guarantee that the last queued batch survives closing/crashing the
+tab or server; page-unload flushing is best effort. Writes are acknowledged after
+the OS accepts them, without per-batch `fsync`. Reload the Viewer after a dev-server
+restart to begin a new recording.
+
+These are browser-side observations: packets lost before reception are absent.
+Quest-side send/backpressure logging is not included in this endpoint.
+
+For example, inspect timing events with:
+
+```sh
+jq -c 'select(.type == "timing")' ../.artifacts/recordings/<uuid>.jsonl
+```
+
+### Viewer profiling
+
+The **Performance** panel uses the same approach as OpenArm Teleop: a rolling
+10-second chart, CPU timings from `performance.now()`, and asynchronous WebGL 2
+[`EXT_disjoint_timer_query_webgl2`](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query_webgl2/)
+GPU queries. The implementation is specific to this Viewer; no additional package
+is required. Both viewers currently pin Three.js `0.186.1`.
+
+Connect, select **Show live timings**, reproduce the hiccup, then **Pause chart**
+to freeze the window. **Download chart** saves the raw samples, latest/median/
+P95/max timings, Three.js revision, browser, GPU timer status and current stream
+settings as JSON. Starting again clears the chart. Switching browser tab clears
+the chart history so background throttling does not look like a rendering stall.
+Disk recording continues independently of whether the chart is visible or paused.
+
+- **Render interval:** time between actual 3D renders, including idle time.
+  Around 33 ms is expected with the default 30 Hz consumer; 200 ms is expected
+  at 5 Hz. This is not a browser refresh/FPS measurement.
+- **UI + poses CPU:** synchronous UI update, including pose/body animation.
+- **Three.js CPU:** synchronous render submission; it does not wait for the GPU.
+- **Message CPU:** one data-channel callback, including decoding and handling.
+  Control callbacks can also update the UI, so the CPU rows overlap; do not sum them.
+- **GPU render:** elapsed GPU query time around a render, sampled at most 5 Hz
+  with one outstanding query. Unsupported browsers show an explicit status;
+  disjoint, timed-out and context-lost samples are discarded, not reported as zero.
+
+Performance recording is on by default in dev. The chart updates at 5 Hz when
+enabled and its history is bounded. It does not force extra 3D renders. GPU sampling can miss isolated
+spikes; browser layout/paint, garbage collection and other tasks outside the
+instrumented callbacks require a browser DevTools Performance trace. Compare
+interval spikes with the CPU/GPU rows and the existing transport statistics.
+The panel measures the browser, not acquisition or rendering on the Quest.
+
+With a running dev Viewer and tracking source, the profiling browser check exercises
+default packet/timing recording, lost-acknowledgement retries, an injected
+main-thread stall, pause/export, slow-consumer cadence, mobile layout, unavailable
+GPU timing and a failed recording endpoint. It saves results in
+repository-root `.artifacts/performance/`:
+
+```sh
+CHROMIUM_EXECUTABLE=/path/to/chrome pnpm test:performance
+```
+
 ## Tracking and slow-consumer test
 
 The Viewer automatically subscribes to advertised pose, controller and body sources.

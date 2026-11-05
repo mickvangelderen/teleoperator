@@ -2,7 +2,7 @@ import {
   ACESFilmicToneMapping, AxesHelper, Box3, BufferGeometry, Color, Float32BufferAttribute,
   GridHelper, Group, HemisphereLight, Line, LineBasicMaterial, LineSegments,
   Mesh, MeshStandardMaterial, PerspectiveCamera, PMREMGenerator, Scene,
-  SphereGeometry, Vector3, WebGLRenderer,
+  SphereGeometry, Vector3, WebGLRenderer, REVISION,
 } from "three";
 import type { Material, Object3D } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -10,6 +10,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 import { BodyModel } from "./body-model";
 import type { Sample, Skeleton } from "./protocol";
+import { profiler } from "./performance";
 
 export class SpatialView {
   private renderer = new WebGLRenderer({ antialias: true });
@@ -30,6 +31,7 @@ export class SpatialView {
   private environment?: ReturnType<PMREMGenerator["fromEquirectangular"]>;
 
   constructor(private surface: HTMLElement, private status: (message: string) => void) {
+    profiler.attach(this.renderer.getContext() as WebGL2RenderingContext, REVISION);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.scene.background = new Color(0xf0f3ef);
@@ -112,7 +114,11 @@ export class SpatialView {
     if (this.frame || this.disposed) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
-      if (!document.hidden) this.renderer.render(this.scene, this.camera);
+      if (!document.hidden) {
+        const timing = profiler.beginRender();
+        try { this.renderer.render(this.scene, this.camera); }
+        finally { profiler.endRender(timing); }
+      }
     });
   };
 

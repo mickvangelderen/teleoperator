@@ -15,6 +15,7 @@
     "test": "pnpm generate && tsx --test tests/*.test.ts",
     "test:browser": "node tests/browser.mjs",
     "test:tracking": "node tests/tracking.mjs",
+    "test:performance": "node tests/performance.mjs",
     "build:body": "node tools/build-body-model.mjs"
   },
   "dependencies": {

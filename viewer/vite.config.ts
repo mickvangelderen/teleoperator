@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import type { ProxyOptions } from "vite";
+import { recordingPlugin } from "./tools/recording-server.ts";
 
 const target = process.env.XR_OPERATOR_URL || "http://192.168.2.9:8080";
 const url = new URL(target);
@@ -24,6 +25,7 @@ const proxy: Record<string, ProxyOptions> = {
   },
 };
 export default defineConfig({
+  plugins: [recordingPlugin()],
   define: { __OPERATOR_TARGET__: JSON.stringify(url.host) },
   server: { port: 5173, strictPort: true, proxy },
   preview: { port: 4173, strictPort: true, proxy },

@@ -3,6 +3,8 @@ import type { Entry, State } from "./connection";
 import { json } from "./protocol";
 import "./style.css";
 import type { SpatialView } from "./spatial";
+import { profiler, mountPerformancePanel } from "./performance";
+import { recording } from "./recording";
 
 declare const __OPERATOR_TARGET__: string;
 
@@ -44,6 +46,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="session-body"><label>SERVER SESSION ID</label><code id="session-id">No session established</code><dl><div><dt>Handshake</dt><dd id="handshake">Pending</dd></div><div><dt>Supported versions</dt><dd id="versions">—</dd></div><div><dt>Tracking sources</dt><dd id="source-count">—</dd></div></dl><div class="section-label">DATA CHANNELS</div><div class="channel"><span class="channel-icon">⇄</span><div><strong>Control</strong><span>Reliable · ordered</span></div><span id="control" class="channel-state">Closed</span></div><div class="channel"><span class="channel-icon">↝</span><div><strong>Tracking</strong><span>Unordered · zero retries</span></div><span id="tracking" class="channel-state">Closed</span></div><div class="session-note"><span>i</span><p id="session-note">Each connection negotiates a version and a device session before discovery.</p></div></div>
       </aside>
     </div>
+    <section class="panel performance-panel" id="performance" aria-label="Performance profiling"></section>
     <section class="panel controller-panel"><div class="panel-header"><h2>Controller inputs</h2><span id="input-status" class="tag">Awaiting sources</span></div><div id="input-values" class="input-values"></div></section>
     <section class="panel tracking-stats" aria-label="Tracking statistics">
       <div class="panel-header"><h2>Tracking statistics</h2><span id="freshness" class="tag">Awaiting samples</span></div>
@@ -72,6 +75,25 @@ let lastRtt: number | null = null;
 const rtts: number[] = [];
 let messageSignature = "";
 let spatial: SpatialView | undefined;
+const disposePerformance = mountPerformancePanel(element("performance"), () => ({
+  endpoint: __OPERATOR_TARGET__, source: current.source, connection: current.status,
+  consumerHz: Number(element<HTMLSelectElement>("consumer-rate").value),
+  streams: current.streams.map(s => ({ type: s.descriptor.type, publicationHz: s.descriptor.rate, history: s.descriptor.history })),
+}));
+if (import.meta.env.DEV) {
+  recording.start({ type: "session", endpoint: __OPERATOR_TARGET__, viewerVersion: "0.1.0", protocolVersion: 1 }, (message, failed) => {
+    text("recording-status", message);
+    element("recording-status").classList.toggle("recording-failed", failed);
+    element<HTMLButtonElement>("recording-stop").disabled = !recording.active;
+  });
+} else {
+  text("recording-status", "Disk recording is available with pnpm dev.");
+  element("recording-stop").hidden = true;
+}
+element("recording-stop").onclick = () => {
+  element<HTMLButtonElement>("recording-stop").disabled = true;
+  void recording.stop("user");
+};
 void import("./spatial").then(({ SpatialView }) => {
   spatial = new SpatialView(element("poses"), message => text("graphics-status", message));
   render(current);
@@ -131,6 +153,11 @@ function updateMessages(state: State) {
 }
 
 function render(state: State) {
+  const started = profiler.begin();
+  try { renderState(state); } finally { profiler.end("ui", started); }
+}
+
+function renderState(state: State) {
   current = state;
   const poseStream = state.streams.find(s => s.descriptor.type === "pose");
   const bodyStream = state.streams.find(s => s.descriptor.type === "body");
@@ -281,7 +308,7 @@ element("connect").onclick = () => {
   void next.connect();
 };
 element("show-probes").onchange = () => updateMessages(current);
-window.addEventListener("pagehide", () => connection?.close());
+window.addEventListener("pagehide", () => { connection?.close(); disposePerformance(); void recording.stop("pagehide"); });
 render(current);
 
 element("consumer-rate").onchange = () => connection?.setConsumerRate(Number(element<HTMLSelectElement>("consumer-rate").value));
@@ -303,4 +330,4 @@ for (const id of ["view-angle", "view-zoom"]) element(id).oninput = () => {
 };
 
 element("show-joints").onchange = () => spatial?.showJoints(element<HTMLInputElement>("show-joints").checked);
-if (import.meta.hot) import.meta.hot.dispose(() => { connection?.close(); spatial?.dispose(); });
+if (import.meta.hot) import.meta.hot.dispose(() => { connection?.close(); spatial?.dispose(); disposePerformance(); void recording.stop("hot-reload"); });

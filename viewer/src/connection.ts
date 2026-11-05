@@ -1,6 +1,8 @@
 import { decode, encode, subscribe, subscribeInputs, subscribeBody, updatePublication, unsubscribe, json, MAX_PACKET } from "./protocol";
 import type { Accepted, Capabilities, Hello, Received, Sample, Skeleton, Reference, Tracking } from "./protocol";
 import { Sequence, Latest } from "./statistics";
+import { profiler } from "./performance";
+import { recording, recordingId } from "./recording";
 
 export type Entry = {
   id: number;
@@ -48,6 +50,8 @@ export const initialState = (): State => ({
 });
 
 export class Connection {
+  private readonly recordingId = recordingId();
+  private recordedState = "";
   readonly state = initialState();
   private readonly pc = new RTCPeerConnection({ iceServers: [] });
   private readonly abort = new AbortController();
@@ -77,6 +81,7 @@ export class Connection {
   constructor(private readonly update: (state: State) => void) {}
 
   async connect() {
+    recording.add({ type: "connection", connection: this.recordingId, status: "connecting" });
     void fetch("/api/health", { signal: this.abort.signal }).then(r => r.json()).then(data => { if (!this.stopped) this.state.source = typeof data.source === "string" ? data.source : "unknown"; }).catch(() => {});
     this.setConsumerRate(30);
     this.state.status = "Connecting";
@@ -115,7 +120,7 @@ export class Connection {
         ) {
           this.helloSent = true;
           const bytes = encode("ClientHello", 1n);
-          this.control.send(bytes);
+          this.send(this.control, bytes);
           this.record("Sent", "control", "ClientHello", bytes.length, {
             requestId: 1n,
             supportedVersions: [1],
@@ -132,10 +137,12 @@ export class Connection {
       };
       channel.onmessage = (event) => {
         if (this.stopped) return;
+        const started = profiler.begin();
         try {
           if (!(event.data instanceof ArrayBuffer))
             throw new Error("Expected a binary protocol packet");
           const bytes = new Uint8Array(event.data);
+          recording.packet(this.recordingId, "received", name, bytes, started ?? performance.now());
           const message = decode(bytes, name);
           if (name === "tracking" && !this.state.capabilities) return;
           if (name === "control")
@@ -150,12 +157,13 @@ export class Connection {
             this.record("Received", name, message.kind, bytes.length, message);
           this.emit();
         } catch (error) {
+          recording.add({ type: "receive-error", connection: this.recordingId, channel: name, error: String(error) });
           if (name === "tracking") this.state.discarded++;
           if (name === "control")
             this.fail(
               error instanceof Error ? error.message : "Invalid control packet",
             );
-        }
+        } finally { profiler.end("receive", started); }
       };
     }
     try {
@@ -181,6 +189,7 @@ export class Connection {
         else check();
       });
       if (this.stopped) return;
+      recording.add({ type: "signaling", connection: this.recordingId, direction: "sent", value: this.pc.localDescription?.toJSON() });
       const response = await fetch("/api/offer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -192,6 +201,7 @@ export class Connection {
           `Signaling failed (${response.status}). Check the device address and network.`,
         );
       const text = await response.text();
+      recording.add({ type: "signaling", connection: this.recordingId, direction: "received", status: response.status, value: text });
       if (text.length > MAX_PACKET)
         throw new Error("Signaling answer too large");
       const answer = JSON.parse(text) as RTCSessionDescriptionInit;
@@ -310,6 +320,7 @@ export class Connection {
 
   setConsumerRate(rate: number) {
     if (![5, 30, 60].includes(rate)) throw new Error("Unsupported consumer rate");
+    recording.add({ type: "consumer-rate", connection: this.recordingId, hz: rate });
     clearInterval(this.consumerTimer);
     this.consumerTimer = setInterval(() => {
       const now = performance.now();
@@ -337,7 +348,7 @@ export class Connection {
   }
   private sendRequest(id: bigint, kind: string, bytes: Uint8Array<ArrayBuffer>) {
     if (this.control.readyState !== "open" || this.control.bufferedAmount > MAX_PACKET) throw new Error("Control channel unavailable");
-    this.pending.add(id); this.control.send(bytes); this.record("Sent", "control", kind, bytes.length, { requestId: id });
+    this.pending.add(id); this.send(this.control, bytes); this.record("Sent", "control", kind, bytes.length, { requestId: id });
   }
 
   private probe() {
@@ -359,7 +370,7 @@ export class Connection {
     const id = ++this.probeId;
     const bytes = encode("ClockProbe", id);
     this.probes.set(id, now);
-    this.tracking.send(bytes);
+    this.send(this.tracking, bytes);
     this.record("Sent", "tracking", "ClockProbe", bytes.length, {
       requestId: id,
     });
@@ -396,10 +407,25 @@ export class Connection {
       );
     }
   }
+  private send(channel: RTCDataChannel, bytes: Uint8Array<ArrayBuffer>) {
+    const at = performance.now();
+    try { channel.send(bytes); }
+    catch (error) {
+      recording.add({ type: "send-error", connection: this.recordingId, channel: channel.label, error: String(error), length: bytes.length }, bytes, at);
+      throw error;
+    }
+    recording.packet(this.recordingId, "sent", channel.label, bytes, at);
+  }
   private emit() {
+    const state = `${this.state.status}: ${this.state.detail}`;
+    if (state !== this.recordedState) {
+      recording.add({ type: "connection-state", connection: this.recordingId, status: this.state.status, detail: this.state.detail });
+      this.recordedState = state;
+    }
     if (!this.stopped) this.update(this.state);
   }
   private fail(message: string) {
+    recording.add({ type: "connection-error", connection: this.recordingId, error: message });
     this.close();
     this.state.status = "Error";
     this.state.detail = message;
@@ -407,6 +433,7 @@ export class Connection {
   }
   close() {
     if (this.stopped) return;
+    recording.add({ type: "connection", connection: this.recordingId, status: "closed" });
     this.stopped = true;
     this.abort.abort();
     clearTimeout(this.deadline);
