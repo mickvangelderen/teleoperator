@@ -11,19 +11,16 @@ pub use generated::xr_operator::wire;
 
 pub const VERSION: u32 = 2;
 pub const MAX_PACKET: usize = 65_536;
-const MAX_REQUESTS: usize = 65_536;
 
 pub struct Connection {
     pub hub: Arc<Hub>,
     pub streams: Vec<Stream>,
-    pub advertised: bool,
-    pub advertised_body: bool,
+    pub advertised: Vec<u8>,
     pub resumed_at: i64,
     session: wire::SessionId,
     pub negotiated: bool,
     rejected: bool,
-    requests: HashSet<u64>,
-    probes: HashSet<u64>,
+    last_request: u64,
 }
 
 pub(crate) fn finish(
@@ -57,21 +54,20 @@ impl Connection {
         Self {
             hub,
             streams: Vec::new(),
-            advertised: false,
-            advertised_body: false,
+            advertised: Vec::new(),
             resumed_at: 0,
             session,
             negotiated: false,
             rejected: false,
-            requests: HashSet::new(),
-            probes: HashSet::new(),
+            last_request: 0,
         }
     }
 
     fn request(&mut self, id: u64) -> Result<(), &'static str> {
-        if id == 0 || self.requests.len() >= MAX_REQUESTS || !self.requests.insert(id) {
-            return Err("Invalid, reused, or exhausted request ID");
+        if id <= self.last_request {
+            return Err("Control request IDs must increase");
         }
+        self.last_request = id;
         Ok(())
     }
 
@@ -125,9 +121,8 @@ impl Connection {
                 hello.request_id()
             );
             Ok(if self.negotiated {
-                self.advertised = self.hub.available.load(std::sync::atomic::Ordering::SeqCst);
-                self.advertised_body = self.hub.skeleton.lock().unwrap().is_some();
-                vec![response, crate::streams::capabilities(&self.hub)]
+                self.advertised = crate::streams::capabilities(&self.hub);
+                vec![response, self.advertised.clone()]
             } else {
                 vec![response]
             })
@@ -166,7 +161,7 @@ impl Connection {
         let packet = packet(data).ok()?;
         let probe = packet.message_as_clock_probe()?;
         let id = probe.request_id();
-        if id == 0 || self.probes.len() >= MAX_REQUESTS || !self.probes.insert(id) {
+        if id == 0 {
             return None;
         }
         let mut builder = FlatBufferBuilder::new();
@@ -258,7 +253,20 @@ mod tests {
         assert!(connection().tracking(&data, 0, || 1).is_none());
     }
     #[test]
-    fn clock_requires_hello_and_echoes_once() {
+    fn ordered_requests_have_no_lifetime_budget_and_reject_replays() {
+        let mut c = connection();
+        for id in 1..=70_000 {
+            c.request(id).unwrap();
+        }
+        assert!(c.request(70_000).is_err());
+        assert!(c.request(1).is_err());
+        assert!(c.request(0).is_err());
+        c.request(u64::MAX).unwrap();
+        assert_eq!(c.last_request, u64::MAX);
+    }
+
+    #[test]
+    fn clock_requires_hello_and_duplicate_probes_are_harmless() {
         let mut b = FlatBufferBuilder::new();
         let m = wire::ClockProbe::create(
             &mut b,
@@ -274,7 +282,7 @@ mod tests {
         let reply = packet(&response).unwrap().message_as_clock_reply().unwrap();
         assert_eq!(reply.request_id(), u64::MAX);
         assert_eq!((reply.received_at(), reply.sent_at()), (0, 9));
-        assert!(c.tracking(&probe, 1, || 2).is_none());
+        assert!(c.tracking(&probe, 1, || 2).is_some());
         assert!(c.control(&probe).is_err());
     }
 }

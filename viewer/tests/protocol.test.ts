@@ -209,19 +209,20 @@ test("body packets retain metadata versions, quality and fixed-size joint geomet
 });
 
 test("skeleton metadata rejects cycles and missing parents", () => {
-  function skeleton(parents = [-1, 0]) {
+  function skeleton(parents = [-1, 0], spaceId = 1n) {
     const b = new Builder(512);
     const joints = parents.map((parent, id) => {
       const name = b.createString(`joint ${id}`);
       SkeletonJoint.startSkeletonJoint(b); SkeletonJoint.addJointId(b, id); SkeletonJoint.addParentId(b, parent); SkeletonJoint.addName(b, name); SkeletonJoint.addRestPose(b, Transform.createTransform(b, 0, id, 0, 0, 0, 0, 1)); return SkeletonJoint.endSkeletonJoint(b);
     });
     const vector = SkeletonDefinition.createJointsVector(b, joints), set = b.createString("test");
-    SkeletonDefinition.startSkeletonDefinition(b); SkeletonDefinition.addJoints(b, vector); SkeletonDefinition.addJointSet(b, set); SkeletonDefinition.addReference(b, MetadataRef.createMetadataRef(b, 2n, 1)); SkeletonDefinition.addReferenceSpace(b, MetadataRef.createMetadataRef(b, 1n, 3));
+    SkeletonDefinition.startSkeletonDefinition(b); SkeletonDefinition.addJoints(b, vector); SkeletonDefinition.addJointSet(b, set); SkeletonDefinition.addReference(b, MetadataRef.createMetadataRef(b, 2n, 1)); SkeletonDefinition.addReferenceSpace(b, MetadataRef.createMetadataRef(b, spaceId, 3));
     return finish(b, Message.SkeletonDefinition, SkeletonDefinition.endSkeletonDefinition(b));
   }
   assert.equal(decode(skeleton(), "control").kind, "SkeletonDefinition");
   assert.throws(() => decode(skeleton([1, 0]), "control"));
   assert.throws(() => decode(skeleton([-1, 10]), "control"));
+  assert.throws(() => decode(skeleton([-1, 0], 2n), "control"));
   assert.throws(() => decode(skeleton(), "tracking"));
 });
 

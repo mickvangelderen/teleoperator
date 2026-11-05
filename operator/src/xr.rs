@@ -67,7 +67,7 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
         .enumerate()
         .map(|(i, d)| crate::xr_inputs::Action::create(&actions, d, i))
         .collect::<xr::Result<Vec<_>>>()?;
-    for (action, definition) in input_actions.iter().zip(&input_definitions) {
+    for (action, definition) in input_actions.iter().zip(input_definitions) {
         bindings.push(action.binding(instance.string_to_path(&format!(
             "/user/hand/{}/input/{}",
             definition.source, definition.path

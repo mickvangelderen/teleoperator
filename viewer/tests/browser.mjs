@@ -72,7 +72,7 @@ try {
   const session = await page.locator("#session-id").textContent();
   assert.match(session, /^[a-f0-9]{16} [a-f0-9]{16}$/);
   await page.getByRole("button", { name: /Inspect ServerHello/ }).click();
-  await page.waitForFunction(() => document.querySelector("#payload").textContent.includes('"selectedVersion": 1'));
+  await page.waitForFunction(() => document.querySelector("#payload").textContent.includes('"selectedVersion": 2'));
   assert.match(
     await page.locator("#payload").textContent(),
     /"selectedVersion": 2/,

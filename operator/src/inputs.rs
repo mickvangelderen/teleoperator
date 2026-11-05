@@ -32,120 +32,123 @@ pub struct Definition {
     pub label: &'static str,
 }
 
-pub fn definitions() -> Vec<Definition> {
-    let mut result = Vec::new();
-    for source in ["left", "right"] {
-        for (id, path, kind, label) in [
-            (
-                "primary/click",
-                if source == "left" {
-                    "x/click"
-                } else {
-                    "a/click"
-                },
-                InputType::Boolean,
-                if source == "left" { "X" } else { "A" },
-            ),
-            (
-                "primary/touch",
-                if source == "left" {
-                    "x/touch"
-                } else {
-                    "a/touch"
-                },
-                InputType::Boolean,
-                "Primary touch",
-            ),
-            (
-                "secondary/click",
-                if source == "left" {
-                    "y/click"
-                } else {
-                    "b/click"
-                },
-                InputType::Boolean,
-                if source == "left" { "Y" } else { "B" },
-            ),
-            (
-                "secondary/touch",
-                if source == "left" {
-                    "y/touch"
-                } else {
-                    "b/touch"
-                },
-                InputType::Boolean,
-                "Secondary touch",
-            ),
-            (
-                "squeeze/click",
-                "squeeze/value",
-                InputType::Boolean,
-                "Grip pressed",
-            ),
-            ("squeeze/value", "squeeze/value", InputType::Scalar, "Grip"),
-            (
-                "thumbrest/touch",
-                "thumbrest/touch",
-                InputType::Boolean,
-                "Thumbrest touch",
-            ),
-            (
-                "thumbstick/click",
-                "thumbstick/click",
-                InputType::Boolean,
-                "Stick click",
-            ),
-            (
-                "thumbstick/touch",
-                "thumbstick/touch",
-                InputType::Boolean,
-                "Stick touch",
-            ),
-            (
-                "thumbstick/value",
-                "thumbstick",
-                InputType::Vector2,
-                "Stick",
-            ),
-            (
-                "trigger/click",
-                "trigger/value",
-                InputType::Boolean,
-                "Trigger pressed",
-            ),
-            (
-                "trigger/touch",
-                "trigger/touch",
-                InputType::Boolean,
-                "Trigger touch",
-            ),
-            (
-                "trigger/value",
-                "trigger/value",
-                InputType::Scalar,
-                "Trigger",
-            ),
-        ] {
-            result.push(Definition {
-                source,
-                id,
-                path,
-                kind,
-                label,
-            });
+pub fn definitions() -> &'static [Definition] {
+    static DEFINITIONS: std::sync::LazyLock<Vec<Definition>> = std::sync::LazyLock::new(|| {
+        let mut result = Vec::new();
+        for source in ["left", "right"] {
+            for (id, path, kind, label) in [
+                (
+                    "primary/click",
+                    if source == "left" {
+                        "x/click"
+                    } else {
+                        "a/click"
+                    },
+                    InputType::Boolean,
+                    if source == "left" { "X" } else { "A" },
+                ),
+                (
+                    "primary/touch",
+                    if source == "left" {
+                        "x/touch"
+                    } else {
+                        "a/touch"
+                    },
+                    InputType::Boolean,
+                    "Primary touch",
+                ),
+                (
+                    "secondary/click",
+                    if source == "left" {
+                        "y/click"
+                    } else {
+                        "b/click"
+                    },
+                    InputType::Boolean,
+                    if source == "left" { "Y" } else { "B" },
+                ),
+                (
+                    "secondary/touch",
+                    if source == "left" {
+                        "y/touch"
+                    } else {
+                        "b/touch"
+                    },
+                    InputType::Boolean,
+                    "Secondary touch",
+                ),
+                (
+                    "squeeze/click",
+                    "squeeze/value",
+                    InputType::Boolean,
+                    "Grip pressed",
+                ),
+                ("squeeze/value", "squeeze/value", InputType::Scalar, "Grip"),
+                (
+                    "thumbrest/touch",
+                    "thumbrest/touch",
+                    InputType::Boolean,
+                    "Thumbrest touch",
+                ),
+                (
+                    "thumbstick/click",
+                    "thumbstick/click",
+                    InputType::Boolean,
+                    "Stick click",
+                ),
+                (
+                    "thumbstick/touch",
+                    "thumbstick/touch",
+                    InputType::Boolean,
+                    "Stick touch",
+                ),
+                (
+                    "thumbstick/value",
+                    "thumbstick",
+                    InputType::Vector2,
+                    "Stick",
+                ),
+                (
+                    "trigger/click",
+                    "trigger/value",
+                    InputType::Boolean,
+                    "Trigger pressed",
+                ),
+                (
+                    "trigger/touch",
+                    "trigger/touch",
+                    InputType::Boolean,
+                    "Trigger touch",
+                ),
+                (
+                    "trigger/value",
+                    "trigger/value",
+                    InputType::Scalar,
+                    "Trigger",
+                ),
+            ] {
+                result.push(Definition {
+                    source,
+                    id,
+                    path,
+                    kind,
+                    label,
+                });
+            }
+            if source == "left" {
+                result.push(Definition {
+                    source,
+                    id: "menu/click",
+                    path: "menu/click",
+                    kind: InputType::Boolean,
+                    label: "Menu",
+                });
+            }
         }
-        if source == "left" {
-            result.push(Definition {
-                source,
-                id: "menu/click",
-                path: "menu/click",
-                kind: InputType::Boolean,
-                label: "Menu",
-            });
-        }
-    }
-    result.sort_by_key(|d| (d.source, d.id));
-    result
+        result.sort_by_key(|d| (d.source, d.id));
+        result
+    });
+    &DEFINITIONS
 }
 impl Input {
     pub fn inactive(kind: InputType) -> Self {
@@ -265,32 +268,11 @@ pub fn settings<'a>(
 }
 pub fn capabilities<'a>(b: &mut Builder<'a>) -> WIPOffset<wire::ControllerCapabilities<'a>> {
     let definitions = definitions();
-    let sources: Vec<_> = ["left", "right"]
-        .iter()
-        .map(|source| {
-            let id = b.create_string(source);
-            let profile = b.create_string("/interaction_profiles/oculus/touch_controller");
-            wire::ControllerSource::create(
-                b,
-                &wire::ControllerSourceArgs {
-                    source_id: Some(id),
-                    hand: if *source == "left" {
-                        wire::Hand::Left
-                    } else {
-                        wire::Hand::Right
-                    },
-                    interaction_profile: Some(profile),
-                },
-            )
-        })
-        .collect();
-    let sources = b.create_vector(&sources);
     let inputs: Vec<_> = definitions.iter().map(|d| definition(b, d)).collect();
     let inputs = b.create_vector(&inputs);
     wire::ControllerCapabilities::create(
         b,
         &wire::ControllerCapabilitiesArgs {
-            sources: Some(sources),
             inputs: Some(inputs),
         },
     )

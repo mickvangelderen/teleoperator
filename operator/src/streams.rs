@@ -207,12 +207,11 @@ impl Connection {
             messages.push(finish(b, wire::Message::ServerResumed, m.as_union_value()));
         }
         let body_available = self.hub.skeleton.lock().unwrap().is_some();
-        if self.advertised == available && self.advertised_body == body_available {
-            return messages;
+        let capabilities = capabilities(&self.hub);
+        if self.advertised != capabilities {
+            self.advertised = capabilities.clone();
+            messages.push(capabilities);
         }
-        self.advertised = available;
-        self.advertised_body = body_available;
-        messages.push(capabilities(&self.hub));
         self.streams.retain(|stream| {
             let keep = available && (stream.kind != Kind::Body || body_available);
             if !keep {
@@ -908,8 +907,8 @@ mod tests {
             2
         );
         assert!(stream.packet().is_none());
+        c.advertised = capabilities(&hub);
         hub.set_available(false);
-        c.advertised = true;
         assert_eq!(c.refresh().len(), 2);
         assert!(c.streams.is_empty());
     }
@@ -1073,6 +1072,38 @@ mod tests {
     }
 
     #[test]
+    fn capability_refresh_detects_quality_changes_and_ignores_unchanged_ticks() {
+        let hub = Hub::new("test");
+        hub.set_available(true);
+        let poses = std::array::from_fn(|_| Pose::default());
+        let body = body::Body::inactive(body::synthetic_skeleton());
+        hub.acquire(&poses, &[], Some(&body), 0, None);
+        let mut c = Connection::with_hub(wire::SessionId::new(1, 2), hub.clone());
+        c.negotiated = true;
+        assert_eq!(c.refresh().len(), 1);
+        assert!(c.refresh().is_empty());
+        hub.body_fidelity.store(true, Ordering::SeqCst);
+        let replies = c.refresh();
+        assert_eq!(replies.len(), 1);
+        assert!(
+            packet(&replies[0])
+                .unwrap()
+                .message_as_capabilities()
+                .unwrap()
+                .body()
+                .unwrap()
+                .sources()
+                .get(0)
+                .supports_actual_fidelity()
+        );
+        hub.reset_reference();
+        assert!(
+            c.refresh().is_empty(),
+            "Recenter is a sample counter, not discovery metadata"
+        );
+    }
+
+    #[test]
     fn body_history_keeps_exact_skeleton_versions_and_loss_only_closes_body() {
         let hub = Hub::new("test");
         hub.set_available(true);
@@ -1131,8 +1162,7 @@ mod tests {
         assert_eq!(samples.get(1).target_at(), Some(0));
         assert_eq!(samples.get(2).skeleton_version(), 2);
         assert_eq!(samples.get(1).joints().len(), 70);
-        c.advertised = true;
-        c.advertised_body = true;
+        c.advertised = capabilities(&hub);
         hub.acquire(&poses, &[], None, 3, None);
         assert_eq!(c.refresh().len(), 2);
         assert_eq!(c.streams.len(), 1);

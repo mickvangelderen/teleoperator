@@ -108,6 +108,10 @@ starts another reference-space version.
 - `GET /health` reports source provenance and tracking availability.
 - `GET /stats` reports accepted sends, backpressure skips, send errors, bytes, and
   peak buffered bytes for the latest 64 streams. Counters are decimal strings.
+  Publishing wakes on acquisition or control changes, orders controller/pose/body,
+  and budgets each complete sample packet against a 64 KiB buffered-byte ceiling.
+  This permits history-eight body packets; it does not isolate streams from shared
+  SCTP congestion. Publication deadlines are checked at acquisition wakeups.
 - `POST /offer` takes JSON `{ "type": "offer", "sdp": "..." }` and returns an
   answer with gathered host ICE candidates. Both endpoints gather completely;
   there is no trickle endpoint. Requests and protocol packets are limited to 64 KiB.
@@ -118,8 +122,8 @@ starts another reference-space version.
   shared across peers and changes when the application server restarts.
 - At most four peers are retained. Incomplete handshakes expire after 20 seconds;
   malformed control, channel closure, and failed/disconnected ICE close the peer.
-  Control request and clock probe deduplication each have a 65,536-ID budget per
-  connection. The Viewer requests reconnect after exhausting its probe budget.
+  Control request IDs must increase. Probes are matched by the client; neither
+  namespace has a lifetime request budget.
 - This is a trusted-LAN development endpoint: no authentication, TLS signaling,
   STUN, or TURN. Keep port 8080 private. The Viewer proxies signaling on its own
   origin; the device rejects direct requests carrying an Origin header.
@@ -137,7 +141,8 @@ On first launch the app requests `com.oculus.permission.BODY_TRACKING` using
 Android's permission UI. Grant it in the headset. Denial leaves head/controller
 tracking available; body discovery appears after permission and skeleton acquisition
 succeed. Revoking permission closes body streams without closing pose/input streams.
-The Viewer reconnects to resubscribe after a capability is lost and restored.
+The Viewer resubscribes on restored capability discovery in the same connection.
+Explicitly unsubscribed streams remain stopped until reconnect.
 
 The current implementation advertises 200 Hz acquisition, one runtime reference space, acquisition-time
 targeting, the default 70-joint body set (upper body and hands), and the runtime's
@@ -151,7 +156,7 @@ at that frequency. The spatial Viewer uses attributed Meta models and an optiona
 
 Runtime target, returned-body and input-change timestamps are currently absent,
 not raw `XrTime` values mislabeled as server time. Acquisition timestamps and clock
-probes use a shared server monotonic epoch. Exact runtime-time conversion and the
+probes use Hub's shared session-relative monotonic epoch, not raw CLOCK_MONOTONIC. Exact runtime-time conversion and the
 skeleton coordinate convention need Quest validation before enabling those fields.
 See the [Khronos skeleton joint reference](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrBodySkeletonJointFB.html)
 for the API's stated base-space convention.

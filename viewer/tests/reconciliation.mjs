@@ -68,7 +68,8 @@ try {
   await page.waitForFunction(() => window.frameGate.pending.length > 0,undefined, { polling: 20 });
   const before = await page.locator("#received").textContent();
   const arrivals = () => page.evaluate(async () => {
-    const { profiler } = await import("/src/performance.ts");
+    const module = performance.getEntriesByType("resource").findLast(entry => new URL(entry.name).pathname === "/src/performance.ts");
+    const { profiler } = await import(module.name);
     return profiler.snapshot().metrics.find(metric => metric.key === "poseArrival").samples.length;
   });
   const arrivalsBefore = await arrivals();

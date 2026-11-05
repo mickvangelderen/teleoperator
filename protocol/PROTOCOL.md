@@ -40,13 +40,14 @@ or `(source_id, input_id)` pairs, or the advertised body source/joint-set identi
 Reject duplicate, empty or unknown selections. Pose and input selections are sorted
 lexicographically by source, then input ID. All selected sources are required;
 support does not imply current activity. Inputs remain identified by stable protocol
-IDs; labels and runtime joint names are supplementary.
+IDs; labels and runtime joint names are supplementary. Controller-source inventory
+is derived from input definitions; no unobserved interaction profile is advertised.
 
 Publication settings are independent per stream: 1–200 Hz and history 1–8. An absent
-publication table uses defaults (100 Hz, up to two samples). A supplied table is a complete
-replacement: missing rate uses 100 Hz; missing history uses one. Publication
-never waits to fill history. UpdatePublication changes only these settings and acknowledges the same stream. Selection changes
-require Unsubscribe followed by Subscribe with a new stream ID.
+publication table uses defaults (100 Hz, up to two samples). A supplied table is a
+complete replacement: missing rate uses 100 Hz; missing history uses one. Publication
+never waits to fill history. UpdatePublication changes only these settings and
+acknowledges the same stream. Selection changes require Unsubscribe followed by Subscribe with a new stream ID.
 
 StreamAccepted echoes the request and gives a complete descriptor with matching
 selected definitions, publication settings and initial metadata references.
@@ -60,8 +61,9 @@ a lost capability. ServerResumed immediately invalidates the client's clock mapp
 Session identity changes on server restart and is shared across peers. Stream IDs
 are nonzero and never reused in that session. Control request IDs and probe IDs have
 separate nonzero namespaces; responses echo them. Neither consumes tracking counters.
-Control requests cannot reuse IDs; the current implementation bounds each request
-and probe namespace to 65,536 entries.
+Control request IDs must strictly increase on the reliable ordered channel; only
+the last ID is retained. Probes may repeat and be answered again; clients ignore
+replies without a pending ID. There is no lifetime request/probe budget.
 
 One complete acquisition tick supplies pose, input and optional body data. Its
 session-wide sample number starts at one and the last eight ticks are retained,
@@ -75,8 +77,12 @@ Every Tracking packet contains a nonempty, complete history of one kind, oldest 
 newest, ending at its latest sample. Sample numbers are consecutive within a history,
 and acquired_at is nondecreasing. History never exceeds accepted length and retained
 contents are immutable. Message numbers distinguish loss/reordering/duplicates;
-sample numbers distinguish acquisition gaps and overlapping history. Slow consumers
-retain only the latest sample and count replacement separately from network loss.
+sample numbers distinguish acquisition gaps and overlapping history.
+
+The publisher wakes on acquisition/control changes and checks due streams, in
+controller/pose/body order. It checks buffered bytes plus each complete packet against
+a 64 KiB ceiling; smaller streams have the first opportunity within that pass.
+All streams still share SCTP congestion. Slow consumers retain only the latest sample and count replacement separately from network loss.
 Old packets never roll live state backwards.
 
 Each Boolean carries cumulative press/release counts, including while inactive.
@@ -125,7 +131,9 @@ those fields using the test server's clock. Missing is distinct from zero.
 
 ClockProbe/ClockReply use the tracking channel, with client send/receive timestamps
 and server receive/send timestamps. Subtract server processing time from the client
-round trip; map clock offset using the midpoints. Delayed/lost probes do not block
-tracking. Timestamp age is diagnostic and does not authorize hardware actions.
+round trip; map clock offset using the midpoints. The Viewer selects the lowest
+delay among its last eight valid probes, expires the mapping after five seconds
+without a valid reply (checked by its one-second probe timer), and invalidates
+immediately on resume. Delayed/lost probes do not block tracking. Timestamp age is diagnostic and does not authorize hardware actions.
 The Viewer marks data stale after 500 ms without fresh samples; invalid/inactive
 samples remain visible as such, not live input. Resume invalidates clock mapping.

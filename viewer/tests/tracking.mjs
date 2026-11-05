@@ -6,7 +6,9 @@ import { chromium } from "playwright-core";
 const url = process.env.VIEWER_URL || "http://127.0.0.1:5174";
 const output = new URL("../../.artifacts/tracking/", import.meta.url);
 await mkdir(output, { recursive: true });
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE, headless: true });
+const executablePath = process.env.CHROMIUM_EXECUTABLE;
+assert.ok(executablePath, "Set CHROMIUM_EXECUTABLE to a Chromium/Chrome executable");
+const browser = await chromium.launch({ executablePath, headless: true });
 const errors = [];
 async function client(rate) {
   const page = await browser.newPage();

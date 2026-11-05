@@ -49,12 +49,6 @@ table InputDefinition {
   device_label:string;
 }
 
-table ControllerSource {
-  source_id:string (required);
-  hand:Hand = None;
-  interaction_profile:string;
-}
-
 table PoseSource {
   source_id:string (required);
   meaning:string (required);
@@ -104,7 +98,6 @@ table PublicationSettings {
 }
 
 table ControllerCapabilities {
-  sources:[ControllerSource] (required);
   inputs:[InputDefinition] (required);
 }
 

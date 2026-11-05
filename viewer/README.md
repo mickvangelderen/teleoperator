@@ -1,5 +1,10 @@
 # Viewer
 
+The Viewer and operator negotiate protocol v2; update both together. Lost
+capabilities resubscribe when discovery restores them, while explicit unsubscribe
+stays stopped until reconnect. Clock offset uses the lowest RTT in the last eight
+replies and expires after five seconds without replies.
+
 Read-only TypeScript interface for XR Operator. It displays the live hello
 exchange, full-width session identity, advertised capabilities, channel state,
 clock-probe round-trip time, message sizes, and decoded payloads. The spatial

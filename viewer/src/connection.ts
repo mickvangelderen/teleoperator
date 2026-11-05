@@ -76,7 +76,7 @@ export class Connection {
   private consumerTimer?: ReturnType<typeof setInterval>;
   private consumerRate: number | "animation" = "animation";
   private offset: number | null = null;
-  private bestRtt = Infinity;
+  private clockSamples: { rtt: number; offset: number }[] = [];
   private readonly requested = new Set<string>();
   constructor(private readonly update: (state: State) => void) {}
 
@@ -249,19 +249,17 @@ export class Connection {
       }
     } else if (message.kind === "ClockReply") {
       const sent = this.probes.get(message.requestId);
-      if (sent === undefined)
-        throw new Error("Unknown or repeated clock reply");
-      const elapsed = performance.now() - sent;
+      if (sent === undefined) return;
+      const received = performance.now(), elapsed = received - sent;
       const processing = Number(message.sentAt - message.receivedAt) / 1e6;
       if (!Number.isFinite(processing) || processing > elapsed + 1)
         throw new Error("Invalid clock duration");
       this.probes.delete(message.requestId);
       this.state.rtt = Math.max(0, elapsed - processing);
-      this.lastReplyAt = performance.now();
-      if (this.state.rtt < this.bestRtt) {
-        this.bestRtt = this.state.rtt;
-        this.offset = Number(message.receivedAt + message.sentAt) / 2e6 - (sent + this.lastReplyAt) / 2;
-      }
+      this.lastReplyAt = received;
+      this.clockSamples.push({ rtt: this.state.rtt, offset: Number(message.receivedAt + message.sentAt) / 2e6 - (sent + received) / 2 });
+      if (this.clockSamples.length > 8) this.clockSamples.shift();
+      this.offset = this.clockSamples.reduce((best, sample) => sample.rtt < best.rtt ? sample : best).offset;
     } else if (message.kind === "SkeletonDefinition") {
       const old = this.state.skeletons.get(`${message.id}:${message.version}`);
       if (old && json(old) !== json(message)) throw new Error("Skeleton version changed contents");
@@ -273,6 +271,11 @@ export class Connection {
       if (!limits || message.rate < limits.minSendRateHz || message.rate > limits.maxSendRateHz || message.history > limits.maxHistoryLength) throw new Error("Publication exceeds advertised limits");
       const old = this.state.streams.find(s => s.descriptor.streamId === message.streamId);
       if (old) {
+        const previous = old.descriptor;
+        if (previous.type !== message.type || json(previous.sources) !== json(message.sources)
+          || json(previous.inputs) !== json(message.inputs) || previous.jointSet !== message.jointSet
+          || previous.reference?.id !== message.reference?.id || previous.skeleton?.id !== message.skeleton?.id)
+          throw new Error("Stream acquisition changed");
         old.descriptor = message;
       } else this.state.streams.push({ descriptor: message, sample: null, statistics: initialStatistics(), newest: 0n, lastReceivedAt: 0, rateAt: performance.now(), rateCount: 0n });
     } else if (message.kind === "RequestRejected") {
@@ -280,9 +283,11 @@ export class Connection {
       this.state.detail = message.reason;
     } else if (message.kind === "StreamClosed") {
       if (message.requestId && !this.pending.delete(message.requestId)) throw new Error("Unexpected stream closure");
-      this.state.streams = this.state.streams.filter(s => s.descriptor.streamId !== message.streamId);
+      const stream = this.state.streams.find(s => s.descriptor.streamId === message.streamId);
+      if (!message.requestId && stream) this.requested.delete(stream.descriptor.type);
+      this.state.streams = this.state.streams.filter(s => s !== stream);
     } else if (message.kind === "ServerResumed") {
-      this.offset = null; this.bestRtt = Infinity; this.probes.clear(); this.state.rtt = null;
+      this.offset = null; this.clockSamples = []; this.probes.clear(); this.state.rtt = null;
     }
   }
 
@@ -348,21 +353,11 @@ export class Connection {
   }
 
   private probe() {
-    if (
-      this.stopped ||
-      this.tracking.readyState !== "open" ||
-      this.tracking.bufferedAmount > 4096
-    )
-      return;
     const now = performance.now();
-    if (now - this.lastReplyAt > 5000) this.state.rtt = null;
+    if (now - this.lastReplyAt > 5000) { this.state.rtt = null; this.offset = null; this.clockSamples = []; }
+    if (this.stopped || this.tracking.readyState !== "open" || this.tracking.bufferedAmount > 4096) return;
     for (const [id, sent] of this.probes)
       if (now - sent > 5000) this.probes.delete(id);
-    // The server bounds its deduplication set. Start another session after this budget.
-    if (this.probeId >= 65_536n) {
-      this.fail("Clock probe budget reached. Reconnect to continue.");
-      return;
-    }
     const id = ++this.probeId;
     const bytes = encode("ClockProbe", id);
     this.probes.set(id, now);

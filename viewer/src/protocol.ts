@@ -394,7 +394,7 @@ export function decode(
   if (kind === Message.SkeletonDefinition) {
     const result: Skeleton = { kind: "SkeletonDefinition", ...message.metadata(0), jointSet: message.string(1), reference: message.metadata(2), joints: message.tables(3, 84).map(j => ({ id: j.number(0, "u32"), parent: j.number(1, "u32", 0xffffffff) | 0, name: j.string(2), rest: j.transform(3) })) };
     const parents = new Map(result.joints.map(j => [j.id, j.parent]));
-    requireValue(result.joints.length > 0 && parents.size === result.joints.length && result.jointSet.length > 0);
+    requireValue(result.id === 2n && result.reference.id === 1n && result.joints.length > 0 && parents.size === result.joints.length && result.jointSet.length > 0);
     for (const joint of result.joints) {
       requireValue(joint.id <= 0x7fffffff && joint.name.length > 0 && (joint.parent === -1 || parents.has(joint.parent)));
       let parent = joint.parent; const visited = new Set<number>([joint.id]);
@@ -411,7 +411,7 @@ export function decode(
     const selected = type === 2 ? sources(settings, 0) : type === 3 ? names : settings.tables(0, 128).map(s => `${s.string(0)}/${s.string(1)}`);
     requireValue(names.length > 0 && names.every(Boolean) && new Set(names).size === names.length && JSON.stringify(names) === JSON.stringify(selected));
     const result: Accepted = { kind: "StreamAccepted", type: type === 1 ? "controller" : type === 2 ? "pose" : "body", requestId: message.integer(0), streamId: message.integer(1), sources: names, inputs: definitions, reference: type !== 1 ? d.metadata(4) : null, skeleton: type === 3 ? d.metadata(5) : null, jointSet: type === 3 ? settings.string(1) : null, rate: p.number(0, "f32"), history: p.number(1, "u32", 1) };
-    requireValue(result.streamId > 0n && Number.isFinite(result.rate) && result.rate > 0 && result.history >= 1);
+    requireValue(result.streamId > 0n && Number.isFinite(result.rate) && result.rate > 0 && result.history >= 1 && (!result.reference || result.reference.id === 1n) && (!result.skeleton || result.skeleton.id === 2n));
     return result;
   }
   requireValue(kind === Message.Capabilities, "Unexpected control message");
@@ -420,7 +420,7 @@ export function decode(
   const result: Capabilities = {
     kind: "Capabilities",
     sampleRate: message.number(6, "f32"),
-    controller: message.field(0, 4) ? { inputs: message.child(0).tables(1, 128).map(inputDefinition) } : false,
+    controller: message.field(0, 4) ? { inputs: message.child(0).tables(0, 128).map(inputDefinition) } : false,
     pose: message.field(1, 4) ? { sources: sources(message.child(1), 0) } : false,
     body: message.field(2, 4) ? { source: message.child(2).tables(0, 1)[0].string(0), jointSet: message.child(2).tables(0, 1)[0].string(1) } : false,
     spaces: message.tables(3, 1).map(t => { const id = t.integer(0), spaceKind = t.number(1, "u8"); requireValue(id === 1n && [1, 3].includes(spaceKind)); return { id, spaceKind }; }),

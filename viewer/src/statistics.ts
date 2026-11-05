@@ -7,19 +7,21 @@ export class Sequence {
   duplicates = 0n;
   reordered = 0n;
   tooLate = 0n;
-  private readonly seen = new Set<bigint>();
-  constructor(private readonly startAtOne = true, private readonly window = 4096n) {}
+  private readonly seen: bigint[] = [];
+  constructor(private readonly startAtOne = true, private readonly window = 4096n) {
+    if (window < 1n || window > 65_536n) throw new Error("Invalid sequence window");
+  }
   get missing() { return this.highest ? this.highest - this.first + 1n - this.unique : 0n; }
   accept(number: bigint): boolean {
     if (number <= 0n) throw new Error("Sequence numbers must be positive");
     if (!this.first) this.first = this.startAtOne ? 1n : number;
     if (number < this.first || number <= this.highest - this.window) { this.tooLate++; return false; }
-    if (this.seen.has(number)) { this.duplicates++; return false; }
+    const slot = Number(number % this.window);
+    if (this.seen[slot] === number) { this.duplicates++; return false; }
     if (number < this.highest) this.reordered++;
     this.highest = number > this.highest ? number : this.highest;
     this.unique++;
-    this.seen.add(number);
-    for (const n of this.seen) if (n <= this.highest - this.window) this.seen.delete(n);
+    this.seen[slot] = number;
     return true;
   }
 }

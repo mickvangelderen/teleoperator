@@ -10,9 +10,9 @@ use bytes::Bytes;
 use std::{
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
@@ -23,14 +23,14 @@ use webrtc::{
     api::APIBuilder,
     data_channel::RTCDataChannel,
     peer_connection::{
-        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
-        sdp::session_description::RTCSessionDescription,
+        configuration::RTCConfiguration,
+        peer_connection_state::RTCPeerConnectionState,
+        sdp::{sdp_type::RTCSdpType, session_description::RTCSessionDescription},
     },
 };
 
 struct Server {
     session: wire::SessionId,
-    started: Instant,
     slots: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
     hub: Arc<Hub>,
@@ -38,9 +38,8 @@ struct Server {
 
 struct Peer {
     protocol: Mutex<Connection>,
-    started: Instant,
     channels: AtomicU8,
-    negotiated: AtomicBool,
+    hub: Arc<Hub>,
     close: Notify,
     control: Mutex<Weak<RTCDataChannel>>,
     tracking: Mutex<Weak<RTCDataChannel>>,
@@ -48,14 +47,6 @@ struct Peer {
 }
 
 impl Peer {
-    fn now(&self) -> i64 {
-        self.started
-            .elapsed()
-            .as_nanos()
-            .try_into()
-            .expect("Monotonic clock exhausted")
-    }
-
     fn attach(self: Arc<Self>, dc: Arc<RTCDataChannel>) {
         let label = dc.label().to_string();
         let control = label == "control";
@@ -103,7 +94,7 @@ impl Peer {
                 let Some(dc) = weak_dc.upgrade() else {
                     return;
                 };
-                let received_at = peer.now();
+                let received_at = peer.hub.now();
                 let _gate = if control {
                     Some(peer.control_gate.lock().await)
                 } else {
@@ -121,7 +112,7 @@ impl Peer {
                         protocol.control(&message.data)
                     } else {
                         Ok(protocol
-                            .tracking(&message.data, received_at, || peer.now())
+                            .tracking(&message.data, received_at, || peer.hub.now())
                             .into_iter()
                             .collect())
                     }
@@ -136,8 +127,9 @@ impl Peer {
                                 return;
                             }
                         }
-                        let negotiated = peer.protocol.lock().unwrap().negotiated;
-                        peer.negotiated.store(negotiated, Ordering::SeqCst);
+                        if control {
+                            peer.hub.notify();
+                        }
                     }
                     Err(error) => {
                         log::warn!("Closing protocol connection: {error}");
@@ -149,14 +141,9 @@ impl Peer {
     }
 
     async fn publish(&self) {
-        let mut interval = tokio::time::interval(Duration::from_millis(2));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut updates = self.hub.updates.subscribe();
         let mut known_skeletons = std::collections::HashSet::new();
-        loop {
-            interval.tick().await;
-            if !self.negotiated.load(Ordering::SeqCst) {
-                continue;
-            }
+        while updates.changed().await.is_ok() {
             let (Some(control), Some(tracking)) = (
                 self.control.lock().unwrap().upgrade(),
                 self.tracking.lock().unwrap().upgrade(),
@@ -164,60 +151,55 @@ impl Peer {
                 continue;
             };
             let gate = self.control_gate.lock().await;
-            let notifications = self.protocol.lock().unwrap().refresh();
-            for notification in notifications {
-                if control.send(&Bytes::from(notification)).await.is_err() {
-                    return;
-                }
-            }
-            let buffered = tracking.buffered_amount().await;
-            let prepared = {
+            let (mut notifications, prepared) = {
                 let mut protocol = self.protocol.lock().unwrap();
-                protocol
+                if !protocol.negotiated {
+                    continue;
+                }
+                let notifications = protocol.refresh();
+                protocol.streams.sort_by_key(|stream| stream.kind);
+                let prepared = protocol
                     .streams
                     .iter_mut()
                     .filter_map(|stream| {
-                        stream
-                            .stats
-                            .peak_buffer
-                            .fetch_max(buffered as u64, Ordering::SeqCst);
                         if !stream.due() {
                             return None;
                         }
-                        // One publication in flight; skip before serialization when SCTP backs up.
-                        if buffered >= 16_384 {
-                            stream.stats.skipped.fetch_add(1, Ordering::SeqCst);
-                            return None;
-                        }
-                        stream
-                            .packet()
-                            .map(|publication| (publication, stream.stats.clone()))
+                        stream.packet().map(|packet| (packet, stream.stats.clone()))
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                (notifications, prepared)
             };
             for (publication, _) in &prepared {
                 for skeleton in &publication.skeletons {
-                    if known_skeletons.insert(skeleton.version)
-                        && control
-                            .send(&Bytes::from(crate::body::definition(skeleton)))
-                            .await
-                            .is_err()
-                    {
-                        return;
+                    if known_skeletons.insert(skeleton.version) {
+                        notifications.push(crate::body::definition(skeleton));
                     }
                 }
             }
             if let Some(latest) = known_skeletons.iter().copied().max() {
                 known_skeletons.retain(|v| latest.saturating_sub(*v) < 32);
             }
+            for notification in notifications {
+                if control.buffered_amount().await > protocol::MAX_PACKET * 2
+                    || control.send(&Bytes::from(notification)).await.is_err()
+                {
+                    return;
+                }
+            }
             drop(gate);
             for (publication, stats) in prepared {
                 let packet = publication.bytes;
-                if tracking.buffered_amount().await >= 16_384 {
+                let bytes = packet.len();
+                let buffered = tracking.buffered_amount().await;
+                stats
+                    .peak_buffer
+                    .fetch_max(buffered as u64, Ordering::SeqCst);
+                // Budget the whole packet; a maximum-sized packet fits only in an empty queue.
+                if buffered.saturating_add(bytes) > protocol::MAX_PACKET {
                     stats.skipped.fetch_add(1, Ordering::SeqCst);
                     continue;
                 }
-                let bytes = packet.len();
                 match tracking.send(&Bytes::from(packet)).await {
                     Ok(_) => {
                         stats.sent.fetch_add(1, Ordering::SeqCst);
@@ -247,7 +229,7 @@ async fn offer(
             "Use the Viewer signaling proxy".into(),
         ));
     }
-    if serde_json::to_value(&offer).unwrap()["type"] != "offer" {
+    if offer.sdp_type != RTCSdpType::Offer {
         return Err((StatusCode::BAD_REQUEST, "Expected an SDP offer".into()));
     }
     let permit = server.slots.clone().try_acquire_owned().map_err(|_| {
@@ -258,9 +240,8 @@ async fn offer(
     })?;
     let peer = Arc::new(Peer {
         protocol: Mutex::new(Connection::with_hub(server.session, server.hub.clone())),
-        started: server.started,
         channels: AtomicU8::new(0),
-        negotiated: AtomicBool::new(false),
+        hub: server.hub.clone(),
         close: Notify::new(),
         control: Mutex::new(Weak::new()),
         tracking: Mutex::new(Weak::new()),
@@ -308,7 +289,7 @@ async fn offer(
             _ = shutdown.wait_for(|stopped| *stopped) => {},
             _ = async {
                 tokio::time::sleep(Duration::from_secs(20)).await;
-                if live_peer.negotiated.load(Ordering::SeqCst) && live_peer.channels.load(Ordering::SeqCst) == 3 {
+                if live_peer.protocol.lock().unwrap().negotiated && live_peer.channels.load(Ordering::SeqCst) == 3 {
                     std::future::pending::<()>().await;
                 }
             } => log::warn!("Peer handshake timed out"),
@@ -353,7 +334,6 @@ pub async fn serve(
     }
     let server = Arc::new(Server {
         session: wire::SessionId::new(low, high),
-        started: hub.started,
         hub,
         slots: Arc::new(Semaphore::new(4)),
         shutdown: shutdown.clone(),

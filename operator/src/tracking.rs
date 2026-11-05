@@ -10,10 +10,10 @@ use std::{
 };
 use tokio::sync::watch;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
-    Pose,
     Controller,
+    Pose,
     Body,
 }
 
@@ -51,7 +51,7 @@ pub struct StreamStats {
 }
 
 pub struct Hub {
-    pub started: Instant,
+    started: Instant,
     pub source: &'static str,
     pub available: AtomicBool,
     pub resumed_at: AtomicI64,
@@ -64,7 +64,7 @@ pub struct Hub {
     pub reference_version: Mutex<u32>,
     pub samples: Mutex<VecDeque<Sample>>,
     next_stream: AtomicU64,
-    pub updates: watch::Sender<u64>,
+    pub updates: watch::Sender<()>,
     pub stats: Mutex<VecDeque<Arc<StreamStats>>>,
 }
 
@@ -83,7 +83,7 @@ impl Hub {
             reference_version: Mutex::new(1),
             samples: Mutex::new(VecDeque::new()),
             next_stream: AtomicU64::new(1),
-            updates: watch::channel(0).0,
+            updates: watch::channel(()).0,
             stats: Mutex::new(VecDeque::new()),
         })
     }
@@ -115,9 +115,8 @@ impl Hub {
         *version = version.checked_add(1).expect("Reference version exhausted");
         self.notify();
     }
-    fn notify(&self) {
-        self.updates
-            .send_modify(|n| *n = n.checked_add(1).expect("Update counter exhausted"));
+    pub(crate) fn notify(&self) {
+        self.updates.send_replace(());
     }
     fn id(counter: &AtomicU64) -> u64 {
         counter
