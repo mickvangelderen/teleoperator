@@ -1,3 +1,5 @@
+use base64::{Engine, prelude::BASE64_STANDARD};
+use bytes::Bytes;
 use serde::Serialize;
 use std::{
     fs::{self, File},
@@ -14,7 +16,7 @@ use std::{
 
 const FILE_BYTES: u64 = 64 * 1024 * 1024;
 const FILES: usize = 4;
-const QUEUE: usize = 8192;
+const QUEUE: usize = 1024;
 
 // Numeric timestamps are milliseconds in the same Hub epoch as wire acquired_at / ClockReply.
 // Serialization and file I/O run on a dedicated writer thread.
@@ -26,50 +28,18 @@ pub enum Event {
         acquired_ms: f64,
         body_available: bool,
     },
-    XrSample {
-        start_ms: f64,
-        locked_ms: f64,
-        inputs_ms: f64,
-        body_ms: f64,
-        poses_ms: f64,
-    },
-    Publish {
-        peer: u64,
-        start_ms: f64,
-        locked_ms: f64,
-        prepared_ms: f64,
-        notified_ms: f64,
-    },
-    Tracking {
-        peer: u64,
-        stream: u64,
-        message: u64,
-        first_sample: u64,
-        sample: u64,
-        available_sample: u64,
-        acquired_ms: f64,
-        prepared_ms: f64,
-        bytes: usize,
-        buffered_bytes: usize,
-        phase: &'static str,
-    },
-    Channel {
+    Packet {
         peer: u64,
         channel: &'static str,
-        phase: &'static str,
-        bytes: usize,
+        action: &'static str,
+        #[serde(serialize_with = "packet_base64")]
+        data: Bytes,
         buffered_bytes: usize,
     },
-    Transport {
-        peer: u64,
-        tracking_buffered_bytes: usize,
-        control_buffered_bytes: usize,
-        report: Box<serde_json::Value>,
-    },
-    Peer {
-        peer: u64,
-        state: String,
-    },
+}
+
+fn packet_base64<S: serde::Serializer>(bytes: &Bytes, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&BASE64_STANDARD.encode(bytes))
 }
 
 #[derive(Serialize)]
@@ -100,7 +70,7 @@ impl Diagnostics {
             return Err(io::Error::other("Diagnostics already started"));
         }
         let header = serde_json::to_vec(&serde_json::json!({
-            "kind": "session", "version": 1, "session": session, "source": source,
+            "kind": "session", "version": 2, "session": session, "source": source,
             "protocol_version": crate::protocol::VERSION,
             "started_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
             "clock": "Hub monotonic milliseconds; wire timestamps / 1000000"
@@ -284,6 +254,17 @@ mod tests {
                 body_available: true,
             },
         );
+        let packet = Bytes::from_static(&[0, 1, 127, 128, 255]);
+        trace.record(
+            6_000_000,
+            Event::Packet {
+                peer: 1,
+                channel: "tracking",
+                action: "skip-buffer",
+                data: packet.clone(),
+                buffered_bytes: crate::protocol::MAX_PACKET,
+            },
+        );
         trace.stop();
         let text = fs::read_to_string(dir.join("trace.0.jsonl")).unwrap();
         let records: Vec<serde_json::Value> = text
@@ -292,6 +273,13 @@ mod tests {
             .collect();
         assert_eq!(records[1]["sequence"], 1);
         assert_eq!(records[1]["at_ms"], 5.);
+        assert_eq!(records[2]["action"], "skip-buffer");
+        assert_eq!(
+            BASE64_STANDARD
+                .decode(records[2]["data"].as_str().unwrap())
+                .unwrap(),
+            packet,
+        );
         assert_eq!(records.last().unwrap()["kind"], "recording-end");
         let (sender, receiver) = mpsc::sync_channel(1);
         *trace.writer.lock().unwrap() = Some(Writer {

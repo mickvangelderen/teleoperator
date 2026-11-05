@@ -111,17 +111,28 @@ and clock-reply nanoseconds by 1,000,000 to compare. Match tracking events to
 Viewer packets by session, stream ID and message number. Retrieval while running
 can include an unfinished last line; the copied files remain usable up to it.
 
-Events record acquisition completion and OpenXR phases, publisher wakeup and
-metadata waits, send start/completion, buffer skips, stream/sample/message IDs,
-the newest sample available at each send decision, and WebRTC counters at 5 Hz.
-`send-end` means accepted by the WebRTC library, not delivered or acknowledged.
-Differences between send start/end expose blocking sends; `prepared_ms` and
-`available_sample` expose a prepared packet that aged while awaiting metadata.
-Body, pose and input streams still share the tracking channel's 64 KiB budget.
-An unsuccessful publication does not consume a message number; `skip-buffer`
-may therefore repeat the number used by a later successful send.
+Each collected sample produces one `acquisition` record using its existing sample
+number and acquisition timestamp (`acquired_ms`, converted from nanoseconds).
+This preserves the acquisition cadence even for samples that never reach a Viewer.
+The record's `at_ms` marks completion of storing the sample in the shared history.
 
-Serialization and file writes run on a dedicated thread. An 8,192-event queue
+`packet` records contain the exact wire bytes in base64 `data`, plus `peer`,
+`channel`, `buffered_bytes` and an `action`: `receive`, `send` or `skip-buffer`.
+Outgoing packets are recorded before the send/drop decision, including their
+existing sample values, sample numbers and acquisition timestamps. Control
+packets retain the stream descriptors and metadata needed to decode them.
+`send` means a send attempt, not proof of delivery. Skipped packets are retained
+too; an unsuccessful publication does not consume a message number.
+
+Compare a client's missing/late packets with this pre-transmission recording:
+regular acquisition with late client arrival points downstream of acquisition;
+gaps in acquisition timestamps point to the producer. `skip-buffer` distinguishes
+the application's 64 KiB backpressure cutoff from packets passed to WebRTC.
+An acquisition record keeps the sampling cadence visible even when publication
+stalls or deliberately omits samples. Full sample values are retained for
+prepared packets; acquisition markers alone do not contain those values.
+
+Serialization and file writes run on a dedicated thread. A 1,024-event queue
 uses nonblocking submission; `dropped_events` and sequence gaps identify lost
 diagnostics if the writer cannot keep up. Recording failures go to logcat.
 Four 64 MiB files bound storage to 256 MiB; rotation and app restarts replace the

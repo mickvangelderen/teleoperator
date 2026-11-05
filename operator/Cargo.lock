@@ -3051,6 +3051,7 @@ dependencies = [
  "android-activity",
  "android_logger",
  "axum",
+ "base64",
  "bytes",
  "flatbuffers",
  "getrandom 0.3.4",

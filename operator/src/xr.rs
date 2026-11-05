@@ -133,10 +133,8 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
             let mut retry_body = Instant::now();
             while !stop.load(Ordering::SeqCst) {
                 next += period;
-                let sampling_started = hub.now();
                 let mut state = gate.lock().unwrap();
                 let acquired_at = hub.now();
-                let (mut inputs_done, mut body_done) = (acquired_at, acquired_at);
                 let mut body = hub
                     .skeleton
                     .lock()
@@ -172,7 +170,6 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                     for (input, action) in inputs.iter_mut().zip(&input_actions) {
                         *input = action.sample(&session, synced);
                     }
-                    inputs_done = hub.now();
                     if extensions.fb_body_tracking
                         && body_permission.load(Ordering::SeqCst)
                         && tracker.is_none()
@@ -193,7 +190,6 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                     {
                         body = Some(sample);
                     }
-                    body_done = hub.now();
                     for (i, space) in spaces.iter().enumerate() {
                         if i > 0 {
                             let action = if i % 2 == 1 { &aim } else { &grip };
@@ -216,19 +212,8 @@ pub fn run(app: &AndroidApp, hub: Arc<Hub>) -> Result<(), Box<dyn std::error::Er
                     }
                 }
                 // XrTime has a runtime epoch; leave target_at absent until explicitly converted.
-                let poses_done = hub.now();
                 hub.acquire(&poses, &inputs, body.as_ref(), acquired_at, None);
                 drop(state);
-                hub.trace.record(
-                    hub.now(),
-                    crate::diagnostics::Event::XrSample {
-                        start_ms: sampling_started as f64 / 1e6,
-                        locked_ms: acquired_at as f64 / 1e6,
-                        inputs_ms: inputs_done as f64 / 1e6,
-                        body_ms: body_done as f64 / 1e6,
-                        poses_ms: poses_done as f64 / 1e6,
-                    },
-                );
                 let now = Instant::now();
                 if next > now {
                     std::thread::sleep(next - now);

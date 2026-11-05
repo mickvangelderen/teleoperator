@@ -148,7 +148,7 @@ the OS accepts them, without per-batch `fsync`. Reload the Viewer after a dev-se
 restart to begin a new recording.
 
 These are browser-side observations: packets lost before reception are absent.
-Quest-side acquisition/send/backpressure traces are recorded locally on the device;
+Quest-side pre-transmission packets and acquisition timestamps are recorded locally;
 retrieve them afterward using [ADB](../operator/README.md#diagnostic-recordings).
 
 For example, inspect timing events with:
