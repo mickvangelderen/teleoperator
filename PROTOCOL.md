@@ -182,9 +182,10 @@ compatible underlying OpenXR resources.
 On acceptance, send the client stream identity, its subscription association, a
 complete shared subscription descriptor, and that client's publication settings.
 The descriptor contains the resolved acquisition configuration, selected data
-definitions, payload layout, units and coordinate conventions, clock semantics,
-and references to required versioned metadata. Deliver the corresponding
-skeleton and reference-space definitions over control as well.
+definitions, payload layout, units and coordinate conventions, and references
+to required versioned metadata. The clock domain is fixed by the protocol and
+is not included in the descriptor. Deliver the corresponding skeleton and
+reference-space definitions over control as well.
 
 Control-channel ordering does not extend to tracking messages on another channel.
 A snapshot can arrive before its descriptor or required metadata, even if the
@@ -486,13 +487,17 @@ policy whose defaults remain to be defined.
 
 ### Server clock domain
 
-Publish all server timestamps in one domain, `server-monotonic`, represented as
-signed 64-bit integer nanoseconds. On Quest, this is the value of
-`CLOCK_MONOTONIC`, with `tv_sec * 1_000_000_000 + tv_nsec` as the timestamp.
+Every server must support `server-monotonic`, the only clock domain permitted by
+this protocol. All server timestamps use this domain, represented as signed
+64-bit integer nanoseconds. Support is a required server capability, implicit in
+protocol compliance: clients cannot configure it, and servers do not advertise
+or negotiate it in capabilities, descriptors, or connection setup. These fixed
+clock semantics apply across all subscriptions and clients in the server session.
+
+On Quest, this is the value of `CLOCK_MONOTONIC`, with
+`tv_sec * 1_000_000_000 + tv_nsec` as the timestamp.
 The origin is opaque: it is not UTC or time since application startup. Nanosecond
 units describe the representation, not a guarantee of resolution or accuracy.
-Clock semantics belong in the descriptor and apply across all subscriptions and
-clients in the server session.
 
 | Timestamp | Meaning and source |
 | --- | --- |
