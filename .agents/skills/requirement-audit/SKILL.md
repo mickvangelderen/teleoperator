@@ -1,5 +1,5 @@
 ---
-name: design-audit
+name: requirement-audit
 description: Compare the implementation against the hand-written requirements in the design folder and report major discrepancies. Use when asked whether the code meets the requirements, to audit conformance, or before a milestone or release.
 ---
 
@@ -36,7 +36,7 @@ decide whether the code or the requirements should change.
 
 ## Report
 
-Write the report to `.agents/reports/design-audit/<yyyy>-<mm>-<dd>-<title>.md. Order findings from most to least
+Write the report to `.agents/reports/requirement-audit/<yyyy>-<mm>-<dd>-<title>.md. Order findings from most to least
 severe. For each one give:
 
 - the requirement, quoted, with `path:line`;

@@ -1,3 +1,7 @@
-> **AGENTS SHOULD NOT MODIFY THIS FILE**
+# Requirements
 
-This folder contains an index of human hand written requirements split into separate topics.
+This folder contains human-written requirements.
+
+## Index
+
+- [protocol](./protocol/): The tracking data client-server protocol.

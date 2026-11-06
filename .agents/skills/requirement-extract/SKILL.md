@@ -56,6 +56,8 @@ After the cheap early evaluation pass the requirement can now undergo deeper inv
 ## Report
 
 Write the report to `.agents/reports/design-extract/<yyyy>-<mm>-<dd>-<title>.md.
+Make sure not to overwrite existing reports, use a different title instead.
+
 Group candidates by target file: an existing topic file under `design/requirements/`, or a proposed new topic file with a one-line scope for the index.
 
 For each suggestion give:
