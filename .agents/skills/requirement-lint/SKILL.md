@@ -5,26 +5,15 @@ description: Review the design folder itself for consistency, duplication, clari
 
 # Review the design folder
 
-Review the documents in `design/` as a body of information, independent of
-the implementation. Suggest concrete edits for the user to make.
-
-## Ground rules
-
-- Read `AGENTS.md` first and obey its rules about the design folder. In this
-  repository, agents must not create or modify anything under `design/`.
-  Every outcome of this skill is a suggestion.
-- Read every file under `design/`, starting with
-  `design/requirements/README.md`. Don't consult the implementation except
-  to understand a term.
+Review the documents in `design/` as a body of information, independent of the implementation.
+Suggest concrete edits for the user to make.
 
 ## What to check
 
 **Consistency**
 - Statements that contradict each other, within a file or across files.
-- The same concept under different names, or one name used for different
-  concepts.
-- Banners, headings, list style and wording conventions applied unevenly
-  across files.
+- The same concept under different names, or one name used for different concepts.
+- Banners, headings, list style and wording conventions applied unevenly across files.
 
 **Duplication**
 - The same requirement stated in more than one place, especially where the
@@ -52,9 +41,9 @@ the implementation. Suggest concrete edits for the user to make.
 
 ## Report
 
-Return the review in the conversation. Order suggestions by impact, putting
-contradictions and missing index entries first and cosmetic issues last. For
-each one give:
+Write the report to `.agents/reports/design-extract/<yyyy>-<mm>-<dd>-<title>.md.
+Order suggestions by impact, putting contradictions and missing index entries first and cosmetic
+issues last. For each one give:
 
 - the location, as `path:line`;
 - the problem, in one sentence;

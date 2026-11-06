@@ -9,17 +9,6 @@ Produce a report of major discrepancies between the hand-written requirements
 and what the repository actually implements. The report is for the user to
 decide whether the code or the requirements should change.
 
-## Ground rules
-
-- Read `AGENTS.md` first and obey its rules about the design folder. In this
-  repository, agents must not create or modify anything under `design/`.
-- Requirements come only from the hand-written files indexed in
-  `design/requirements/README.md`. Other files under `design/` are hand-written
-  context with lower authority; cite them separately.
-- Everything outside `design/` is implementation, including documentation that
-  reads like a specification. Never treat it as a requirement.
-- Do not fix discrepancies while running this skill unless the user asks.
-
 ## Process
 
 1. Read the requirements index and every file it links to, then the rest of
@@ -47,8 +36,8 @@ decide whether the code or the requirements should change.
 
 ## Report
 
-Return the report in the conversation. Do not write it into `design/`. Order
-findings from most to least severe. For each one give:
+Write the report to `.agents/reports/design-audit/<yyyy>-<mm>-<dd>-<title>.md. Order findings from most to least
+severe. For each one give:
 
 - the requirement, quoted, with `path:line`;
 - the observed behaviour, with `path:line` evidence;
