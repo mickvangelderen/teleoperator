@@ -17,8 +17,12 @@ You may still use the full context for evaluation.
 
 ## Evaluate
 
+**Formatting**
+- Requirements should follow the template under `design/requirements/TEMPLATE.md.mustache`.
+
 **Consistency**
 - Statements that contradict each other, within a file or across files.
+- Tags not documented in `design/requirements/<project>/TAGS.md`
 
 **Duplication**
 - The same requirement stated in more than one place, especially where the
@@ -40,9 +44,6 @@ You may still use the full context for evaluation.
 - Empty or placeholder files, files that are too large or mix topics, and
   content in the wrong place, such as a roadmap inside a requirements file.
 - File and folder names that don't match their content.
-
-**Formatting**
-- Requirements should follow the template under `design/requirements/TEMPLATE.md.mustache`.
 
 ## Report
 
