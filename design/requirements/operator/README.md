@@ -1,5 +1,3 @@
-# Protocol
+# Operator
 
-## Index
-
-- P0001.md:
+This folder contains the requirements for the [`operator`](../../../operator/) project.
