@@ -1,7 +1,13 @@
 # XR Operator
 
 Rust Android application for Meta Quest 3, with a TypeScript web Viewer.
-The roadmap is in [IDEA.md](IDEA.md).
+The hand-written requirements are in [design/requirements](design/requirements/README.md).
+
+The [new binary protocol specification](protocol/PROTOCOL.md) replaces the
+FlatBuffers contract. The server and Viewer described below still implement the
+retired protocol. Their schema and compiler tooling have been removed, so their
+build/generation hooks need migration before a clean build can succeed. See
+[protocol status](protocol/README.md#implementation-status).
 
 The standalone Android project, build instructions, and deployment script are
 in [operator/](operator/README.md).
@@ -18,9 +24,8 @@ be inspected together in the Viewer. The APK has been deployed and tested remote
 on the Quest; physical movement and controller checks still need hands-on validation.
 See [tracking validation](operator/TRACKING.md) for measurements and hardware limits.
 
-Install Python 3, Node.js 22.18+ and pnpm 12.10.1. Builds automatically download
-and cache the pinned **flatc 25.9.23** compiler (see
-[protocol setup](protocol/README.md#generate-and-check)). From `viewer/`:
+The previous implementation used Python 3, Node.js 22.18+ and pnpm 12.10.1.
+After its protocol integration is migrated, the Viewer entry points are:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -31,8 +36,6 @@ Open `http://127.0.0.1:5173` and select **Connect**. The browser and Quest must
 have direct network connectivity. A desktop server using the same implementation
 is available for development: `cargo run --manifest-path operator/Cargo.toml`.
 
-The device-independent [protocol design](protocol/PROTOCOL.md),
-[current wire contract and implementation status](protocol/README.md), and
-[FlatBuffers schema](protocol/wire.fbs) are in `protocol/`. The implemented v2
-contract still uses one global acquisition sequence; independent acquisition groups
-are design requirements pending coordinated schema, server, and client changes.
+The [binary specification](protocol/PROTOCOL.md),
+[wire examples](protocol/EXAMPLES.md), and
+[implementation status](protocol/README.md) are in `protocol/`.
