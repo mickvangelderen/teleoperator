@@ -12,13 +12,20 @@ Propose wording for the user to review and add.
 
 The process for requirement extraction is as follows:
 
-1. resolve the source;
-2. extract candidate requirements;
-3. for each candidate:
+1. claim an output folder;
+2. resolve the source;
+3. extract candidate requirements;
+4. for each candidate:
    1. evaluate candidate;
    2. if evaluation passes:
       1. refine candidate;
-      2. amend report;
+      2. emit requirement;
+5. emit report
+
+## Claim
+
+Depending on the context, claim a new output folder under `.agents/reports/requirement-extract/<yyyy>-<mm>-<dd>-<title>/` by creating it without overwriting, or if a revision is intended by the user to a report from the same chat conversation re-use that folder.
+If folder creation fails, use a different title.
 
 ## Source
 
@@ -32,10 +39,10 @@ When using conversation context, distinguish user statements and decisions from 
 
 ## Extract
 
-Maintain a record of candidate requirements that can survive compaction in a temporary file.
-Avoid evaluating candidates at this stage, keep the records lean.
-
-For large selections, examine the source in manageable sections.
+For large source sets, examine the sources in manageable sections.
+Maintain a record of candidate requirements under `.agents/reports/requirement-extract/<yyyy>-<mm>-<dd>-<title>/candidates/<id>.md` that can survive compaction in a temporary file.
+Avoid evaluating candidates or diving particularly deep into the details at this stage, keep the records lean.
+The intention is to identify broad possibilities before narrowing them down based on the evaluation rules.
 
 ## Evaluate
 
@@ -52,15 +59,16 @@ Drop candidates that fail these questions.
 ## Refinement
 
 After the cheap early evaluation pass the requirement can now undergo deeper investigation if needed.
+The requirement can then be formatted according to the [requirement template](../../../design/requirements/TEMPLATE.md.mustache) under `.agents/reports/requirement-extract/<yyyy>-<mm>-<dd>-<title>/proposed/<id>.md`.
 
 ## Report
 
-Write the report to `.agents/reports/requirement-extract/<yyyy>-<mm>-<dd>-<title>.md`.
-Make sure not to overwrite existing reports, use a different title instead.
+Write the report to `.agents/reports/requirement-extract/<yyyy>-<mm>-<dd>-<title>/README.md`.
 
-Group candidates by target file: an existing topic file under `design/requirements/`, or a proposed new topic file with a one-line scope for the index.
+Provide a summary of the proposed requirements.
+Group proposals by project if needed.
 
-For each suggestion give:
+For each proposal give:
 
-- proposed wording, short and in the style of the existing requirements;
+- why this requirement is valid and essential;
 - whether the user stated it (quote and cite) or you inferred it (cite the evidence), and so whether the user needs to confirm it;
