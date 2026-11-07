@@ -20,6 +20,8 @@ You may still use the full context for evaluation.
 **Formatting**
 - Requirements should follow the template under `design/requirements/TEMPLATE.md.mustache`.
 - References to other requirements should be formatted as `([<id>](<relative file path>))`. They should avoid repeating the title if the topic of that requirement is clear from the sentence the reference is used in.
+- Tables are formatted.
+- One sentence per line.
 
 **Consistency**
 - Statements that contradict each other, within a file or across files.
