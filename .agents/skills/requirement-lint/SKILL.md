@@ -17,21 +17,25 @@ You may still use the full context for evaluation.
 
 ## Evaluate
 
-**Formatting**
+### Formatting
+
 - Requirements should follow the template under `design/requirements/TEMPLATE.md.mustache`.
 
-**Consistency**
+### Consistency
+
 - Statements that contradict each other, within a file or across files.
 - Tags not documented in `design/requirements/<project>/TAGS.md`
 
-**Duplication**
+### Duplication
+
 - The same requirement stated in more than one place, especially where the
   copies have started to drift apart.
 - The same concept under different names, or one name used for different concepts.
 - Topics whose scopes overlap enough to make it unclear where a new
   requirement belongs.
 
-**Clarity**
+### Clarity
+
 - Statements that cannot be checked: vague qualifiers ("fast", "robust",
   "where possible") without a criterion, or "should" where the obligation is
   unclear.
@@ -40,7 +44,8 @@ You may still use the full context for evaluation.
 - Implementation details mixed in with requirements, unless they are
   deliberately mandated.
 
-**Organisation**
+### Organisation
+
 - Empty or placeholder files, files that are too large or mix topics, and
   content in the wrong place, such as a roadmap inside a requirements file.
 - File and folder names that don't match their content.

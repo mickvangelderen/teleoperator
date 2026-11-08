@@ -50,7 +50,7 @@ To stream the app's logs:
 ## Diagnostic recordings
 
 The operator records diagnostics locally by default, independently of the Viewer.
-On Quest the files are in the app's private `files/diagnostics/` directory. 
+On Quest the files are in the app's private `files/diagnostics/` directory.
 
 ```sh
 mkdir -p ../.artifacts/quest-diagnostics

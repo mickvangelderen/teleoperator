@@ -30,7 +30,7 @@ If folder creation fails, use a different title.
 ## Source
 
 Resolve the source for requirement candidate extraction from the user's request.
-If the source can not be resolved, ask the user if they meant all code in this repository excluding test. 
+If the source can not be resolved, ask the user if they meant all code in this repository excluding test.
 
 Freely inspect other material such as releted code, tests, history, documentation, and conversation context.
 Supporting context must not become an independent source of additional candidates.

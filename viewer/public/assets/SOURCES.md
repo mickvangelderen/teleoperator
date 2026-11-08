@@ -19,7 +19,7 @@ lighting choices. No application code was copied from that project.
 ## Touch Plus controllers
 
 - Source: [Meta Quest Hardware Art 1.8](https://developers.meta.com/horizon/downloads/package/oculus-controller-art/), updated 2024-02-03.
-- Original download: https://securecdn-sjc6-1.oculus.com/binaries/download/?id=6989765204455805
+- Original download: <https://securecdn-sjc6-1.oculus.com/binaries/download/?id=6989765204455805>
 - Files: `meta/controller_left.glb`, `meta/controller_right.glb` and their PNG textures.
 - License: `meta/ART_ATTRIBUTION_LICENSE.txt`, retained with the assets.
 - Reused unchanged from OpenArm Teleop's attributed `operator/assets/meta_touch_plus`
@@ -64,5 +64,5 @@ lighting choices. No application code was copied from that project.
 - [Studio Small 09](https://polyhaven.com/a/studio_small_09) by Sergej Majboroda,
   [CC0](https://polyhaven.com/license).
 - Unmodified file: `environment/studio_small_09_1k.hdr`.
-- Download: https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/studio_small_09_1k.hdr
+- Download: <https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/studio_small_09_1k.hdr>
 - Used for prefiltered PBR lighting and reflections with a solid viewport background.
