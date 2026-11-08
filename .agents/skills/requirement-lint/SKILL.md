@@ -28,26 +28,19 @@ You may still use the full context for evaluation.
 
 ### Duplication
 
-- The same requirement stated in more than one place, especially where the
-  copies have started to drift apart.
+- The same requirement stated in more than one place, especially where the copies have started to drift apart.
 - The same concept under different names, or one name used for different concepts.
-- Topics whose scopes overlap enough to make it unclear where a new
-  requirement belongs.
+- Topics whose scopes overlap enough to make it unclear where a new requirement belongs.
 
 ### Clarity
 
-- Statements that cannot be checked: vague qualifiers ("fast", "robust",
-  "where possible") without a criterion, or "should" where the obligation is
-  unclear.
-- Undefined terms, acronyms and references to external documents without
-  links.
-- Implementation details mixed in with requirements, unless they are
-  deliberately mandated.
+- Statements that cannot be checked: vague qualifiers ("fast", "robust", "where possible") without a criterion, or "should" where the obligation is unclear.
+- Undefined terms, acronyms and references to external documents without links.
+- Implementation details mixed in with requirements, unless they are deliberately mandated.
 
 ### Organisation
 
-- Empty or placeholder files, files that are too large or mix topics, and
-  content in the wrong place, such as a roadmap inside a requirements file.
+- Empty or placeholder files, files that are too large or mix topics, and content in the wrong place, such as a roadmap inside a requirements file.
 - File and folder names that don't match their content.
 
 ## Report
@@ -55,14 +48,13 @@ You may still use the full context for evaluation.
 Write the report to `.agents/reports/requirement-lint/<yyyy>-<mm>-<dd>-<title>.md.
 Make sure not to overwrite existing reports, use a different title instead.
 
-Order suggestions by impact, putting contradictions and missing index entries first and cosmetic
-issues last. For each one give:
+Order suggestions by impact, putting contradictions and missing index entries first and cosmetic issues last.
+For each one give:
 
 - the location, as `path:line`;
 - the problem, in one sentence;
-- the proposed change, as before-and-after text, or as a move, split, merge
-  or rename with the resulting index entry.
+- the proposed change, as before-and-after text, or as a move, split, merge or rename with the resulting index entry.
 
-Keep observations separate from opinions about structure. When several
-reasonable organisations exist, recommend one and explain the trade-off
-briefly. Don't list every alternative.
+Keep observations separate from opinions about structure.
+When several reasonable organisations exist, recommend one and explain the trade-off briefly.
+Don't list every alternative.

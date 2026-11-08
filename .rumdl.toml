@@ -6,7 +6,7 @@
 # Global configuration options
 [global]
 # List of rules to disable (uncomment and modify as needed)
-disable = ["MD013", "MD033", "MD041"]
+disable = ["MD033", "MD041"]
 
 unfixable = ["MD001"]
 
