@@ -1,5 +1,7 @@
 # Operator
 
+A server implementation of the teleoperation protocol for Android-based OpenXR devices.
+
 ## Build
 
 Install Python 3, Rust through rustup,
