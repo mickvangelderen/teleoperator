@@ -3,6 +3,8 @@ Formatting rules for authors:
 - Format references to other requirements as `([<id>](<relative file path>))`. Omit the referenced requirement's title when its topic is clear from the surrounding sentence.
 - Format Markdown tables with aligned columns.
 - Put each sentence on its own line to facilitate reviews.
+- Avoid duplicating information between requirement documents, such as making unnecessary remarks about downstream uses.
+- Avoid making minute changes that do not bring considerable value.
 }}
 {{! id: Unique identifier matching the file stem }}
 {{! title: Concise title }}
@@ -11,10 +13,12 @@ Formatting rules for authors:
 {{! tags: Comma-separated list of tags defined in `<project>/TAGS.md` associated with this requirement. }}
 **Tags**: {{tags}}
 
-{{! requirement: A lean statement of the normative requirement }}
-{{{requirement}}}
+## Description
 
-{{! rationale: Optional explanation of why the requirement exists }}
+{{! description: A lean description of one or multiple very closely coupled requirements }}
+{{{description}}}
+
+{{! rationale: Optional evidence based logical reasoning for why the requirement must exist }}
 {{#rationale}}
 ## Rationale
 

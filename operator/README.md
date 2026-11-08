@@ -29,10 +29,6 @@ The APK is `target/debug/apk/xr-operator.apk`. `cargo-apk` signs debug builds
 with the local Android debug keystore (`~/.android/debug.keystore`), creating
 it if needed. Do not use that key for distribution.
 
-Cargo automatically prepares the pinned host `flatc` compiler for both Android
-and desktop builds. No system `flatc` installation or `FLATC` setting is needed;
-see [protocol setup](../protocol/README.md#generate-and-check) for caching and overrides.
-
 ## Deploy to Quest 3
 
 Enable developer mode and USB debugging on the headset, connect a USB data
