@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { Bone, Quaternion, SkinnedMesh, Vector3 } from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { BodyModel } from "../src/body-model";
-import type { Pose, Sample, Skeleton } from "../src/protocol";
+import type { Pose, PoseFrame, Skeleton } from "../src/body-model";
 
 test("Meta body follows absolute poses on the first frame and hides invalid geometry", async () => {
   const bytes = await readFile(new URL("../public/assets/meta/body.glb", import.meta.url));
@@ -21,8 +21,8 @@ test("Meta body follows absolute poses on the first frame and hides invalid geom
     if (object instanceof SkinnedMesh) meshes.push(object);
   });
   assert.ok(mapped >= 50 && meshes.length >= 3);
-  const skeleton: Skeleton = { kind: "SkeletonDefinition", id: 2n, version: 1, reference: { id: 1n, version: 1 }, jointSet: "XR_BODY_JOINT_SET_DEFAULT_FB", joints: poses.map((rest, id) => ({ id, parent: -1, name: String(id), rest })) };
-  const sample: Sample = { type: "body", number: 1n, acquiredAt: 1n, targetAt: null, referenceVersion: 1, poses, inputs: [], body: { active: true, confidence: 1, returnedAt: null, skeletonVersion: 1, fidelity: null, calibration: null } };
+  const skeleton: Skeleton = { joints: poses.map((rest, id) => ({ id, parent: -1, rest })) };
+  const sample: PoseFrame = { poses, active: true };
   const vertices = () => meshes.flatMap(mesh => {
     mesh.skeleton.update();
     return Array.from({ length: 8 }, (_, i) => mesh.getVertexPosition(i * 3, new Vector3()).applyMatrix4(mesh.matrixWorld));

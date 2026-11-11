@@ -1,6 +1,5 @@
 use crate::{
-    body::{Body, JOINT_COUNT, Joint, Skeleton},
-    protocol::wire,
+    body::{Body, CalibrationStatus, Fidelity, JOINT_COUNT, Joint, Skeleton},
     tracking::{Hub, Pose},
 };
 use android_activity::AndroidApp;
@@ -218,20 +217,20 @@ impl Tracker {
             returned_at: None,
             fidelity: if self.fidelity {
                 match fidelity.fidelity {
-                    sys::BodyTrackingFidelityMETA::HIGH => Some(wire::Fidelity::High),
-                    sys::BodyTrackingFidelityMETA::LOW => Some(wire::Fidelity::Low),
+                    sys::BodyTrackingFidelityMETA::HIGH => Some(Fidelity::High),
+                    sys::BodyTrackingFidelityMETA::LOW => Some(Fidelity::Low),
                     _ => None,
                 }
             } else {
                 None
             },
             calibration: self.calibration.then_some(match calibration.status {
-                sys::BodyTrackingCalibrationStateMETA::VALID => wire::CalibrationStatus::Valid,
+                sys::BodyTrackingCalibrationStateMETA::VALID => CalibrationStatus::Valid,
                 sys::BodyTrackingCalibrationStateMETA::CALIBRATING => {
-                    wire::CalibrationStatus::Calibrating
+                    CalibrationStatus::Calibrating
                 }
-                sys::BodyTrackingCalibrationStateMETA::INVALID => wire::CalibrationStatus::Invalid,
-                _ => wire::CalibrationStatus::Unknown,
+                sys::BodyTrackingCalibrationStateMETA::INVALID => CalibrationStatus::Invalid,
+                _ => CalibrationStatus::Unknown,
             }),
             joints: joints
                 .iter()

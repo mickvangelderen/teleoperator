@@ -1,6 +1,10 @@
 import { Bone, Matrix4, Quaternion, SkinnedMesh, Vector3 } from "three";
 import type { Object3D } from "three";
-import type { Sample, Skeleton } from "./protocol";
+
+// Renderer inputs contain geometry and runtime validity, without wire metadata.
+export type Pose = { position: number[]; orientation: number[]; flags: number; active: boolean | null };
+export type PoseFrame = { poses: Pose[]; active?: boolean };
+export type Skeleton = { joints: { id: number; parent: number; rest: Pose }[] };
 
 // A joint's rest orientation relates the runtime's axes to the asset's bind axes.
 export function jointRotation(sample: number[], rest: number[], bind: Quaternion) {
@@ -31,8 +35,8 @@ export class BodyModel {
     });
   }
 
-  update(sample: Sample | null, skeleton?: Skeleton) {
-    this.root.visible = !!sample?.body?.active && !!skeleton;
+  update(sample: PoseFrame | null, skeleton?: Skeleton) {
+    this.root.visible = !!sample?.active && !!skeleton;
     if (!this.root.visible || !sample || !skeleton) return;
     const index = new Map(skeleton.joints.map((j, i) => [j.id, i]));
     this.root.updateWorldMatrix(true, false);

@@ -657,16 +657,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
-name = "flatbuffers"
-version = "25.9.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09b6620799e7340ebd9968d2e0708eb82cf1971e9a16821e2091b6d6e475eed5"
-dependencies = [
- "bitflags 2.13.2",
- "rustc_version",
-]
-
-[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3053,7 +3043,6 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
- "flatbuffers",
  "getrandom 0.3.4",
  "jni 0.21.1",
  "log",

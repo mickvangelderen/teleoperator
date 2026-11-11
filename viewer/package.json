@@ -8,19 +8,14 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "generate": "node tools/generate.mjs",
-    "dev": "pnpm generate && vite --host 127.0.0.1",
-    "build": "pnpm generate && tsc --noEmit && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "pnpm generate && tsx --test tests/*.test.ts",
+    "test": "tsx --test tests/*.test.ts",
     "test:browser": "node tests/browser.mjs",
-    "test:tracking": "node tests/tracking.mjs",
-    "test:performance": "node tests/performance.mjs",
-    "test:reconciliation": "node tests/reconciliation.mjs",
     "build:body": "node tools/build-body-model.mjs"
   },
   "dependencies": {
-    "flatbuffers": "25.9.23",
     "three": "0.186.1"
   },
   "devDependencies": {

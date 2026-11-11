@@ -1,11 +1,6 @@
-use crate::{
-    protocol::{finish, wire},
-    tracking::Pose,
-};
-use flatbuffers::{FlatBufferBuilder as Builder, WIPOffset};
+use crate::tracking::Pose;
 use std::sync::Arc;
 
-pub const SOURCE: &str = "body";
 pub const JOINT_SET: &str = "XR_BODY_JOINT_SET_DEFAULT_FB";
 pub const JOINT_COUNT: usize = 70;
 
@@ -22,14 +17,26 @@ pub struct Skeleton {
     pub reference_version: u32,
     pub joints: Vec<Joint>,
 }
+#[derive(Clone, Copy, Debug)]
+pub enum Fidelity {
+    Low,
+    High,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum CalibrationStatus {
+    Unknown,
+    Valid,
+    Calibrating,
+    Invalid,
+}
 #[derive(Clone, Debug)]
 pub struct Body {
     pub skeleton: Arc<Skeleton>,
     pub active: bool,
     pub confidence: Option<f32>,
     pub returned_at: Option<i64>,
-    pub fidelity: Option<wire::Fidelity>,
-    pub calibration: Option<wire::CalibrationStatus>,
+    pub fidelity: Option<Fidelity>,
+    pub calibration: Option<CalibrationStatus>,
     pub joints: Vec<Pose>,
 }
 impl Skeleton {
@@ -85,84 +92,6 @@ impl Body {
         }
     }
 }
-pub fn transform(p: &Pose) -> wire::Transform {
-    wire::Transform::new(
-        &wire::Vec3::new(p.position[0], p.position[1], p.position[2]),
-        &wire::Quaternion::new(
-            p.orientation[0],
-            p.orientation[1],
-            p.orientation[2],
-            p.orientation[3],
-        ),
-    )
-}
-pub fn settings<'a>(b: &mut Builder<'a>) -> WIPOffset<wire::BodySettings<'a>> {
-    let source = b.create_string(SOURCE);
-    let set = b.create_string(JOINT_SET);
-    wire::BodySettings::create(
-        b,
-        &wire::BodySettingsArgs {
-            source_id: Some(source),
-            joint_set: Some(set),
-        },
-    )
-}
-pub fn capabilities<'a>(
-    b: &mut Builder<'a>,
-    fidelity: bool,
-    calibration: bool,
-) -> WIPOffset<wire::BodyCapabilities<'a>> {
-    let source = b.create_string(SOURCE);
-    let set = b.create_string(JOINT_SET);
-    let source = wire::BodySource::create(
-        b,
-        &wire::BodySourceArgs {
-            source_id: Some(source),
-            joint_set: Some(set),
-            supports_actual_fidelity: fidelity,
-            supports_calibration_status: calibration,
-        },
-    );
-    let sources = b.create_vector(&[source]);
-    wire::BodyCapabilities::create(
-        b,
-        &wire::BodyCapabilitiesArgs {
-            sources: Some(sources),
-        },
-    )
-}
-pub fn definition(s: &Skeleton) -> Vec<u8> {
-    let mut b = Builder::new();
-    let joints: Vec<_> = s
-        .joints
-        .iter()
-        .map(|j| {
-            let name = b.create_string(&j.name);
-            wire::SkeletonJoint::create(
-                &mut b,
-                &wire::SkeletonJointArgs {
-                    joint_id: j.id,
-                    parent_id: j.parent,
-                    name: Some(name),
-                    rest_pose: Some(&transform(&j.rest)),
-                },
-            )
-        })
-        .collect();
-    let joints = b.create_vector(&joints);
-    let set = b.create_string(JOINT_SET);
-    let m = wire::SkeletonDefinition::create(
-        &mut b,
-        &wire::SkeletonDefinitionArgs {
-            reference: Some(&wire::MetadataRef::new(2, s.version)),
-            joint_set: Some(set),
-            reference_space: Some(&wire::MetadataRef::new(1, s.reference_version)),
-            joints: Some(joints),
-        },
-    );
-    finish(b, wire::Message::SkeletonDefinition, m.as_union_value())
-}
-
 pub fn synthetic_skeleton() -> Arc<Skeleton> {
     let core = [
         ("root", -1, [0., 1., 0.]),

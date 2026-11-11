@@ -35,15 +35,12 @@ try {
   await page.screenshot({ path: output + "disconnected.png", fullPage: true });
   await page.getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(
-    () => ["Connected", "Error"].includes(document.querySelector("#status").textContent),
+    () => ["Transport open", "Error"].includes(document.querySelector("#status").textContent),
   );
   assert.equal(
     await page.locator("#status").textContent(),
-    "Connected",
+    "Transport open",
     await page.locator("#error").textContent(),
-  );
-  await page.waitForFunction(() =>
-    /^\d+\.\d$/.test(document.querySelector("#rtt").textContent),
   );
   // More reconnects than the peer limit catches slots leaked by a closed session.
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -51,63 +48,28 @@ try {
     await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected");
     await page.getByRole("button", { name: "Connect" }).click();
     await page.waitForFunction(
-      () => ["Connected", "Error"].includes(document.querySelector("#status").textContent),
+      () => ["Transport open", "Error"].includes(document.querySelector("#status").textContent),
     );
     assert.equal(
       await page.locator("#status").textContent(),
-      "Connected",
+      "Transport open",
       await page.locator("#error").textContent(),
     );
-    await page.waitForFunction(() =>
-      /^\d+\.\d$/.test(document.querySelector("#rtt").textContent),
-    );
   }
-  assert.equal(await page.locator("#version").textContent(), "2");
   assert.equal(await page.locator("#control").textContent(), "Open");
   assert.equal(await page.locator("#tracking").textContent(), "Open");
-  assert.equal(
-    await page.locator("#source-count").textContent(),
-    process.env.EXPECT_TRACKING === "1" ? "8 advertised" : "0 advertised",
-  );
-  const session = await page.locator("#session-id").textContent();
-  assert.match(session, /^[a-f0-9]{16} [a-f0-9]{16}$/);
-  await page.getByRole("button", { name: /Inspect ServerHello/ }).click();
-  await page.waitForFunction(() => document.querySelector("#payload").textContent.includes('"selectedVersion": 2'));
-  assert.match(
-    await page.locator("#payload").textContent(),
-    /"selectedVersion": 2/,
-  );
+  assert.match(await page.locator("#session-note").textContent(), /Tracking is unavailable/);
   await page.screenshot({ path: output + "connected.png", fullPage: true });
-  await page.getByLabel("Show clock probes").check();
-  await page.getByRole("button", { name: /Inspect ClockReply/ }).first().waitFor();
-  assert.ok(
-    (await page.getByRole("button", { name: /Inspect ClockReply/ }).count()) >
-      0,
-  );
-  await page.getByLabel("Show clock probes").uncheck();
   await page.getByRole("button", { name: "Disconnect" }).click();
   await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected");
-  assert.equal(
-    await page.locator("#session-id").textContent(),
-    "No session established",
-  );
-  assert.equal(await page.locator("#rtt").textContent(), "—");
   await page.getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(
-    () => ["Connected", "Error"].includes(document.querySelector("#status").textContent),
+    () => ["Transport open", "Error"].includes(document.querySelector("#status").textContent),
   );
   assert.equal(
     await page.locator("#status").textContent(),
-    "Connected",
+    "Transport open",
     await page.locator("#error").textContent(),
-  );
-  assert.equal(
-    await page.locator("#session-id").textContent(),
-    session,
-    "App session persists across peer reconnects",
-  );
-  await page.waitForFunction(() =>
-    /^\d+\.\d$/.test(document.querySelector("#rtt").textContent),
   );
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(
@@ -131,10 +93,6 @@ try {
     await page.locator("#error").textContent(),
     /Signaling failed \(503\)/,
   );
-  assert.equal(
-    await page.locator("#session-id").textContent(),
-    "No session established",
-  );
   await page.route("**/assets/meta/headset.glb", route => route.fulfill({ status: 404, body: "Missing asset" }));
   await page.reload();
   await page.waitForFunction(() => document.querySelector("#graphics-status").textContent.includes("could not load"));
@@ -142,7 +100,7 @@ try {
   assert.equal(await page.getByRole("button", { name: "Connect" }).isEnabled(), true);
   assert.deepEqual(errors, []);
   console.log(
-    `PASS: live hello, discovery, clock replies, reconnect, WebGL models/orbit, mobile layout, signaling and asset failures. Captures: ${output}`,
+    `PASS: transport setup/reconnect, honest WIP state, WebGL models/orbit, mobile layout, signaling and asset failures. Captures: ${output}`,
   );
 } finally {
   await browser.close();

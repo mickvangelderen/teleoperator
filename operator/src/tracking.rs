@@ -1,24 +1,15 @@
 use crate::body::{self, Body, Skeleton};
 use crate::inputs::{self, Input};
 use std::{
-    collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering},
     },
     time::Instant,
 };
 use tokio::sync::watch;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Kind {
-    Controller,
-    Pose,
-    Body,
-}
-
 pub const RATE: f32 = 200.0;
-pub const HISTORY: usize = 8;
 pub const SOURCES: [&str; 5] = ["head", "left/aim", "left/grip", "right/aim", "right/grip"];
 
 #[cfg(any(target_os = "android", test))]
@@ -53,16 +44,6 @@ pub struct Sample {
     pub body: Option<Body>,
 }
 
-#[derive(Default)]
-pub struct StreamStats {
-    pub id: u64,
-    pub sent: AtomicU64,
-    pub skipped: AtomicU64,
-    pub errors: AtomicU64,
-    pub bytes: AtomicU64,
-    pub peak_buffer: AtomicU64,
-}
-
 pub struct Hub {
     started: Instant,
     pub source: &'static str,
@@ -75,10 +56,8 @@ pub struct Hub {
     pub local_floor: AtomicBool,
     next_skeleton: AtomicU32,
     pub reference_version: Mutex<u32>,
-    pub samples: Mutex<VecDeque<Sample>>,
-    next_stream: AtomicU64,
+    pub latest: Mutex<Option<Sample>>,
     pub updates: watch::Sender<()>,
-    pub stats: Mutex<VecDeque<Arc<StreamStats>>>,
     pub trace: crate::diagnostics::Diagnostics,
 }
 
@@ -95,10 +74,8 @@ impl Hub {
             local_floor: AtomicBool::new(false),
             next_skeleton: AtomicU32::new(1),
             reference_version: Mutex::new(1),
-            samples: Mutex::new(VecDeque::new()),
-            next_stream: AtomicU64::new(1),
+            latest: Mutex::new(None),
             updates: watch::channel(()).0,
-            stats: Mutex::new(VecDeque::new()),
             trace: Default::default(),
         })
     }
@@ -106,13 +83,6 @@ impl Hub {
         self.next_skeleton
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
             .expect("Skeleton version exhausted")
-    }
-    pub fn reference_kind(&self) -> crate::protocol::wire::ReferenceSpaceKind {
-        if self.local_floor.load(Ordering::SeqCst) {
-            crate::protocol::wire::ReferenceSpaceKind::LocalFloor
-        } else {
-            crate::protocol::wire::ReferenceSpaceKind::Local
-        }
     }
     pub fn now(&self) -> i64 {
         self.started
@@ -133,24 +103,6 @@ impl Hub {
     pub(crate) fn notify(&self) {
         self.updates.send_replace(());
     }
-    fn id(counter: &AtomicU64) -> u64 {
-        counter
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
-            .expect("Session identity exhausted")
-    }
-    pub fn stream_stats(&self) -> Arc<StreamStats> {
-        let result = Arc::new(StreamStats {
-            id: Self::id(&self.next_stream),
-            ..Default::default()
-        });
-        let mut stats = self.stats.lock().unwrap();
-        stats.push_back(result.clone());
-        // Retain completed-stream diagnostics for the most recent 64 streams.
-        if stats.len() > 64 {
-            stats.pop_front();
-        }
-        result
-    }
     pub fn acquire(
         &self,
         poses: &[Pose; 5],
@@ -161,17 +113,17 @@ impl Hub {
     ) {
         *self.skeleton.lock().unwrap() = body.map(|b| b.skeleton.clone());
         let version = *self.reference_version.lock().unwrap();
-        let mut samples = self.samples.lock().unwrap();
-        let number = samples.back().map_or(1, |s| {
+        let mut latest = self.latest.lock().unwrap();
+        let number = latest.as_ref().map_or(1, |s| {
             s.number.checked_add(1).expect("Sample counter exhausted")
         });
         let mut inputs = inputs.to_vec();
-        if let Some(previous) = samples.back() {
+        if let Some(previous) = latest.as_ref() {
             for (input, old) in inputs.iter_mut().zip(&previous.inputs) {
                 input.count_from(old);
             }
         }
-        samples.push_back(Sample {
+        *latest = Some(Sample {
             number,
             acquired_at,
             target_at,
@@ -180,10 +132,7 @@ impl Hub {
             inputs,
             body: body.cloned(),
         });
-        if samples.len() > HISTORY {
-            samples.pop_front();
-        }
-        drop(samples);
+        drop(latest);
         self.trace.record(
             self.now(),
             crate::diagnostics::Event::Acquisition {
@@ -193,10 +142,6 @@ impl Hub {
             },
         );
         self.notify();
-    }
-    pub fn diagnostics(&self) -> serde_json::Value {
-        let stats = self.stats.lock().unwrap();
-        serde_json::json!({"source": self.source, "tracking_available": self.available.load(Ordering::SeqCst), "streams": stats.iter().map(|s| serde_json::json!({"stream_id": s.id.to_string(), "accepted_messages": s.sent.load(Ordering::SeqCst).to_string(), "skipped_backpressure": s.skipped.load(Ordering::SeqCst).to_string(), "send_errors": s.errors.load(Ordering::SeqCst).to_string(), "bytes": s.bytes.load(Ordering::SeqCst).to_string(), "peak_buffered_bytes": s.peak_buffer.load(Ordering::SeqCst).to_string()})).collect::<Vec<_>>()})
     }
 }
 
@@ -219,7 +164,7 @@ pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
                     inputs::InputType::Scalar => inputs::Value::Scalar((phase.sin() + 1.) / 2.),
                     inputs::InputType::Vector2 => inputs::Value::Vector2([phase.sin() * 0.5, phase.cos() * 0.5]),
                 } }).collect::<Vec<_>>();
-                let body = Body { skeleton: skeleton.clone(), active: true, confidence: Some(1.), returned_at: Some(at), fidelity: Some(crate::protocol::wire::Fidelity::High), calibration: Some(crate::protocol::wire::CalibrationStatus::Valid), joints: skeleton.joints.iter().map(|j| { let mut pose = j.rest.clone(); pose.position[2] += phase.sin() * 0.1; pose }).collect() };
+                let body = Body { skeleton: skeleton.clone(), active: true, confidence: Some(1.), returned_at: Some(at), fidelity: Some(body::Fidelity::High), calibration: Some(body::CalibrationStatus::Valid), joints: skeleton.joints.iter().map(|j| { let mut pose = j.rest.clone(); pose.position[2] += phase.sin() * 0.1; pose }).collect() };
                 hub.acquire(&poses, &inputs, Some(&body), at, Some(at));
             }
         }
@@ -244,21 +189,16 @@ mod tests {
     }
 
     #[test]
-    fn acquisition_retains_one_complete_bounded_history_without_subscribers() {
+    fn acquisition_retains_the_latest_sample_without_subscribers() {
         let hub = Hub::new("test");
         let poses = std::array::from_fn(|_| Pose::default());
         for i in 0..12 {
             hub.acquire(&poses, &[], None, i, Some(0));
         }
-        let samples = hub.samples.lock().unwrap();
-        assert_eq!(samples.len(), 8);
-        assert_eq!(
-            (
-                samples.front().unwrap().number,
-                samples.back().unwrap().number
-            ),
-            (5, 12)
-        );
-        assert_eq!(samples.back().unwrap().poses.len(), 5);
+        let latest = hub.latest.lock().unwrap();
+        let sample = latest.as_ref().unwrap();
+        assert_eq!(sample.number, 12);
+        assert_eq!(sample.acquired_at, 11);
+        assert_eq!(sample.poses.len(), 5);
     }
 }

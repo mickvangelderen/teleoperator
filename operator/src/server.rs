@@ -1,5 +1,4 @@
 use crate::diagnostics::Event;
-use crate::protocol::{self, Connection, wire};
 use crate::tracking::Hub;
 use axum::{
     Json, Router,
@@ -7,10 +6,9 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
-use bytes::Bytes;
 use std::{
     sync::{
-        Arc, Mutex, Weak,
+        Arc,
         atomic::{AtomicU8, AtomicU64, Ordering},
     },
     time::Duration,
@@ -31,7 +29,6 @@ use webrtc::{
 };
 
 struct Server {
-    session: wire::SessionId,
     next_peer: AtomicU64,
     slots: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
@@ -40,13 +37,9 @@ struct Server {
 
 struct Peer {
     id: u64,
-    protocol: Mutex<Connection>,
     channels: AtomicU8,
     hub: Arc<Hub>,
     close: Notify,
-    control: Mutex<Weak<RTCDataChannel>>,
-    tracking: Mutex<Weak<RTCDataChannel>>,
-    control_gate: tokio::sync::Mutex<()>,
 }
 
 impl Peer {
@@ -64,11 +57,6 @@ impl Peer {
             self.close.notify_one();
             return;
         }
-        *if control {
-            self.control.lock().unwrap()
-        } else {
-            self.tracking.lock().unwrap()
-        } = Arc::downgrade(&dc);
         dc.on_open(Box::new(move || {
             Box::pin(async move {
                 log::info!("Data channel open: {label}");
@@ -89,14 +77,9 @@ impl Peer {
                 peer.close.notify_one();
             })
         }));
-        let weak_dc = Arc::downgrade(&dc);
         dc.on_message(Box::new(move |message| {
             let peer = self.clone();
-            let weak_dc = weak_dc.clone();
             Box::pin(async move {
-                let Some(dc) = weak_dc.upgrade() else {
-                    return;
-                };
                 let received_at = peer.hub.now();
                 peer.hub.trace.record(
                     received_at,
@@ -108,167 +91,11 @@ impl Peer {
                         buffered_bytes: 0,
                     },
                 );
-                let _gate = if control {
-                    Some(peer.control_gate.lock().await)
-                } else {
-                    None
-                };
-                let replies = if message.is_string {
-                    if control {
-                        Err("Expected binary control packet")
-                    } else {
-                        Ok(vec![])
-                    }
-                } else {
-                    let mut protocol = peer.protocol.lock().unwrap();
-                    if control {
-                        protocol.control(&message.data)
-                    } else {
-                        Ok(protocol
-                            .tracking(&message.data, received_at, || peer.hub.now())
-                            .into_iter()
-                            .collect())
-                    }
-                };
-                match replies {
-                    Ok(replies) => {
-                        for reply in replies {
-                            if !peer.send_notification(&dc, reply).await {
-                                peer.close.notify_one();
-                                return;
-                            }
-                        }
-                        if control {
-                            peer.hub.notify();
-                        }
-                    }
-                    Err(error) => {
-                        log::warn!("Closing protocol connection: {error}");
-                        peer.close.notify_one();
-                    }
-                }
+                // WIP: no application protocol is installed at this transport boundary.
+                log::warn!("Closing peer: tracking protocol implementation removed");
+                peer.close.notify_one();
             })
         }));
-    }
-
-    async fn send_notification(&self, dc: &RTCDataChannel, packet: Vec<u8>) -> bool {
-        let packet = Bytes::from(packet);
-        let buffered = dc.buffered_amount().await;
-        let over_limit = buffered > protocol::MAX_PACKET * 2;
-        self.hub.trace.record(
-            self.hub.now(),
-            Event::Packet {
-                peer: self.id,
-                channel: if dc.label() == "control" {
-                    "control"
-                } else {
-                    "tracking"
-                },
-                action: if over_limit { "skip-buffer" } else { "send" },
-                data: packet.clone(),
-                buffered_bytes: buffered,
-            },
-        );
-        !over_limit && dc.send(&packet).await.is_ok()
-    }
-
-    async fn publish(&self) {
-        let mut updates = self.hub.updates.subscribe();
-        let mut known_skeletons = std::collections::HashSet::new();
-        let mut next_publication: Option<std::time::Instant> = None;
-        loop {
-            tokio::select! {
-                changed = updates.changed() => if changed.is_err() { return; },
-                _ = async {
-                    match next_publication {
-                        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
-                        None => std::future::pending().await,
-                    }
-                } => {}
-            }
-            next_publication = None;
-            let (Some(control), Some(tracking)) = (
-                self.control.lock().unwrap().upgrade(),
-                self.tracking.lock().unwrap().upgrade(),
-            ) else {
-                continue;
-            };
-            let gate = self.control_gate.lock().await;
-            let (mut notifications, prepared) = {
-                let mut protocol = self.protocol.lock().unwrap();
-                if !protocol.negotiated {
-                    continue;
-                }
-                let notifications = protocol.refresh();
-                protocol.streams.sort_by_key(|stream| stream.kind);
-                let prepared = protocol
-                    .streams
-                    .iter_mut()
-                    .filter_map(|stream| {
-                        if !stream.due() {
-                            return None;
-                        }
-                        stream.packet().map(|packet| (packet, stream.stats.clone()))
-                    })
-                    .collect::<Vec<_>>();
-                next_publication = protocol
-                    .streams
-                    .iter()
-                    .filter_map(crate::streams::Stream::pending_deadline)
-                    .min();
-                (notifications, prepared)
-            };
-            for (publication, _) in &prepared {
-                for skeleton in &publication.skeletons {
-                    if known_skeletons.insert(skeleton.version) {
-                        notifications.push(crate::body::definition(skeleton));
-                    }
-                }
-            }
-            if let Some(latest) = known_skeletons.iter().copied().max() {
-                known_skeletons.retain(|v| latest.saturating_sub(*v) < 32);
-            }
-            for notification in notifications {
-                if !self.send_notification(&control, notification).await {
-                    return;
-                }
-            }
-            drop(gate);
-            for (publication, stats) in prepared {
-                let packet = Bytes::from(publication.bytes);
-                let bytes = packet.len();
-                let buffered = tracking.buffered_amount().await;
-                let over_limit = buffered.saturating_add(bytes) > protocol::MAX_PACKET;
-                self.hub.trace.record(
-                    self.hub.now(),
-                    Event::Packet {
-                        peer: self.id,
-                        channel: "tracking",
-                        action: if over_limit { "skip-buffer" } else { "send" },
-                        data: packet.clone(),
-                        buffered_bytes: buffered,
-                    },
-                );
-                stats
-                    .peak_buffer
-                    .fetch_max(buffered as u64, Ordering::SeqCst);
-                // Budget the whole packet; a maximum-sized packet fits only in an empty queue.
-                if over_limit {
-                    stats.skipped.fetch_add(1, Ordering::SeqCst);
-                    continue;
-                }
-                match tracking.send(&packet).await {
-                    Ok(_) => {
-                        stats.sent.fetch_add(1, Ordering::SeqCst);
-                        stats.bytes.fetch_add(bytes as u64, Ordering::SeqCst);
-                    }
-                    Err(_) => {
-                        stats.errors.fetch_add(1, Ordering::SeqCst);
-                        return;
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -297,13 +124,9 @@ async fn offer(
     })?;
     let peer = Arc::new(Peer {
         id: server.next_peer.fetch_add(1, Ordering::SeqCst),
-        protocol: Mutex::new(Connection::with_hub(server.session, server.hub.clone())),
         channels: AtomicU8::new(0),
         hub: server.hub.clone(),
         close: Notify::new(),
-        control: Mutex::new(Weak::new()),
-        tracking: Mutex::new(Weak::new()),
-        control_gate: tokio::sync::Mutex::new(()),
     });
     // 0.17 retains remote DCEP reliability settings and avoids the 0.21 negotiated-channel race.
     let pc = Arc::new(
@@ -342,15 +165,14 @@ async fn offer(
     tokio::spawn(async move {
         let _permit = permit;
         tokio::select! {
-            _ = live_peer.publish() => {},
             _ = live_peer.close.notified() => {},
             _ = shutdown.wait_for(|stopped| *stopped) => {},
             _ = async {
                 tokio::time::sleep(Duration::from_secs(20)).await;
-                if live_peer.protocol.lock().unwrap().negotiated && live_peer.channels.load(Ordering::SeqCst) == 3 {
+                if live_peer.channels.load(Ordering::SeqCst) == 3 {
                     std::future::pending::<()>().await;
                 }
-            } => log::warn!("Peer handshake timed out"),
+            } => log::warn!("Peer transport setup timed out"),
         }
         let _ = live_pc.close().await;
     });
@@ -385,11 +207,11 @@ pub async fn serve(
     recordings: std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut random = [0; 16];
-    getrandom::fill(&mut random).map_err(|e| format!("Session randomness: {e}"))?;
+    getrandom::fill(&mut random).map_err(|e| format!("Diagnostic recording randomness: {e}"))?;
     let low = u64::from_le_bytes(random[..8].try_into().unwrap());
     let high = u64::from_le_bytes(random[8..].try_into().unwrap());
     if low == 0 && high == 0 {
-        return Err("Invalid zero session ID".into());
+        return Err("Invalid zero diagnostic recording ID".into());
     }
     if let Err(error) = hub
         .trace
@@ -398,15 +220,13 @@ pub async fn serve(
         log::error!("Could not start diagnostic recording: {error}");
     }
     let server = Arc::new(Server {
-        session: wire::SessionId::new(low, high),
         next_peer: AtomicU64::new(1),
         hub,
         slots: Arc::new(Semaphore::new(4)),
         shutdown: shutdown.clone(),
     });
-    let router = Router::new().route("/health", get(|State(server): State<Arc<Server>>| async move { Json(serde_json::json!({"application": "XR Operator", "protocol_versions": [protocol::VERSION], "tracking": server.hub.available.load(Ordering::SeqCst), "source": server.hub.source})) }))
-        .route("/stats", get(|State(server): State<Arc<Server>>| async move { Json(server.hub.diagnostics()) }))
-        .route("/offer", post(offer)).layer(DefaultBodyLimit::max(protocol::MAX_PACKET))
+    let router = Router::new().route("/health", get(|State(server): State<Arc<Server>>| async move { Json(serde_json::json!({"application": "XR Operator", "tracking": server.hub.available.load(Ordering::SeqCst), "source": server.hub.source})) }))
+        .route("/offer", post(offer)).layer(DefaultBodyLimit::max(65_536))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(10)))
         .with_state(server.clone());
     log::info!("WebRTC signaling listening on {}", listener.local_addr()?);

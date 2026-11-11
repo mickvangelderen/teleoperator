@@ -18,7 +18,7 @@ const FILE_BYTES: u64 = 64 * 1024 * 1024;
 const FILES: usize = 4;
 const QUEUE: usize = 1024;
 
-// Numeric timestamps are milliseconds in the same Hub epoch as wire acquired_at / ClockReply.
+// Numeric timestamps are milliseconds in the acquisition Hub epoch.
 // Serialization and file I/O run on a dedicated writer thread.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -71,9 +71,8 @@ impl Diagnostics {
         }
         let header = serde_json::to_vec(&serde_json::json!({
             "kind": "session", "version": 2, "session": session, "source": source,
-            "protocol_version": crate::protocol::VERSION,
             "started_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
-            "clock": "Hub monotonic milliseconds; wire timestamps / 1000000"
+            "clock": "Hub monotonic milliseconds"
         }))?;
         let mut log = RotatingLog::new(directory, header, FILE_BYTES)?;
         let (sender, receiver) = mpsc::sync_channel::<Entry>(QUEUE);
@@ -262,7 +261,7 @@ mod tests {
                 channel: "tracking",
                 action: "skip-buffer",
                 data: packet.clone(),
-                buffered_bytes: crate::protocol::MAX_PACKET,
+                buffered_bytes: 65_536,
             },
         );
         trace.stop();

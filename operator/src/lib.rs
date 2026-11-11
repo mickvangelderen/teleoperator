@@ -3,9 +3,7 @@ pub mod diagnostics;
 #[cfg(target_os = "android")]
 mod egl;
 pub mod inputs;
-pub mod protocol;
 pub mod server;
-pub mod streams;
 pub mod tracking;
 #[cfg(target_os = "android")]
 mod xr;

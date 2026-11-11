@@ -9,7 +9,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 import { BodyModel } from "./body-model";
-import type { Sample, Skeleton } from "./protocol";
+import type { PoseFrame, Skeleton } from "./body-model";
 import { profiler } from "./performance";
 
 export class SpatialView {
@@ -108,7 +108,7 @@ export class SpatialView {
     if (this.disposed) return;
     const failed = results.filter(r => r.status === "rejected");
     this.surface.dataset.assets = failed.length ? "error" : "ready";
-    this.status(failed.length ? "3D assets could not load. Reload to retry; tracking data remains available below." : "Meta models · drag to orbit · scroll to zoom");
+    this.status(failed.length ? "3D assets could not load. Reload to retry." : "Meta models · drag to orbit · scroll to zoom");
     this.stateDirty = true;
     this.invalidate();
   }
@@ -138,7 +138,7 @@ export class SpatialView {
   setView(view: string, zoom: number) {
     this.view = view; this.zoom = zoom;
     const [sample, , , body] = this.latest;
-    const points = [...(sample?.poses ?? []), ...(body?.body?.active ? body.poses : [])]
+    const points = [...(sample?.poses ?? []), ...(body?.active ? body.poses : [])]
       .filter(p => (p.flags & 2) && p.active !== false)
       .map(p => new Vector3(...p.position));
     const bounds = new Box3().setFromPoints(points);
@@ -158,7 +158,7 @@ export class SpatialView {
 
   showJoints(show: boolean) { this.joints.visible = show; this.invalidate(); }
 
-  update(sample: Sample | null, sources: string[], stale: boolean, body: Sample | null = null, skeleton?: Skeleton, bodyStale = true) {
+  update(sample: PoseFrame | null, sources: string[], stale: boolean, body: PoseFrame | null = null, skeleton?: Skeleton, bodyStale = true) {
     const previous = this.latest;
     if (sample === previous[0] && sources.length === previous[1].length && sources.every((source, i) => source === previous[1][i]) && stale === previous[2] && body === previous[3] && skeleton === previous[4] && bodyStale === previous[5]) return;
     this.latest = [sample, sources, stale, body, skeleton, bodyStale];
@@ -183,18 +183,18 @@ export class SpatialView {
     this.body?.update(body, skeleton);
     if (this.body) fade(this.body.root, bodyStale ? 0.25 : 1);
     const lines: number[] = [];
-    if (body?.body?.active && skeleton) {
+    if (body?.active && skeleton) {
       const ids = new Map(skeleton.joints.map((j, i) => [j.id, i]));
       skeleton.joints.forEach((joint, i) => {
         const parent = ids.get(joint.parent);
         if (parent !== undefined && (body.poses[i].flags & 2) && (body.poses[parent].flags & 2)) lines.push(...body.poses[i].position, ...body.poses[parent].position);
       });
     }
-    this.surface.dataset.bodyJoints = String(body?.body?.active ? body.poses.filter(p => (p.flags & 2) !== 0).length : 0);
+    this.surface.dataset.bodyJoints = String(body?.active ? body.poses.filter(p => (p.flags & 2) !== 0).length : 0);
     this.jointPositions.array.set(lines);
     this.jointPositions.needsUpdate = true;
     this.joints.geometry.setDrawRange(0, lines.length / 3);
-    const frameLevel = body?.body?.active && body.poses.some(p => p.flags & 2) ? 2 : count ? 1 : 0;
+    const frameLevel = body?.active && body.poses.some(p => p.flags & 2) ? 2 : count ? 1 : 0;
     if (!sample && !body) this.framed = 0;
     // Frame newly available tracking once; leave subsequent orbit/pan under user control.
     if (frameLevel > this.framed) {
