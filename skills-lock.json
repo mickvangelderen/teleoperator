@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "skills": {
+    "application-guidance": {
+      "source": "git@github.com:mickvangelderen/skills",
+      "sourceUrl": "git@github.com:mickvangelderen/skills",
+      "sourceType": "git",
+      "skillPath": "application-guidance/SKILL.md",
+      "computedHash": "092f8a754bc070153a6e058ad38ed108dfd46dfef7f1ae3dcef9599afd446ff8"
+    },
+    "readme-guidance": {
+      "source": "git@github.com:mickvangelderen/skills",
+      "sourceUrl": "git@github.com:mickvangelderen/skills",
+      "sourceType": "git",
+      "skillPath": "readme-guidance/SKILL.md",
+      "computedHash": "0ec15a989b2bdfe2fcda58b0f983590604c8edfad0e47675846c5e7e210c1c8d"
+    }
+  }
+}
