@@ -21,6 +21,7 @@ The process for requirement extraction is as follows:
       1. refine candidate;
       2. emit requirement;
 5. emit report
+6. respond
 
 ## Claim
 
@@ -72,3 +73,9 @@ For each proposal give:
 
 - why this requirement is valid and essential;
 - whether the user stated it (quote and cite) or you inferred it (cite the evidence), and so whether the user needs to confirm it;
+
+## Respond
+
+Briefly describe what was extracted and can be found in the report, and link to it.
+
+Present a code block with removal commands per removed requirement (if any), and a copy command to overwrite the remaining requirements.
