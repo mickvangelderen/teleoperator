@@ -13,10 +13,22 @@ Formatting rules for authors:
 {{! tags: Comma-separated list of tags defined in `<project>/TAGS.md` associated with this requirement. }}
 **Tags**: {{tags}}
 
+{{! summary: A one sentence summary of the description. }}
+
 ## Description
 
-{{! description: A lean description of one or multiple very closely coupled requirements }}
-{{{description}}}
+{{! description: A lean description of one or multiple very closely coupled requirements. }}
+{{#description}}
+{{{text}}}
+
+{{! subsections: Optional list of description subsections. }}
+{{#subsections}}
+### {{title}}
+
+{{{text}}}
+
+{{/subsections}}
+{{/description}}
 
 {{! rationale: Optional evidence based logical reasoning for why the requirement must exist }}
 {{#rationale}}
