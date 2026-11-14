@@ -1,4 +1,4 @@
-import { decodeServer, MAX_MESSAGE, counterDelta, counterKind, decodeTracking, offer, subscribe, unsubscribe, updateSchedule, validateRequest, validateSchedule, publicationRate, NON_MAX, width } from "./protocol";
+import { decodeServer, MAX_SERVER_MESSAGE, counterDelta, counterKind, decodeTracking, offer, subscribe, unsubscribe, updateSchedule, validateRequest, validateSchedule, publicationRate, NON_MAX, width } from "./protocol";
 import type { Capabilities, Packet, Request, Schedule, ServerMessage } from "./protocol";
 import { FreshnessBaseline, summarizeFreshness } from "./freshness";
 import type { StreamFreshness } from "./freshness";
@@ -77,7 +77,7 @@ export class Session {
     this.clockRequests.set(id, at); return bytes;
   }
   unreliable(bytes: Uint8Array, arrivedAt: number): Packet | null {
-    if (!["capabilities", "ready"].includes(this.phase) || bytes.length > MAX_MESSAGE) { this.discarded++; return null; }
+    if (!["capabilities", "ready"].includes(this.phase) || bytes.length > MAX_SERVER_MESSAGE) { this.discarded++; return null; }
     if (bytes[0] === 9) return this.tracking(bytes.subarray(1), arrivedAt);
     if (bytes[0] !== 11 || bytes.length !== 21) { this.discarded++; return null; }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), id = view.getUint32(1, true);

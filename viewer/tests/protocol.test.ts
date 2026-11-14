@@ -2,7 +2,7 @@ import { periodic, NON_MAX } from "../src/protocol";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { decodeServer, MAX_MESSAGE, restGroup, compatible, counterDelta, decodeTracking, updateSchedule, validateSchedule, offer, subscribe, unsubscribe, validateCapabilities, validateRequest } from "../src/protocol";
+import { decodeServer, MAX_SERVER_MESSAGE, restGroup, compatible, counterDelta, decodeTracking, updateSchedule, validateSchedule, offer, subscribe, unsubscribe, validateCapabilities, validateRequest } from "../src/protocol";
 import type { Capabilities, Request } from "../src/protocol";
 import { Session } from "../src/session";
 import { spatialFrames, valueText } from "../src/tracking-view";
@@ -165,9 +165,19 @@ test("whole messages preserve exact UTF-8 identity and reject truncation, concat
     for(let i=0;i<bytes.length;i++)assert.throws(()=>decodeServer(bytes.subarray(0,i)));
     assert.throws(()=>decodeServer(Buffer.concat([bytes,bytes])));
   }
-  for (const bad of [uint(0),Uint8Array.of(255),hex("offer"),Uint8Array.of(2,1,0,0),Uint8Array.of(5,7,0,0,0,0,0,0,0),advertisement(["a","a"]),new Uint8Array(MAX_MESSAGE+1)]) assert.throws(()=>decodeServer(bad));
+  for (const bad of [uint(0),Uint8Array.of(255),hex("offer"),Uint8Array.of(2,1,0,0),Uint8Array.of(5,7,0,0,0,0,0,0,0),advertisement(["a","a"]),new Uint8Array(MAX_SERVER_MESSAGE+1)]) assert.throws(()=>decodeServer(bad));
   const invalidUtf8=advertisement(["a"]);invalidUtf8[17]=255;assert.throws(()=>decodeServer(invalidUtf8));
   const hugeList=advertisement();hugeList.set(uint(0xffffffff),9);assert.throws(()=>decodeServer(hugeList));
+});
+
+test("server messages above 64 KiB decode up to the finite receiver bound", () => {
+  const id = "x".repeat(MAX_SERVER_MESSAGE - advertisement([""]).length);
+  const bytes = advertisement([id]);
+  assert.equal(bytes.length, MAX_SERVER_MESSAGE);
+  const message = decodeServer(bytes);
+  assert.equal(message.tag, 3);
+  if (message.tag === 3) assert.equal(message.capabilities.descriptors[0].id, id);
+  assert.throws(() => decodeServer(advertisement([id + "x"])), /Message size limit/);
 });
 
 test("every representation preserves its width; snorm accepts both negative endpoints", () => {

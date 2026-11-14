@@ -104,10 +104,12 @@ def request(r, c):
 
 
 def message(data, c=None):
-    assert 0 < len(data) <= 65_535, 'message size'
+    assert 0 < len(data) <= 1_048_576, 'message size'
     r = Reader(data)
     tag = r.number('B')
     assert 1 <= tag <= 12, 'invalid message tag'
+    if tag in (1, 4, 7, 10, 12):
+        assert len(data) <= 65_535, 'client message size'
     return tag, payload(r, tag, c)
 
 

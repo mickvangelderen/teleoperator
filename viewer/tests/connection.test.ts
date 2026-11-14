@@ -33,7 +33,7 @@ function connection(c = caps()) {
   return connection;
 }
 const request = {id:1,group:0,delivery: 1, schedule:periodic(60),samples:[{descriptor:0,format:11,space:2}]};
-test("valid f64-only poses use an advertised default; oversized selections leave discovery usable", () => {
+test("f64-only poses use an advertised default and publications can exceed the client message bound", () => {
   const original = globalThis.RTCPeerConnection;
   Object.assign(globalThis,{RTCPeerConnection:Peer});
   try {
@@ -42,8 +42,8 @@ test("valid f64-only poses use an advertised default; oversized selections leave
     assert.equal(first.state.status,"Connected");assert.equal(first.session.pending.size,1);first.close();
     const many=caps(); many.descriptors=Array.from({length:1200},(_,i)=>({...many.descriptors[0],id:String(i)}));
     const large=connection(many);large.publish({...request,samples:many.descriptors.map((d,descriptor)=>({descriptor,format:preferredFormat(d),space:2}))});
-    assert.equal(large.state.status,"Connected");assert.equal(large.session.pending.size,0);assert.equal(Peer.latest.closed,false);assert.match(large.state.detail,/smaller/);
-    large.publish(request);assert.equal(large.session.pending.size,1);large.close();
+    assert.equal(large.state.status,"Connected");assert.equal(large.session.pending.size,1);assert.equal(Peer.latest.closed,false);
+    large.close();
   } finally { Object.assign(globalThis,{RTCPeerConnection:original}); }
 });
 test("reliable send failures retire prepared subscription and unsubscription state", () => {

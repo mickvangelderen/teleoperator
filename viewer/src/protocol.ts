@@ -1,5 +1,7 @@
 // Version 1 wire contract; no device identities or rendering assumptions.
-export const MAX_MESSAGE = 65_535;
+// Operator binding bounds, including the tag; WebRTC handles fragmentation.
+export const MAX_CLIENT_MESSAGE = 65_535;
+export const MAX_SERVER_MESSAGE = 1_048_576;
 export const kindNames = ["invalid", "generic", "pressed", "press_count", "release_count", "touched", "touch_count", "untouch_count", "trigger", "thumbstick", "pose", "revision", "position_valid", "orientation_valid", "position_tracked", "orientation_tracked", "confidence"];
 export const formatNames = ["invalid", "bit", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "unorm8", "unorm16", "snorm8", "snorm16"];
 export const spaceNames = ["absent", "view", "local", "stage", "local_floor", "parent", "model"];
@@ -86,7 +88,7 @@ export function validateRequest(c: Capabilities, r: Request) {
     check(d.kind === 10 ? d.spaces.includes(s.space) : s.space === 0, "Unsupported reference space");
     if (s.format === 1) bits++; else size += components(d.kind) * width(s.format);
   }
-  check(size + Math.ceil(bits / 8) + 1 <= MAX_MESSAGE, "Publication too large");
+  check(size + Math.ceil(bits / 8) + 1 <= MAX_SERVER_MESSAGE, "Publication too large");
 }
 class Reader {
   at = 0;
@@ -119,7 +121,7 @@ class Reader {
   }
 }
 export function decodeServer(bytes: Uint8Array): ServerMessage {
-  check(bytes.length <= MAX_MESSAGE, "Message size limit");
+  check(bytes.length <= MAX_SERVER_MESSAGE, "Message size limit");
   const r = new Reader(bytes), tag = r.u8();
   let message: ServerMessage;
   switch (tag) {
@@ -173,7 +175,7 @@ export function subscribe(r: Request) {
 export function unsubscribe(id: number) { const w = new Writer(); w.u8(7); w.u32(id); return w.finish(); }
 export function updateSchedule(id: number, schedule: Schedule) { const w = new Writer(); w.u8(12); w.u32(id); w.schedule(schedule); return w.finish(); }
 export function decodeTracking(bytes: Uint8Array, c: Capabilities, request: Request): Packet {
-  check(bytes.length <= (MAX_MESSAGE - 1), "Publication size limit");
+  check(bytes.length <= (MAX_SERVER_MESSAGE - 1), "Publication size limit");
   const r = new Reader(bytes), id = r.u32(), timestamp = r.u64(), predicted = r.u64();
   const predictedFor = predicted === NON_MAX ? null : predicted;
   check(id === request.id && timestamp < NON_MAX, "Unexpected subscription or invalid acquisition time");

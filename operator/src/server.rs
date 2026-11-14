@@ -23,7 +23,10 @@ use tokio::{
     time::timeout,
 };
 use webrtc::{
-    api::APIBuilder,
+    api::{
+        APIBuilder,
+        setting_engine::{SctpMaxMessageSize, SettingEngine},
+    },
     data_channel::RTCDataChannel,
     peer_connection::{
         configuration::RTCConfiguration,
@@ -119,7 +122,7 @@ impl Peer {
                     return;
                 }
                 if message.is_string
-                    || message.data.len() > protocol::MAX_MESSAGE
+                    || message.data.len() > protocol::MAX_CLIENT_MESSAGE
                     || peer
                         .events
                         .try_send(PeerEvent::Control(message.data))
@@ -147,7 +150,11 @@ impl Peer {
             message[13..21].copy_from_slice(&(self.hub.now() as u64).to_le_bytes());
         }
         if message.len() > self.message_limit {
-            return Err("Message exceeds negotiated transport limit".into());
+            return Err(format!(
+                "Message of {} bytes exceeds channel limit of {} bytes",
+                message.len(),
+                self.message_limit
+            ));
         }
         let data = bytes::Bytes::from(message);
         self.hub.trace.record(
@@ -342,7 +349,8 @@ impl Peer {
 }
 
 fn tracking_fits(buffered: usize, packet: usize) -> bool {
-    packet <= protocol::MAX_MESSAGE && (buffered == 0 || buffered.saturating_add(packet) <= 16_384)
+    packet <= protocol::MAX_SERVER_MESSAGE
+        && (buffered == 0 || buffered.saturating_add(packet) <= 16_384)
 }
 
 type HttpError = (StatusCode, String);
@@ -379,9 +387,9 @@ async fn offer(
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(65_536);
     let message_limit = if remote_limit == 0 {
-        protocol::MAX_MESSAGE
+        protocol::MAX_SERVER_MESSAGE
     } else {
-        (remote_limit as usize).min(protocol::MAX_MESSAGE)
+        (remote_limit as usize).min(protocol::MAX_SERVER_MESSAGE)
     };
     let (events, incoming) = mpsc::channel(32);
     let peer = Arc::new(Peer {
@@ -392,9 +400,14 @@ async fn offer(
         events,
         message_limit,
     });
+    let mut settings = SettingEngine::default();
+    settings.set_sctp_max_message_size_can_send(SctpMaxMessageSize::Bounded(
+        protocol::MAX_SERVER_MESSAGE as u32,
+    ));
     // 0.17 retains remote DCEP reliability settings and avoids the 0.21 negotiated-channel race.
     let pc = Arc::new(
         APIBuilder::new()
+            .with_setting_engine(settings)
             .build()
             .new_peer_connection(RTCConfiguration::default())
             .await
@@ -504,6 +517,109 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn capabilities_above_64k_arrive_as_one_webrtc_message() {
+        use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
+
+        let hub = Hub::new("test");
+        hub.initialized.store(true, Ordering::SeqCst);
+        hub.body_supported.store(true, Ordering::SeqCst);
+        let mut skeleton = (*crate::body::synthetic_skeleton()).clone();
+        for joint in &mut skeleton.joints {
+            joint.name = "joint".repeat(32);
+        }
+        *hub.skeleton.lock().unwrap() = Some(Arc::new(skeleton));
+        let expected =
+            protocol::encode(&Message::Capabilities(Catalog::snapshot(&hub).capabilities));
+        assert!(expected.len() > 65_536 && expected.len() < 262_144);
+        let (stop, shutdown) = watch::channel(false);
+        let server = Arc::new(Server {
+            next_peer: AtomicU64::new(1),
+            slots: Arc::new(Semaphore::new(4)),
+            shutdown,
+            hub,
+        });
+        // This test peer supplies a larger receive buffer, like the browser.
+        let mut settings = SettingEngine::default();
+        settings.detach_data_channels();
+        let client = APIBuilder::new()
+            .with_setting_engine(settings)
+            .build()
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap();
+        let (opened, mut channels) = mpsc::channel(2);
+        for control in [true, false] {
+            let dc = client
+                .create_data_channel(
+                    if control { "reliable" } else { "unreliable" },
+                    Some(RTCDataChannelInit {
+                        protocol: Some("xrop".into()),
+                        ordered: Some(control),
+                        max_retransmits: if control { None } else { Some(0) },
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .unwrap();
+            let channel = dc.clone();
+            let opened = opened.clone();
+            dc.on_open(Box::new(move || {
+                Box::pin(async move {
+                    opened
+                        .send((control, channel.detach().await.unwrap()))
+                        .await
+                        .unwrap();
+                })
+            }));
+        }
+        let exchange = async {
+            let mut gathered = client.gathering_complete_promise().await;
+            client
+                .set_local_description(client.create_offer(None).await.unwrap())
+                .await
+                .unwrap();
+            gathered.recv().await;
+            let sdp = client.local_description().await.unwrap().sdp;
+            let description =
+                RTCSessionDescription::offer(format!("{sdp}a=max-message-size:262144\r\n"))
+                    .unwrap();
+            let Json(answer) = offer(State(server.clone()), HeaderMap::new(), Json(description))
+                .await
+                .unwrap();
+            client.set_remote_description(answer).await.unwrap();
+            let first = channels.recv().await.unwrap();
+            let second = channels.recv().await.unwrap();
+            let (reliable, unreliable) = if first.0 {
+                (first.1, second.1)
+            } else {
+                (second.1, first.1)
+            };
+            reliable
+                .write_data_channel(&protocol::encode(&Message::Offer(vec![1])).into(), false)
+                .await
+                .unwrap();
+            let mut buffer = vec![0; protocol::MAX_SERVER_MESSAGE];
+            let (size, text) = reliable.read_data_channel(&mut buffer).await.unwrap();
+            assert!(!text);
+            assert_eq!(&buffer[..size], &[2, 1, 0]);
+            let (size, text) = reliable.read_data_channel(&mut buffer).await.unwrap();
+            assert!(!text);
+            assert_eq!(&buffer[..size], expected);
+            unreliable
+                .write_data_channel(&bytes::Bytes::from_static(&[10, 1, 0, 0, 0]), false)
+                .await
+                .unwrap();
+            let (size, _) = unreliable.read_data_channel(&mut buffer).await.unwrap();
+            assert_eq!(size, 21);
+            assert_eq!(&buffer[..5], &[11, 1, 0, 0, 0]);
+        };
+        let result = timeout(Duration::from_secs(15), exchange).await;
+        let _ = stop.send(true);
+        client.close().await.unwrap();
+        result.unwrap();
+    }
+
     #[test]
     fn source_admission_waits_initially_and_rejects_malformed_replacement_atomically() {
         use crate::{
@@ -520,7 +636,7 @@ mod tests {
             hub: hub.clone(),
             close: Notify::new(),
             events,
-            message_limit: protocol::MAX_MESSAGE,
+            message_limit: protocol::MAX_SERVER_MESSAGE,
         };
         let mut catalog = Catalog::snapshot(&hub);
         let mut session = Session::new(catalog.capabilities.clone());
@@ -630,8 +746,8 @@ mod tests {
         assert!(!tracking_fits(16_384 - 19, 20));
         assert!(!tracking_fits(16_384, 20));
         assert!(!tracking_fits(usize::MAX, 20));
-        assert!(tracking_fits(0, protocol::MAX_MESSAGE));
-        assert!(!tracking_fits(1, protocol::MAX_MESSAGE));
-        assert!(!tracking_fits(0, protocol::MAX_MESSAGE + 1));
+        assert!(tracking_fits(0, protocol::MAX_SERVER_MESSAGE));
+        assert!(!tracking_fits(1, protocol::MAX_SERVER_MESSAGE));
+        assert!(!tracking_fits(0, protocol::MAX_SERVER_MESSAGE + 1));
     }
 }

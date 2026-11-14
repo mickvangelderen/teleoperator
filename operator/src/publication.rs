@@ -401,7 +401,7 @@ impl Catalog {
         let description = if matches!(source, Source::Joint(_)) {
             format!("{} individual joint pose", body::JOINT_SET)
         } else {
-            name.clone()
+            String::new()
         };
         self.capabilities.descriptors.push(Descriptor {
             id,
@@ -685,7 +685,13 @@ mod tests {
         let h = Hub::new("test");
         h.initialized.store(true, Ordering::SeqCst);
         h.body_supported.store(true, Ordering::SeqCst);
-        *h.skeleton.lock().unwrap() = Some(body::synthetic_skeleton());
+        let mut skeleton = (*body::synthetic_skeleton()).clone();
+        // Synthetic finger names are shorter than Quest's OpenXR names. Bound every
+        // joint by the longest BodyJointFB name, which is repeated by its descriptors.
+        for joint in &mut skeleton.joints {
+            joint.name = "RIGHT_HAND_MIDDLE_INTERMEDIATE".into();
+        }
+        *h.skeleton.lock().unwrap() = Some(Arc::new(skeleton));
         let c = Catalog::snapshot(&h);
         c.capabilities.validate().unwrap();
         let bytes = protocol::encode(&Message::Capabilities(c.capabilities.clone()));
@@ -694,7 +700,11 @@ mod tests {
             c.sources.len(),
             bytes.len()
         );
-        assert!(bytes.len() <= protocol::MAX_MESSAGE, "{}", bytes.len());
+        assert!(
+            bytes.len() <= protocol::MAX_SERVER_MESSAGE,
+            "{}",
+            bytes.len()
+        );
         assert_eq!(
             c.sources
                 .iter()

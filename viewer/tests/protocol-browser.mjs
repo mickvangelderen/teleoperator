@@ -88,7 +88,7 @@ export async function checkProtocol(page) {
     else assert.ok(item.packets>=3,JSON.stringify(item));
   }
   assert.equal(results.capabilityMessages.length,1,"Full capabilities arrive as one WebRTC message");
-  assert.ok(results.capabilityMessages[0]>16_384 && results.capabilityMessages[0]<=65_535);
+  assert.ok(results.capabilityMessages[0]>16_384 && results.capabilityMessages[0]<=1_048_576);
   console.log(`Full catalog WebRTC message: ${results.capabilityMessages[0]} bytes`);
   assert.equal(results.prediction,"25000000","Wire time reflects the actual synthetic target");
   assert.equal(results.clock,true);

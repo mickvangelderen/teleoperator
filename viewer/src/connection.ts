@@ -1,5 +1,5 @@
 import { Session } from "./session";
-import { preferredFormat, restGroup, periodic, MAX_MESSAGE } from "./protocol";
+import { preferredFormat, restGroup, periodic, MAX_CLIENT_MESSAGE } from "./protocol";
 import type { Request } from "./protocol";
 import { profiler } from "./performance";
 import { recording, recordingId } from "./recording";
@@ -207,7 +207,7 @@ export class Connection {
     try {
       if (this.control.readyState !== "open" || this.control.bufferedAmount + bytes.length > 1_048_576) throw new Error("Control channel is not ready to send");
       const negotiated = this.pc.sctp?.maxMessageSize;
-      const limit = negotiated && Number.isFinite(negotiated) ? Math.min(MAX_MESSAGE, Math.floor(negotiated)) : MAX_MESSAGE;
+      const limit = negotiated && Number.isFinite(negotiated) ? Math.min(MAX_CLIENT_MESSAGE, Math.floor(negotiated)) : MAX_CLIENT_MESSAGE;
       if (limit < 1 || bytes.length > limit) throw new Error("Message exceeds the data channel limit");
       this.control.send(bytes as Uint8Array<ArrayBuffer>);
       const now = performance.now();

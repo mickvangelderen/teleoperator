@@ -6,9 +6,11 @@ This page defines the current operator's WebRTC and source-quality policies, not
 
 One binary RTCDataChannel message contains one complete [protocol message](../encoding/messages.md).
 The reliable channel is ordered with reliable delivery; the unreliable channel is unordered with zero retransmissions.
-The pinned Rust callback receiver limits a message to 65,535 bytes, including its protocol tag.
-Both peers enforce that binding limit and any smaller negotiated peer message limit before sending; subscription admission checks the fixed publication size on either channel.
+The server accepts client messages up to 65,535 bytes, including the tag, matching the pinned Rust callback receiver's buffer.
+The viewer accepts server messages up to 1 MiB, including the tag; the server configures WebRTC's send capacity to this bound independently of its receive buffer.
+Senders enforce the destination's bound and any smaller negotiated peer message limit; subscription admission checks the fixed publication size on either channel.
 The complete capability advertisement must also fit. An oversize message is rejected, not split into application chunks.
+WebRTC handles fragmentation and reassembly and delivers complete messages to the protocol decoder.
 Buffered-byte backpressure is a separate resource policy.
 
 ## Source quality

@@ -1,7 +1,9 @@
 //! Version 1 wire records and connection-local subscription state.
 use std::collections::{BTreeMap, HashSet};
 
-pub const MAX_MESSAGE: usize = 65_535;
+// The pinned WebRTC callback receiver has a fixed 65,535-byte buffer.
+pub const MAX_CLIENT_MESSAGE: usize = 65_535;
+pub const MAX_SERVER_MESSAGE: usize = 1_048_576;
 pub const MAX_SUBSCRIPTIONS: usize = 16;
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -243,7 +245,7 @@ impl Capabilities {
                 size += components(d.kind) * width(s.format);
             }
         }
-        if size + bits.div_ceil(8) + 1 > MAX_MESSAGE {
+        if size + bits.div_ceil(8) + 1 > MAX_SERVER_MESSAGE {
             return Err("Tracking packet exceeds transport limit".into());
         }
         Ok(size + bits.div_ceil(8))
@@ -296,7 +298,7 @@ impl<'a> Reader<'a> {
     }
 }
 pub fn decode_client(body: &[u8]) -> Result<Message> {
-    if body.len() > MAX_MESSAGE {
+    if body.len() > MAX_CLIENT_MESSAGE {
         return Err("Message size limit".into());
     }
     let mut r = Reader { bytes: body, at: 0 };
@@ -560,7 +562,7 @@ impl Session {
         Self {
             capabilities,
             negotiated: false,
-            packet_limit: MAX_MESSAGE,
+            packet_limit: MAX_SERVER_MESSAGE,
             active: BTreeMap::new(),
         }
     }
@@ -1290,7 +1292,7 @@ mod tests {
             assert!(decode_client(&offer[..split]).is_err());
         }
         assert!(decode_client(&[offer.clone(), offer].concat()).is_err());
-        assert!(decode_client(&vec![1; MAX_MESSAGE + 1]).is_err());
+        assert!(decode_client(&vec![1; MAX_CLIENT_MESSAGE + 1]).is_err());
         let subscribe = encode(&Message::Subscribe(request()));
         let c = capabilities();
         assert_eq!(decode_subscription(&subscribe[1..], &c).unwrap(), request());
