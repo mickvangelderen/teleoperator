@@ -1,21 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ByteRate, GpuTimer, MetricHistory, profiler, summarize } from "../src/performance";
-
-test("frame rate counts actual renders independently of animation callbacks and profiling, and expires during silence", context => {
-  let now = 100;
-  context.mock.method(performance, "now", () => now);
-  profiler.stop(); profiler.reset();
-  profiler.animationFrame(now);
-  assert.equal(profiler.frameRate(now), 0);
-  assert.equal(profiler.beginRender(), null, "The profiling panel is disabled");
-  now = 120; profiler.beginRender();
-  assert.equal(profiler.frameRate(now), 2);
-  assert.equal(profiler.frameRate(1100), 1);
-  assert.equal(profiler.frameRate(1120), 0);
-  now = 1200; profiler.beginRender(); profiler.reset();
-  assert.equal(profiler.frameRate(now), 0);
-});
+import { GpuTimer, MetricHistory, profiler, summarize } from "../src/performance";
 
 test("timing capture retains a bounded rolling window and its worst hiccup", () => {
   const history = new MetricHistory(4);
@@ -97,18 +82,6 @@ test("unreliable, lost-context, timed-out and unsupported GPU samples are not re
   assert.match(statuses[0], /unavailable/);
 });
 
-
-test("transfer rate is an exact rolling second, expires during silence and survives bursts", () => {
-  const rate = new ByteRate();
-  rate.add(0, 1000); rate.add(200, 2000); rate.add(999, 3000);
-  assert.equal(rate.rate(999), 6000);
-  assert.equal(rate.rate(1000), 5000);
-  assert.equal(rate.rate(1200), 3000);
-  assert.equal(rate.rate(1999), 0);
-  for (let i = 0; i < 2000; i++) rate.add(2000 + i, 10);
-  assert.equal(rate.rate(3999), 10000);
-  assert.equal(rate.rate(4999), 0);
-});
 
 test("arrival intervals are per stream, measured at reception and reset on a new stream", context => {
   context.mock.method(performance, "now", () => 1000);

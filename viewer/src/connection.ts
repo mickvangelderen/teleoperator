@@ -52,7 +52,7 @@ export class Connection {
 
   async connect() {
     if (this.stopped || this.state.status !== "Disconnected") return;
-    profiler.reset();
+    profiler.resetConnectionMetrics();
     recording.add({ type: "connection", connection: this.recordingId, status: "connecting" });
     void fetch("/api/health", { signal: this.abort.signal }).then(r => r.json()).then(data => {
       if (this.stopped) return;

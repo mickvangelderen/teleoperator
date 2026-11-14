@@ -10,12 +10,14 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 import type { PoseFrame, JointHierarchy } from "./body-model";
 import { profiler } from "./performance";
+import { RollingRate } from "./statistics";
 
 const trackingColors = { tracked: new Color(0x286b4c), untracked: new Color(0xc87520), unknown: new Color(0x78847d), late: new Color(0xc44235) };
 const jointColor = (tracked: boolean | undefined, late: boolean) => late ? trackingColors.late : tracked === false ? trackingColors.untracked : tracked === true ? trackingColors.tracked : trackingColors.unknown;
 
 export class SpatialView {
   private renderer = new WebGLRenderer({ antialias: true });
+  private readonly renderedFrames = new RollingRate();
   private scene = new Scene();
   private camera = new PerspectiveCamera(38, 1, 0.01, 100);
   private controls: OrbitControls;
@@ -130,10 +132,15 @@ export class SpatialView {
     if (this.dirty || this.continuous) {
       this.dirty = false;
       const timing = profiler.beginRender();
-      try { this.renderer.render(this.scene, this.camera); }
+      try {
+        this.renderer.render(this.scene, this.camera);
+        this.renderedFrames.add(performance.now());
+      }
       finally { profiler.endRender(timing); }
     }
   }
+
+  frameRate(now: number) { return this.renderedFrames.rate(now); }
 
   setContinuousRendering(enabled: boolean) {
     this.continuous = enabled;

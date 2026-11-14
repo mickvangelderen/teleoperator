@@ -169,7 +169,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   const displayedLatency = latencyMedian.update(latency, now);
   text("estimated-latency", displayedLatency === undefined ? "—" : `${displayedLatency.toFixed(2)} ms`);
   latencyChart.update([{ key: "probe", value: latency, color: neutralColor, peak: true }], now);
-  const fps = profiler.frameRate(now);
+  const fps = spatial?.frameRate(now);
   const displayedFps = frameRateMedian.update(fps, now);
   text("frame-rate", displayedFps === undefined ? "—" : `${displayedFps.toFixed(0)} fps`);
   frameChart.update([{ key: "frames", value: fps, color: neutralColor }], now);

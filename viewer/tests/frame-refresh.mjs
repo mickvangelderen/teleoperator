@@ -1,12 +1,63 @@
 import assert from "node:assert/strict";
 
+// The caller supplies a failing signaling endpoint; no device is needed.
+export async function checkFrameRate(page) {
+  const counts = await page.evaluate(async () => {
+    const { SpatialView } = await import("/src/spatial.ts");
+    const { profiler } = await import("/src/performance.ts");
+    const renderFrame = SpatialView.prototype.renderFrame;
+    const view = await new Promise(resolve => {
+      SpatialView.prototype.renderFrame = function () {
+        SpatialView.prototype.renderFrame = renderFrame;
+        renderFrame.call(this); resolve(this);
+      };
+    });
+    window.frameRateView = view;
+    const continuous = view.continuous, enabled = profiler.enabled;
+    try {
+      view.setContinuousRendering(false);
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      const idle = view.frameRate(performance.now());
+      profiler.stop();
+      view.setView("iso", 1); view.renderFrame();
+      const rendered = view.frameRate(performance.now());
+      view.renderFrame();
+      const unchanged = view.frameRate(performance.now());
+      profiler.reset();
+      const reset = view.frameRate(performance.now());
+      profiler.start();
+      return { idle, rendered, unchanged, reset, restarted: view.frameRate(performance.now()) };
+    } finally {
+      view.setContinuousRendering(continuous);
+      if (enabled) profiler.start(); else profiler.stop();
+    }
+  });
+  assert.deepEqual(counts, { idle: 0, rendered: 1, unchanged: 1, reset: 1, restarted: 1 }, "FPS counts renders independently of animation callbacks and profiling");
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = page.waitForResponse(r => r.url().endsWith("/api/offer") && r.status() === 503);
+      const count = await page.evaluate(() => {
+        const now = performance.now(), view = window.frameRateView;
+        const before = view.frameRate(now);
+        document.querySelector("#connect").click();
+        return { before, after: view.frameRate(now) };
+      });
+      assert.ok(count.before > 0);
+      assert.equal(count.after, count.before, "Connecting preserves the renderer's frame count");
+      await response;
+      await page.waitForFunction(() => document.querySelector("#status").textContent === "Error");
+      assert.match(await page.locator("#error").textContent(), /Signaling failed \(503\)/);
+    }
+  } finally { await page.evaluate(() => { delete window.frameRateView; }); }
+}
+
 export async function checkMetricMedians(page) {
   const result = await page.evaluate(async () => {
     const { Session } = await import("/src/session.ts");
-    const { profiler } = await import("/src/performance.ts");
+    const { SpatialView } = await import("/src/spatial.ts");
     const requestFrame = window.requestAnimationFrame, sampleAge = Session.prototype.sampleAge;
     const freshness = Session.prototype.freshness, latency = Session.prototype.latestNetworkLatency;
-    const tracking = Session.prototype.tracking, frameRate = profiler.frameRate;
+    const tracking = Session.prototype.tracking, frameRate = SpatialView.prototype.frameRate;
     const subscriptions = new Set();
     let estimate = 50, usedOldFrameTime = false, latestArguments;
     window.requestAnimationFrame = callback => requestFrame(time => callback(time - 250));
@@ -17,7 +68,7 @@ export async function checkMetricMedians(page) {
       return estimate;
     };
     Session.prototype.latestNetworkLatency = () => estimate;
-    profiler.frameRate = () => Math.max(0, estimate ?? 0);
+    SpatialView.prototype.frameRate = () => Math.max(0, estimate ?? 0);
     Session.prototype.freshness = function (now) {
       const result = freshness.call(this, now);
       for (const stream of result.streams) {
@@ -63,7 +114,7 @@ export async function checkMetricMedians(page) {
     } finally {
       window.requestAnimationFrame = requestFrame; Session.prototype.sampleAge = sampleAge;
       Session.prototype.freshness = freshness; Session.prototype.latestNetworkLatency = latency;
-      Session.prototype.tracking = tracking; profiler.frameRate = frameRate;
+      Session.prototype.tracking = tracking; SpatialView.prototype.frameRate = frameRate;
       for (const sub of subscriptions) sub.arrivals.length = 0;
       const input = document.querySelector("#render-to-photon");
       input.value = "20"; input.dispatchEvent(new Event("input", { bubbles: true }));

@@ -1,6 +1,7 @@
 // Uses the same browser timing APIs as OpenArm Teleop, with independent Viewer instrumentation.
 import { recording } from "./recording";
 import { setAttribute, setText } from "./dom";
+import { RollingRate } from "./statistics";
 export const metrics = {
   frame: { label: "Animation frame", color: "#656565" },
   interval: { label: "Render interval", color: "#6276b0" },
@@ -21,26 +22,6 @@ export const transferMetrics = {
 } as const;
 type TransferMetric = keyof typeof transferMetrics;
 const transferKeys = Object.keys(transferMetrics) as TransferMetric[];
-
-// Exact payload bytes in (now - 1000 ms, now], including partial startup windows.
-export class ByteRate {
-  private packets: { at: number; bytes: number }[] = [];
-  private first = 0;
-  private bytes = 0;
-  add(at: number, bytes: number) {
-    this.rate(at);
-    this.packets.push({ at, bytes });
-    this.bytes += bytes;
-  }
-  rate(now: number) {
-    while (this.first < this.packets.length && this.packets[this.first].at <= now - 1000)
-      this.bytes -= this.packets[this.first++].bytes;
-    if (this.first > 512 || this.first === this.packets.length) {
-      this.packets = this.packets.slice(this.first); this.first = 0;
-    }
-    return this.bytes;
-  }
-}
 
 export class MetricHistory {
   private times: Float64Array;
@@ -132,12 +113,11 @@ class Profiler {
   threeRevision = "unavailable";
   private histories = Object.fromEntries(keys.map(key => [key, new MetricHistory()])) as Record<Metric, MetricHistory>;
   private transferHistories = Object.fromEntries(transferKeys.map(key => [key, new MetricHistory()])) as Record<TransferMetric, MetricHistory>;
-  private rates = Object.fromEntries(transferKeys.map(key => [key, new ByteRate()])) as Record<TransferMetric, ByteRate>;
+  private rates = Object.fromEntries(transferKeys.map(key => [key, new RollingRate()])) as Record<TransferMetric, RollingRate>;
   private arrivals = new Map<number, { stream: string; at: number }>();
   private gpu?: GpuTimer;
   private previousRender: number | null = null;
   private previousFrame: number | null = null;
-  private renderedFrames = new ByteRate();
   private generation = 0;
   attach(gl: WebGL2RenderingContext, revision: string) {
     this.gpu?.cancel();
@@ -153,9 +133,17 @@ class Profiler {
     if (!recording.active) this.gpu?.cancel();
     this.previousRender = null;
     this.previousFrame = null;
-    this.renderedFrames = new ByteRate();
+    for (const history of Object.values(this.histories)) history.clear();
+    this.resetConnectionMetrics();
+  }
+  resetConnectionMetrics() {
     this.arrivals.clear();
-    for (const history of [...Object.values(this.histories), ...Object.values(this.transferHistories)]) history.clear();
+    this.histories.trackingArrival.clear();
+    this.histories.receive.clear();
+    for (const key of transferKeys) {
+      this.rates[key].clear();
+      this.transferHistories[key].clear();
+    }
   }
   start() { this.reset(); this.enabled = true; }
   stop() { this.enabled = false; if (!recording.active) this.gpu?.cancel(); }
@@ -186,7 +174,6 @@ class Profiler {
     }
   }
   beginRender() {
-    this.renderedFrames.add(performance.now(), 1);
     const start = this.begin();
     if (start === null) return null;
     if (this.previousRender !== null) this.sample("interval", start, start - this.previousRender);
@@ -200,7 +187,6 @@ class Profiler {
       this.sample("gpu", token.start, ms, token.generation);
     });
   }
-  frameRate(now: number) { return this.renderedFrames.rate(now); }
   snapshot() {
     const end = performance.now();
     return {

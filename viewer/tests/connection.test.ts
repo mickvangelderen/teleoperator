@@ -5,6 +5,7 @@ import { Connection } from "../src/connection";
 import { preferredFormat, subscribe } from "../src/protocol";
 import type { Capabilities } from "../src/protocol";
 import { recording } from "../src/recording";
+import { profiler } from "../src/performance";
 import type { RecordingEvent } from "../src/recording";
 class Channel {
   onmessage?: (event: { data: ArrayBuffer }) => void;
@@ -33,6 +34,43 @@ function connection(c = caps()) {
   return connection;
 }
 const request = {id:1,group:0,delivery: 1, schedule:periodic(60),samples:[{descriptor:0,format:11,space:2}]};
+test("connection attempts reset network measurements while preserving render diagnostics", async context => {
+  let now = 2000;
+  context.mock.method(performance, "now", () => now);
+  context.mock.method(globalThis, "fetch", async (url: Parameters<typeof fetch>[0]) => url === "/api/health"
+    ? new Response("{}") : new Response("Device unavailable", { status: 503 }));
+  profiler.start();
+  profiler.animationFrame(1950); profiler.animationFrame(1980);
+  profiler.end("render", 1990);
+  const viewerTimings = () => profiler.snapshot().metrics.filter(m => m.key !== "trackingArrival" && m.key !== "receive");
+  const before = viewerTimings();
+  const original = globalThis.RTCPeerConnection;
+  Object.assign(globalThis, { RTCPeerConnection: Peer });
+  try {
+    for (let i = 0; i < 3; i++) {
+      profiler.transfer("received", 100, 1900); profiler.transfer("sent", 20, 1950);
+      profiler.trackingArrival(1, "old", 100, 1900); profiler.trackingArrival(1, "old", 100, 1950);
+      profiler.end("receive", 1995); profiler.sampleTransfer(now);
+      const c = new Connection(() => {});
+      try {
+        await c.connect();
+        assert.equal(c.state.status, "Error");
+        assert.match(c.state.detail, /Signaling failed \(503\)/);
+        assert.deepEqual(viewerTimings(), before);
+        const snapshot = profiler.snapshot();
+        assert.ok(snapshot.transfer.every(m => m.samples.length === 0));
+        assert.ok(snapshot.metrics.filter(m => m.key === "trackingArrival" || m.key === "receive").every(m => m.samples.length === 0));
+        profiler.sampleTransfer(now);
+        assert.ok(profiler.snapshot().transfer.every(m => m.summary?.current === 0), "Traffic counts start fresh too");
+        profiler.trackingArrival(1, "old", 100, now);
+        assert.deepEqual(profiler.snapshot().metrics.find(m => m.key === "trackingArrival")!.samples, [], "The first arrival has no previous connection baseline");
+      } finally { c.close(); }
+    }
+    now = 2010; profiler.animationFrame(now);
+    assert.equal(profiler.snapshot().metrics.find(m => m.key === "frame")!.summary?.current, 30, "The render timing baseline survives connection resets");
+  } finally { profiler.stop(); Object.assign(globalThis, { RTCPeerConnection: original }); }
+});
+
 test("f64-only poses use an advertised default and publications can exceed the client message bound", () => {
   const original = globalThis.RTCPeerConnection;
   Object.assign(globalThis,{RTCPeerConnection:Peer});

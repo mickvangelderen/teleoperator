@@ -1,6 +1,31 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TwoSecondMedian, Latest } from "../src/statistics";
+import { TwoSecondMedian, Latest, RollingRate } from "../src/statistics";
+
+test("rolling rate sums values over an exact second and survives bursts", () => {
+  const rate = new RollingRate();
+  rate.add(0, 1000); rate.add(200, 2000); rate.add(999, 3000);
+  assert.equal(rate.rate(999), 6000);
+  assert.equal(rate.rate(1000), 5000);
+  assert.equal(rate.rate(1200), 3000);
+  assert.equal(rate.rate(1999), 0);
+  for (let i = 0; i < 2000; i++) rate.add(2000 + i, 10);
+  assert.equal(rate.rate(3999), 10000);
+  assert.equal(rate.rate(4999), 0);
+});
+
+test("rolling rate counts events, expires during silence, and clears accumulated state", () => {
+  const rate = new RollingRate();
+  assert.equal(rate.rate(0), 0);
+  rate.add(100); rate.add(120);
+  assert.equal(rate.rate(120), 2);
+  assert.equal(rate.rate(1100), 1);
+  rate.clear();
+  assert.equal(rate.rate(1100), 0);
+  rate.add(1200);
+  assert.equal(rate.rate(2199), 1);
+  assert.equal(rate.rate(2200), 0);
+});
 
 test("a slow consumer holds exactly the latest value", () => {
   const consumer = new Latest<number>();

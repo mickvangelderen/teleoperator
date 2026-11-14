@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { checkMetricMedians, checkFrameRefresh } from "./frame-refresh.mjs";
+import { checkMetricMedians, checkFrameRefresh, checkFrameRate } from "./frame-refresh.mjs";
 import { checkFreshness } from "./freshness.mjs";
 import { checkProtocol } from "./protocol-browser.mjs";
 import { checkTrackingColors } from "./tracking-colors.mjs";
@@ -172,14 +172,7 @@ try {
   await page.route("**/api/offer", (route) =>
     route.fulfill({ status: 503, body: "Device unavailable" }),
   );
-  await page.getByRole("button", { name: "Connect" }).click();
-  await page.waitForFunction(
-    () => document.querySelector("#status").textContent === "Error",
-  );
-  assert.match(
-    await page.locator("#error").textContent(),
-    /Signaling failed \(503\)/,
-  );
+  await checkFrameRate(page);
   await page.route("**/assets/meta/headset.glb", route => route.fulfill({ status: 404, body: "Missing asset" }));
   await page.reload();
   await page.waitForFunction(() => document.querySelector("#graphics-status").textContent.includes("could not load"));
