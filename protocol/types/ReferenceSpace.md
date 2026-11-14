@@ -10,6 +10,7 @@ A `u8` identifying the coordinate frame of a pose.
 | `stage`       | `0x03` | Origin at the floor centre of the runtime-defined rectangular play area.                                            |
 | `local_floor` | `0x04` | Same orientation and horizontal origin as `local`, with the vertical origin at the runtime's estimated floor level. |
 | `parent`      | `0x05` | Parent joint's corresponding pose frame, resolved through the skeleton mapping ([Joint](Joint.md)).                 |
+| `model`       | `0x06` | Common frame of a model, with source-defined origin and orientation and no implied world or view placement. |
 | reserved      | *      | Reserved for future use.                                                                                            |
 
 A selection uses a space advertised by its pose descriptor.

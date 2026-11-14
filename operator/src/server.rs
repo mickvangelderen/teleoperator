@@ -51,7 +51,6 @@ struct Peer {
     hub: Arc<Hub>,
     close: Notify,
     events: mpsc::Sender<PeerEvent>,
-    epoch: i64,
     message_limit: usize,
 }
 
@@ -182,7 +181,14 @@ impl Peer {
         let deadline = tokio::time::sleep(Duration::from_secs(12));
         tokio::pin!(deadline);
         loop {
+            let next_due = session
+                .as_ref()
+                .and_then(|(_, s)| s.active.values().filter_map(|s| s.next_due).min());
+            let wait = next_due.map_or(Duration::from_secs(3600), |due| {
+                Duration::from_nanos(due.saturating_sub(self.hub.now() as u64))
+            });
             tokio::select! {
+                _ = tokio::time::sleep(wait), if next_due.is_some() => {},
                 _ = &mut deadline, if session.is_none() || control.is_none() || tracking.is_none() => return Err("Protocol setup timed out".into()),
                 event = incoming.recv() => match event.ok_or("Peer event channel closed")? {
                     PeerEvent::Clock(id, received_at) => {
@@ -227,6 +233,18 @@ impl Peer {
             let Some((catalog, session)) = session.as_mut() else {
                 continue;
             };
+            let now = self.hub.now();
+            let due: std::collections::HashSet<_> = session
+                .active
+                .iter()
+                .filter_map(|(id, sub)| sub.due(now as u64).then_some(*id))
+                .collect();
+            // Advance even without a sample or an open channel, so missed slots cannot spin.
+            for sub in session.active.values_mut() {
+                if sub.next_due.is_some_and(|t| t <= now as u64) {
+                    sub.advance(now as u64)?;
+                }
+            }
             if catalog.changed(&self.hub) {
                 return Err("Device capabilities changed; reconnect".into());
             }
@@ -255,10 +273,13 @@ impl Peer {
             if sample.reference_version != *self.hub.reference_version.lock().unwrap() {
                 continue;
             }
-            let now = self.hub.now();
+            // Acquisition can advance after due-slot bookkeeping; validate the copied sample now.
+            let sampled_at = self.hub.now();
             for subscription in session.active.values_mut() {
-                let Some(timestamp) = subscription.timestamp(sample.acquired_at, self.epoch, now)
-                else {
+                if !due.contains(&subscription.request.id) {
+                    continue;
+                }
+                let Some(timestamp) = subscription.timestamp(sample.acquired_at, sampled_at) else {
                     continue;
                 };
                 // Skip superseded acquisitions under congestion; never retain a tracking backlog.
@@ -271,12 +292,11 @@ impl Peer {
                 let packet = protocol::tracking(
                     &catalog.capabilities,
                     &subscription.request,
-                    subscription.generation,
                     timestamp,
+                    catalog.predicted_for(&subscription.request, &sample, &values),
                     &values,
                 );
-                let revision = sample.body.as_ref().map(|body| body.skeleton.version);
-                if !subscription.should_publish(revision, &packet) {
+                if !subscription.should_publish(&packet) {
                     continue;
                 }
                 let reliable = subscription.request.delivery == 2;
@@ -294,7 +314,7 @@ impl Peer {
                     continue;
                 }
                 self.send(channel, framed, reliable).await?;
-                subscription.published(sample.acquired_at, now, revision, &packet);
+                subscription.published(&packet);
             }
         }
     }
@@ -349,7 +369,6 @@ async fn offer(
         hub: server.hub.clone(),
         close: Notify::new(),
         events,
-        epoch: 0,
         message_limit,
     });
     // 0.17 retains remote DCEP reliability settings and avoids the 0.21 negotiated-channel race.

@@ -1,6 +1,6 @@
 import { Connection, initialState } from "./connection";
 import { spatialFrames, stale, valueText } from "./tracking-view";
-import { kindNames, formatNames, spaceNames, preferredFormat, referenceFields, restGroup } from "./protocol";
+import { kindNames, formatNames, spaceNames, preferredFormat, periodic, publicationRate, referenceFields, restGroup } from "./protocol";
 import type { Session } from "./session";
 import type { State } from "./connection";
 import "./style.css";
@@ -149,8 +149,8 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   const subscriptions = [...session?.active.values() ?? []];
   const received = subscriptions.filter(s => s.arrivedAt !== undefined);
   const rates = subscriptions.map(s => ({
-    key: `${s.request.id}:${s.generation}`, group: s.request.group, onChange: s.onChange,
-    requested: s.onChange ? undefined : s.request.rate,
+    key: `${s.request.id}:${s.generation}`, group: s.request.group, onChange: s.request.schedule.kind === "onChange",
+    requested: s.request.schedule.kind === "onChange" ? undefined : publicationRate(s.request),
     actual: s.arrivals.filter(at => at > now - 1000 && at <= now).length,
   }));
   const displayedRate = arrivalRateMedian.update(subscriptions.length ? rates.reduce((sum, s) => sum + s.actual, 0) : undefined, now);
@@ -160,9 +160,9 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     ...s.requested === undefined ? [] : [{ key: `${s.key}:requested`, value: s.requested, color: groupColor(s.group), dashed: true, className: "arrival-requested-line" }],
     { key: `${s.key}:actual`, value: s.actual, color: groupColor(s.group), className: "arrival-actual-line" },
   ]), now);
-  const sampleTime = received.filter(s => !s.onChange && s.request.samples.some(sample => session!.capabilities!.descriptors[sample.descriptor].kind === 10))
-    .reduce<bigint | undefined>((latest, s) => latest === undefined || s.packet!.timestamp > latest ? s.packet!.timestamp : latest, undefined);
-  const sampleAge = sampleTime === undefined || state.predictionHorizonMs === undefined ? undefined : session?.sampleAge(sampleTime, now, renderToPhotonMs, state.predictionHorizonMs);
+  const sampleTime = received.filter(s => s.request.schedule.kind !== "onChange" && s.request.samples.some(sample => session!.capabilities!.descriptors[sample.descriptor].kind === 10))
+    .reduce<bigint | undefined>((latest, s) => latest === undefined || (s.packet!.predictedFor ?? s.packet!.timestamp) > latest ? (s.packet!.predictedFor ?? s.packet!.timestamp) : latest, undefined);
+  const sampleAge = sampleTime === undefined ? undefined : session?.sampleAge(sampleTime, now, renderToPhotonMs);
   const age = sampleAgeMedian.update(sampleAge, now);
   text("sample-age", age === undefined ? "—" : `${age.toFixed(2)} ms`);
   const latency = session?.latestNetworkLatency(now);
@@ -197,11 +197,11 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   text("workspace-note", view.mixedSpaces ? "Choose the same reference space for pose samples to display them together. Numerical values remain available below." : live ? "Select pose samples and start publication. Select the associated validity samples to display pose components. Inactive and stale poses are hidden." : "Connect to inspect the device’s tracking data.");
   text("body-quality", `${visibleJoints} current body joints · ${view.mixedSpaces ? "mixed spaces; overlay hidden" : view.space ? view.space < 0 ? "skeleton rest frame" : spaceNames[view.space] : "no current frame"} · ${view.outdated.size ? "rest revision pending" : view.rest ? "advertised rest poses" : `${view.trackedJoints} reported tracked${view.confidence === undefined ? "" : ` · confidence ${(100 * view.confidence).toFixed(0)}%`}`}`);
   for (let group = 0; group < (session?.capabilities?.groups.length ?? 0); group++) {
-    const id = group + 1, active = session!.active.get(id), pending = session!.pending.has(id) || session!.stopping.has(id);
+    const active = [...session!.active.values()].find(s => s.request.group === group), pending = [...session!.pending.values()].some(r => r.group === group);
     element<HTMLButtonElement>(`publish-${group}`).disabled = pending;
     element<HTMLButtonElement>(`stop-${group}`).disabled = !active || pending;
     text(`publish-${group}`, pending ? "Pending…" : active ? "Apply replacement" : "Start publication");
-    text(`subscription-${group}`, active ? `Generation ${active.generation} · ${active.request.samples.length} samples · ${active.onChange ? "on change" : `${active.request.rate} Hz target`} · ${active.request.delivery === 2 ? "reliable" : "unreliable"} · ${active.packets} packets` : pending ? "Waiting for control response" : "No active publication");
+    text(`subscription-${group}`, active ? `Subscription ${active.request.id} · ${active.request.samples.length} samples · ${active.request.schedule.kind === "onChange" ? "on change" : `${publicationRate(active.request).toFixed(1)} Hz target`} · ${active.request.delivery === 2 ? "reliable" : "unreliable"} · ${active.packets} packets` : pending ? "Waiting for control response" : "No active publication");
   }
 }
 
@@ -213,15 +213,16 @@ function mountCapabilities(session: Session) {
   c.groups.forEach((max, group) => {
     const section = document.createElement("section"); section.className = "subscription-group";
     section.style.setProperty("--group-color", groupColor(group));
-    const delivery = session.active.get(group + 1)?.request.delivery ?? session.pending.get(group + 1)?.delivery ?? (restGroup(c, group) ? 2 : 1);
-    section.innerHTML = `<div class="publication-controls"><strong class="group-label">Group ${group}</strong><label class="rate-control">Rate <input id="rate-${group}" type="number" min="0.1" max="${max}" step="any" value="${Math.min(max,60)}" aria-label="Group ${group} publication rate"> Hz (max ${max})</label><span class="change-cadence">On change</span><label>Delivery <select id="delivery-${group}" aria-label="Group ${group} delivery"><option value="1" ${delivery === 1 ? "selected" : ""}>Unreliable</option><option value="2" ${delivery === 2 ? "selected" : ""}>Reliable</option></select></label><button id="publish-${group}">Apply replacement</button><button id="stop-${group}">Stop publication</button><button class="select-all">Select all</button><button class="select-none">Clear selection</button></div><p id="subscription-${group}" class="subscription-status"></p><div class="sample-table-wrap"><table class="sample-table"><thead><tr><th>Select</th><th>Sample</th><th>Kind</th><th>Format</th><th>Space</th><th>Current value</th></tr></thead><tbody></tbody></table></div>`;
-    const deliverySelect = section.querySelector<HTMLSelectElement>(`#delivery-${group}`)!;
+    const delivery = restGroup(c, group) ? 2 : 1;
+    section.innerHTML = `<div class="publication-controls"><strong class="group-label">Group ${group}</strong><label class="rate-control">Rate <input id="rate-${group}" type="number" min="0.1" max="${max}" step="any" value="${Math.min(max,60)}" aria-label="Group ${group} publication rate"> Hz (max ${max})</label><label>Schedule <select id="schedule-${group}"><option value="periodic" ${restGroup(c, group) ? "" : "selected"}>Periodic</option><option value="onChange" ${restGroup(c, group) ? "selected" : ""}>On change</option></select></label><label class="phase-control">Phase <input id="phase-${group}" type="number" min="0" step="any" value="0"> ms</label><label class="delay-control">Consumption delay <input id="delay-${group}" type="number" min="0" step="any" value="0"> ms</label><label>Delivery <select id="delivery-${group}" aria-label="Group ${group} delivery"><option value="1" ${delivery === 1 ? "selected" : ""}>Unreliable</option><option value="2" ${delivery === 2 ? "selected" : ""}>Reliable</option></select></label><button id="publish-${group}">Apply replacement</button><button id="stop-${group}">Stop publication</button><button class="select-all">Select all</button><button class="select-none">Clear selection</button></div><p id="subscription-${group}" class="subscription-status"></p><div class="sample-table-wrap"><table class="sample-table"><thead><tr><th>Select</th><th>Sample</th><th>Kind</th><th>Format</th><th>Space</th><th>Current value</th></tr></thead><tbody></tbody></table></div>`;
+    const scheduleSelect = section.querySelector<HTMLSelectElement>(`#schedule-${group}`)!;
     const updateCadence = () => {
-      const onChange = restGroup(c, group) && deliverySelect.value === "2";
+      const onChange = scheduleSelect.value === "onChange";
       section.querySelector<HTMLElement>(".rate-control")!.hidden = onChange;
-      section.querySelector<HTMLElement>(".change-cadence")!.hidden = !onChange;
+      section.querySelector<HTMLElement>(".phase-control")!.hidden = onChange;
+      section.querySelector<HTMLElement>(".delay-control")!.hidden = onChange;
     };
-    deliverySelect.onchange = updateCadence; updateCadence();
+    scheduleSelect.onchange = updateCadence; updateCadence();
     const tbody = section.querySelector("tbody")!;
     c.descriptors.forEach((d, index) => {
       if (d.group !== group) return;
@@ -247,9 +248,13 @@ function mountCapabilities(session: Session) {
     container.append(section);
     element(`publish-${group}`).onclick = () => {
       const samples = [...sampleRows].filter(([index, row]) => c.descriptors[index].group === group && row.check.checked).map(([descriptor, row]) => ({ descriptor, format: Number(row.format.value), space: Number(row.space.value) }));
-      connection?.publish({ id: group + 1, group, delivery: Number(element<HTMLSelectElement>(`delivery-${group}`).value), rate: Number(element<HTMLInputElement>(`rate-${group}`).value), samples });
+      try {
+        const duration = (id: string) => { const value = Number(element<HTMLInputElement>(id).value) * 1e6; if (!Number.isSafeInteger(Math.round(value)) || value < 0) throw new Error("Invalid duration"); return BigInt(Math.round(value)); };
+        const schedule = scheduleSelect.value === "onChange" ? { kind: "onChange" as const } : periodic(Number(element<HTMLInputElement>(`rate-${group}`).value), duration(`phase-${group}`), duration(`delay-${group}`));
+        connection?.publish({ id: group + 1, group, delivery: Number(element<HTMLSelectElement>(`delivery-${group}`).value), schedule, samples });
+      } catch (error) { text("publication-status", `Selection rejected: ${String(error)}`); }
     };
-    element(`stop-${group}`).onclick = () => { connection?.unsubscribe(group + 1); };
+    element(`stop-${group}`).onclick = () => { const sub = [...session.active.values()].find(s => s.request.group === group); if (sub) connection?.unsubscribe(sub.request.id); };
   });
 }
 

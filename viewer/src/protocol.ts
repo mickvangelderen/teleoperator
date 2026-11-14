@@ -3,7 +3,7 @@ export const MAX_CONTROL = 1_048_576;
 export const MAX_PACKET = 16_384;
 export const kindNames = ["invalid", "generic", "pressed", "press_count", "release_count", "touched", "touch_count", "untouch_count", "trigger", "thumbstick", "pose", "revision", "position_valid", "orientation_valid", "position_tracked", "orientation_tracked", "confidence"];
 export const formatNames = ["invalid", "bit", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "unorm8", "unorm16", "snorm8", "snorm16"];
-export const spaceNames = ["absent", "view", "local", "stage", "local_floor", "parent"];
+export const spaceNames = ["absent", "view", "local", "stage", "local_floor", "parent", "model"];
 export const referenceKinds = { press_count_sample: 3, release_count_sample: 4, touch_count_sample: 6, untouch_count_sample: 7, position_valid_sample: 12, orientation_valid_sample: 13, position_tracked_sample: 14, orientation_tracked_sample: 15, confidence_sample: 16 } as const;
 export type ReferenceField = keyof typeof referenceKinds;
 export type Descriptor = { id: string; name: string; description: string; kind: number; formats: number[]; group: number; spaces: number[]; revision_of?: number } & Partial<Record<ReferenceField, number | null>>;
@@ -17,14 +17,26 @@ export function restGroup(c: Capabilities, group: number) {
     && c.descriptors.every((d, i) => d.group !== group || rest.has(i) || d.kind === 11);
 }
 export type Selection = { descriptor: number; format: number; space: number };
-export type Request = { id: number; group: number; delivery: number; rate: number; samples: Selection[] };
+export const NON_MAX = 0xffffffffffffffffn;
+export type Schedule = { kind: "periodic"; interval: bigint; phase: bigint; consumptionDelay: bigint } | { kind: "onChange" };
+export const periodic = (rate: number, phase = 0n, consumptionDelay = 0n): Schedule => {
+  check(Number.isFinite(rate) && rate > 0, "Invalid publication rate");
+  return { kind: "periodic", interval: BigInt(Math.ceil(1e9 / rate)), phase, consumptionDelay };
+};
+export const publicationRate = (r: Request) => r.schedule.kind === "periodic" ? 1e9 / Number(r.schedule.interval) : 0;
+export function validateSchedule(schedule: Schedule, maxRate = Infinity) {
+  if (schedule.kind === "onChange") return;
+  check(schedule.kind === "periodic" && [schedule.interval, schedule.phase, schedule.consumptionDelay].every(v => typeof v === "bigint" && v >= 0n && v < NON_MAX)
+    && schedule.interval > 0n && Number(schedule.interval) >= Math.ceil(1e9 / maxRate), "Invalid publication schedule");
+}
+export type Request = { id: number; group: number; delivery: number; schedule: Schedule; samples: Selection[] };
 export type ServerMessage =
   | { tag: 2; version: number } | { tag: 3; capabilities: Capabilities }
-  | { tag: 5; id: number; generation: number } | { tag: 6; id: number; reason: string }
-  | { tag: 8; id: number; generation: number; reason: string }
+  | { tag: 5; id: number } | { tag: 6; id: number; reason?: string }
+  | { tag: 8; id: number; reason: string }
   | { tag: 9; body: Uint8Array };
 export type Value = boolean | number | bigint | number[];
-export type Packet = { id: number; generation: number; timestamp: bigint; values: (Value | null)[] };
+export type Packet = { id: number; timestamp: bigint; predictedFor: bigint | null; values: (Value | null)[] };
 export const components = (kind: number) => kind === 9 ? 2 : kind === 10 ? 7 : 1;
 export const width = (format: number) => [0, 0, 1, 2, 4, 8, 1, 2, 4, 8, 4, 8, 1, 2, 1, 2][format] ?? 0;
 export const counterKind = (kind: number) => [3, 4, 6, 7, 11].includes(kind);
@@ -45,7 +57,7 @@ export function validateCapabilities(c: Capabilities) {
   for (const d of c.descriptors) {
     check(d.id.length && d.group < c.groups.length, "Invalid sample identity or group");
     check(d.formats.length && unique(d.formats) && d.formats.every(f => compatible(d.kind, f)), "Invalid sample formats");
-    check(d.kind === 10 ? d.spaces.length && unique(d.spaces) && d.spaces.every(s => s >= 1 && s <= 5) : d.spaces.length === 0, "Invalid reference spaces");
+    check(d.kind === 10 ? d.spaces.length && unique(d.spaces) && d.spaces.every(s => s >= 1 && s <= 6) : d.spaces.length === 0, "Invalid reference spaces");
     for (const field of referenceFields(d.kind)) {
       const index = d[field];
       check(index == null || c.descriptors[index]?.kind === referenceKinds[field], "Invalid descriptor reference");
@@ -66,9 +78,9 @@ export function validateRequest(c: Capabilities, r: Request) {
   check(r.delivery === 1 || r.delivery === 2, "Unsupported delivery mode");
   check(Number.isInteger(r.id) && r.id >= 0 && r.id <= 0xffffffff, "Invalid subscription id");
   check(Number.isInteger(r.group) && r.group >= 0 && r.group < c.groups.length, "Unknown group");
-  check(Number.isFinite(r.rate) && r.rate > 0 && r.rate <= c.groups[r.group], "Invalid publication rate");
+  validateSchedule(r.schedule, c.groups[r.group]);
   check(r.samples.length && unique(r.samples.map(s => s.descriptor)), "Empty or duplicate sample selection");
-  let size = 16 + Math.ceil(r.samples.length / 8), bits = 0;
+  let size = 20 + Math.ceil(r.samples.length / 8), bits = 0;
   for (const s of r.samples) {
     const d = c.descriptors[s.descriptor];
     check(d && d.group === r.group && d.formats.includes(s.format) && compatible(d.kind, s.format), "Unsupported sample selection");
@@ -128,15 +140,17 @@ function decodeServer(bytes: Uint8Array): ServerMessage {
       const capabilities = { groups, descriptors, skeletons }; validateCapabilities(capabilities);
       message = { tag, capabilities }; break;
     }
-    case 5: message = { tag, id: r.u32(), generation: r.u32() }; break;
-    case 6: message = { tag, id: r.u32(), reason: r.string() }; break;
-    case 8: message = { tag, id: r.u32(), generation: r.u32(), reason: r.string() }; break;
+    case 5: message = { tag, id: r.u32() }; break;
+    case 6: {
+      const id = r.u32(), present = r.u8(); check(present <= 1, "Invalid optional reason");
+      message = { tag, id, reason: present ? r.string() : undefined }; break;
+    }
+    case 8: message = { tag, id: r.u32(), reason: r.string() }; break;
     case 9: message = { tag, body: bytes.slice(r.at) }; r.take(bytes.length - r.at); break;
     default: throw new Error("Invalid server message tag or direction");
   }
   r.done();
-  if (message.tag === 5 || message.tag === 8) check(message.generation !== 0, "Invalid generation");
-  if (message.tag === 6 || message.tag === 8) check(message.reason.length > 0, "Missing reason");
+  if (message.tag === 8) check(message.reason.length > 0, "Missing reason");
   return message;
 }
 export class ControlDecoder {
@@ -161,19 +175,26 @@ class Writer {
   u8(n: number) { this.bytes.push(n); }
   u16(n: number) { this.bytes.push(n & 255, n >>> 8); }
   u32(n: number) { this.bytes.push(n & 255, n >>> 8 & 255, n >>> 16 & 255, n >>> 24); }
-  f32(n: number) { const b = new ArrayBuffer(4); new DataView(b).setFloat32(0, n, true); this.bytes.push(...new Uint8Array(b)); }
+  u64(n: bigint) { const b = new ArrayBuffer(8); new DataView(b).setBigUint64(0, n, true); this.bytes.push(...new Uint8Array(b)); }
+  schedule(s: Schedule) {
+    validateSchedule(s); this.u8(s.kind === "periodic" ? 1 : 2);
+    if (s.kind === "periodic") { this.u64(s.interval); this.u64(s.phase); this.u64(s.consumptionDelay); }
+  }
   finish() { const bytes = new Uint8Array(this.bytes); new DataView(bytes.buffer).setUint32(0, bytes.length - 4, true); return bytes; }
 }
 export function offer() { const w = new Writer(); w.u8(1); w.u32(1); w.u16(1); return w.finish(); }
 export function subscribe(r: Request) {
-  const w = new Writer(); w.u8(4); w.u32(r.id); w.u32(r.group); w.u8(r.delivery); w.f32(r.rate); w.u32(r.samples.length);
-  for (const s of r.samples) { w.u32(s.descriptor); w.u8(s.format); w.u8(s.space); } return w.finish();
+  const w = new Writer(); w.u8(4); w.u32(r.id); w.u32(r.group); w.u32(r.samples.length);
+  for (const s of r.samples) { w.u32(s.descriptor); w.u8(s.format); if (s.space) w.u8(s.space); }
+  w.u8(r.delivery); w.schedule(r.schedule); return w.finish();
 }
-export function unsubscribe(id: number, generation: number) { const w = new Writer(); w.u8(7); w.u32(id); w.u32(generation); return w.finish(); }
-export function decodeTracking(bytes: Uint8Array, c: Capabilities, request: Request, generation: number): Packet {
+export function unsubscribe(id: number) { const w = new Writer(); w.u8(7); w.u32(id); return w.finish(); }
+export function updateSchedule(id: number, schedule: Schedule) { const w = new Writer(); w.u8(12); w.u32(id); w.schedule(schedule); return w.finish(); }
+export function decodeTracking(bytes: Uint8Array, c: Capabilities, request: Request): Packet {
   check(bytes.length <= (request.delivery === 1 ? MAX_PACKET - 1 : MAX_CONTROL - 1), "Publication size limit");
-  const r = new Reader(bytes), id = r.u32(), gen = r.u32(), timestamp = r.u64();
-  check(id === request.id && gen === generation, "Unexpected tracking generation");
+  const r = new Reader(bytes), id = r.u32(), timestamp = r.u64(), predicted = r.u64();
+  const predictedFor = predicted === NON_MAX ? null : predicted;
+  check(id === request.id && timestamp < NON_MAX, "Unexpected subscription or invalid acquisition time");
   const available = r.bitmap(request.samples.length);
   const booleans = r.bitmap(request.samples.filter((s, i) => available(i) && s.format === 1).length);
   let bit = 0;
@@ -191,7 +212,7 @@ export function decodeTracking(bytes: Uint8Array, c: Capabilities, request: Requ
     }
     return v.length === 1 ? v[0] : v as number[];
   });
-  r.done(); return { id, generation: gen, timestamp, values };
+  r.done(); return { id, timestamp, predictedFor, values };
 }
 export function counterDelta(current: bigint, previous: bigint, format: number) {
   return BigInt.asUintN(width(format) * 8, current - previous);

@@ -13,6 +13,7 @@ FORMATS = {2: 'B', 3: 'H', 4: 'I', 5: 'Q', 6: 'b', 7: 'h', 8: 'i', 9: 'q', 10: '
 COMPONENTS = {kind: (7 if kind == 10 else 2 if kind == 9 else 1) for kind in range(1, 17)}
 ALLOWED = {1: set(range(1, 16)), 2: {1}, 3: {2, 3, 4, 5}, 4: {2, 3, 4, 5}, 5: {1}, 6: {2, 3, 4, 5}, 7: {2, 3, 4, 5}, 8: {10, 11, 12, 13}, 9: {10, 11, 14, 15}, 10: {10, 11}, 11: {2, 3, 4, 5}, 12: {1}, 13: {1}, 14: {1}, 15: {1}, 16: {10, 11, 12, 13}}
 TAILS = {2: [('press_count_sample', 3), ('release_count_sample', 4)], 5: [('touch_count_sample', 6), ('untouch_count_sample', 7)], 10: [('position_valid_sample', 12), ('orientation_valid_sample', 13), ('position_tracked_sample', 14), ('orientation_tracked_sample', 15), ('confidence_sample', 16)]}
+MAX_TIME = 0xffffffffffffffff
 
 class Reader:
     def __init__(self, data):
@@ -29,6 +30,18 @@ class Reader:
 
     def string(self):
         return self.take(self.number('I')).decode('utf-8')
+
+    def optional_string(self):
+        present = self.number('B')
+        assert present in (0, 1), 'invalid string presence tag'
+        return self.string() if present else None
+
+    def time(self, optional=False):
+        value = self.number('Q')
+        if value == MAX_TIME:
+            assert optional, 'absent required time'
+            return None
+        return str(value)
 
     def index(self, optional=False):
         value = self.number('I')
@@ -68,18 +81,34 @@ def capabilities(r):
     return {'sample_groups': groups, 'sample_descriptors': desc, 'skeletons': skeletons}
 
 
-def request(r):
-    q = {'subscription_id': r.number('I'), 'group': r.index(), 'delivery_mode': r.number('B'), 'publication_rate_hz': r.number('f')}
-    q['samples'] = r.items(lambda: {'descriptor': r.index(), 'format': r.number('B'), 'reference_space': r.number('B')})
+def schedule(r):
+    tag = r.number('B')
+    assert tag in (1, 2), 'invalid schedule'
+    if tag == 2:
+        return {'kind': 'OnChange'}
+    return {'kind': 'Periodic', **{field: r.time() for field in ('interval', 'phase', 'consumption_delay')}}
+
+
+def request(r, c):
+    def entry():
+        s = {'descriptor': r.index(), 'format': r.number('B')}
+        assert s['descriptor'] < len(c['sample_descriptors']), 'unknown descriptor'
+        if c['sample_descriptors'][s['descriptor']]['kind'] == 10:
+            s['reference_space'] = r.number('B')
+        return s
+    q = {'subscription_id': r.number('I')}
+    q['selection'] = {'group': r.index(), 'samples': r.items(entry)}
+    q['channel'] = r.number('B')
+    q['schedule'] = schedule(r)
     return q
 
 
-def record(data):
+def record(data, c=None):
     r = Reader(data)
     assert r.number('I') == len(data) - 4, 'record length'
     tag = r.number('B')
-    assert 1 <= tag <= 9, 'invalid reliable tag'
-    return tag, payload(r, tag)
+    assert tag in (*range(1, 10), 12), 'invalid reliable tag'
+    return tag, payload(r, tag, c)
 
 
 def datagram(data):
@@ -89,7 +118,7 @@ def datagram(data):
     return tag, payload(r, tag)
 
 
-def payload(r, tag):
+def payload(r, tag, c=None):
     if tag == 1:
         value = {'supported_versions': r.items(lambda: r.number('H'))}
     elif tag == 2:
@@ -97,19 +126,22 @@ def payload(r, tag):
     elif tag == 3:
         value = capabilities(r)
     elif tag == 4:
-        value = request(r)
+        assert c is not None, 'selection requires capabilities'
+        value = request(r, c)
     elif tag in (5, 7):
-        value = {'subscription_id': r.number('I'), 'generation': r.number('I')}
+        value = {'subscription_id': r.number('I')}
     elif tag == 6:
-        value = {'subscription_id': r.number('I'), 'reason': r.string()}
+        value = {'subscription_id': r.number('I'), 'reason': r.optional_string()}
     elif tag == 8:
-        value = {'subscription_id': r.number('I'), 'generation': r.number('I'), 'reason': r.string()}
+        value = {'subscription_id': r.number('I'), 'reason': r.string()}
     elif tag == 9:
         value = r.take(len(r.data) - r.pos)
     elif tag == 10:
         value = {'request_id': r.number('I')}
     elif tag == 11:
-        value = {'request_id': r.number('I'), 'received_at_ns': str(r.number('Q')), 'sent_at_ns': str(r.number('Q'))}
+        value = {'request_id': r.number('I'), 'received_at': r.time(), 'sent_at': r.time()}
+    elif tag == 12:
+        value = {'subscription_id': r.number('I'), 'schedule': schedule(r)}
     else:
         raise AssertionError('unknown tag')
     r.done()
@@ -124,7 +156,7 @@ def validate_capabilities(c):
         assert 0 <= d['group'] < len(groups)
         assert d['supported_formats'] and set(d['supported_formats']) <= ALLOWED[d['kind']]
         if d['kind'] == 10:
-            assert d['supported_spaces'] and set(d['supported_spaces']) <= set(range(1, 6))
+            assert d['supported_spaces'] and set(d['supported_spaces']) <= set(range(1, 7))
         for field, kind in TAILS.get(d['kind'], []):
             index = d[field]
             if index is not None:
@@ -140,15 +172,26 @@ def validate_capabilities(c):
             assert 0 <= joint['rest_pose_sample'] < len(desc)
 
 
+def validate_schedule(s):
+    assert s['kind'] in ('Periodic', 'OnChange')
+    if s['kind'] == 'Periodic':
+        assert set(s) == {'kind', 'interval', 'phase', 'consumption_delay'}
+        assert all(0 <= int(s[field]) < MAX_TIME for field in ('interval', 'phase', 'consumption_delay'))
+        assert int(s['interval']) > 0
+    else:
+        assert set(s) == {'kind'}
+
+
 def validate_request(c, q):
-    assert 0 <= q['group'] < len(c['sample_groups'])
-    assert q['delivery_mode'] in (1, 2)
-    assert math.isfinite(q['publication_rate_hz']) and q['publication_rate_hz'] > 0
-    assert q['samples']
-    for s in q['samples']:
+    selection = q['selection']
+    assert 0 <= selection['group'] < len(c['sample_groups'])
+    assert q['channel'] in (1, 2)
+    validate_schedule(q['schedule'])
+    assert selection['samples']
+    for s in selection['samples']:
         d = c['sample_descriptors'][s['descriptor']]
-        assert d['group'] == q['group'] and s['format'] in d['supported_formats']
-        assert s['reference_space'] in d['supported_spaces'] if d['kind'] == 10 else s['reference_space'] == 0
+        assert d['group'] == selection['group'] and s['format'] in d['supported_formats']
+        assert s['reference_space'] in d['supported_spaces'] if d['kind'] == 10 else 'reference_space' not in s
 
 
 def bitmap(r, count):
@@ -169,11 +212,13 @@ def numeric(r, fmt):
 
 def publication(data, c, q):
     r = Reader(data)
-    result = {'subscription_id': r.number('I'), 'generation': r.number('I'), 'acquired_at_ns': str(r.number('Q'))}
-    present = bitmap(r, len(q['samples']))
-    bits = iter(bitmap(r, sum(ok and s['format'] == 1 for ok, s in zip(present, q['samples']))))
+    result = {'subscription_id': r.number('I'), 'acquired_at': r.time(), 'predicted_for': r.time(optional=True)}
+    assert result['subscription_id'] == q['subscription_id'], 'unknown subscription'
+    samples = q['selection']['samples']
+    present = bitmap(r, len(samples))
+    bits = iter(bitmap(r, sum(ok and s['format'] == 1 for ok, s in zip(present, samples))))
     values = []
-    for ok, s in zip(present, q['samples']):
+    for ok, s in zip(present, samples):
         if not ok:
             values.append(None)
             continue
@@ -244,15 +289,29 @@ def check_links(commit):
 
 def main():
     fixture = json.loads(FIXTURE.read_text())
-    c = fixture['capabilities']
-    validate_capabilities(c)
-    for q in fixture['requests'].values():
-        validate_request(c, q)
+    c = fixture['capabilities']['device']
+    for capabilities_set in fixture['capabilities'].values():
+        validate_capabilities(capabilities_set)
+    for setup in fixture['requests'].values():
+        validate_request(fixture['capabilities'][setup['capabilities']], setup['value'])
     for case in fixture['records']:
-        tag, value = record(bytes.fromhex(case['hex']))
-        assert tag == case['tag'] and equivalent(value, case['value']), case['name']
+        case_caps = c
+        if case['tag'] == 3:
+            expected = fixture['capabilities'][case['capabilities']]
+            expected = {**expected, 'skeletons': case.get('skeletons', expected['skeletons'])}
+        elif case['tag'] == 4:
+            setup = fixture['requests'][case['request']]
+            case_caps, expected = fixture['capabilities'][setup['capabilities']], setup['value']
+        else:
+            expected = case['value']
+        tag, value = record(bytes.fromhex(case['hex']), case_caps)
+        assert tag == case['tag'] and equivalent(value, expected), case['name']
         if tag == 3:
             validate_capabilities(value)
+        if tag == 4:
+            validate_request(case_caps, value)
+        if tag == 12:
+            validate_schedule(value['schedule'])
     for case in fixture['datagrams']:
         raw = bytes.fromhex(case['hex'])
         tag, value = datagram(raw)
@@ -261,17 +320,19 @@ def main():
         must_reject(lambda: datagram(raw + b'\x00'))
         must_reject(lambda: record(struct.pack('<I', len(raw)) + raw))
     for case in fixture['publications']:
-        q = fixture['requests'][case['request']]
         body = bytes.fromhex(case['hex'])
-        assert equivalent(publication(body, c, q), case['value']), case['name']
+        for name in case['requests']:
+            setup = fixture['requests'][name]
+            case_caps, q = fixture['capabilities'][setup['capabilities']], setup['value']
+            assert equivalent(publication(body, case_caps, q), case['value']), (case['name'], name)
+            must_reject(lambda: publication(body[:-1], case_caps, q))
+            must_reject(lambda: publication(body + b'\x00', case_caps, q))
         if 'reliable_hex' in case:
             tag, framed_body = record(bytes.fromhex(case['reliable_hex']))
             assert tag == 9 and framed_body == body
         if 'unreliable_hex' in case:
             tag, framed_body = datagram(bytes.fromhex(case['unreliable_hex']))
             assert tag == 9 and framed_body == body
-        must_reject(lambda: publication(body[:-1], c, q))
-        must_reject(lambda: publication(body + b'\x00', c, q))
     for case in fixture['formats']:
         raw = bytes.fromhex(case['hex'])
         r = Reader(raw)
@@ -290,6 +351,27 @@ def main():
         delay = (t4-t1)-(t3-t2)
         assert offset == case['server_minus_client_ns'] and delay == case['round_trip_delay_ns']
         assert case['acquired_at_ns'] - offset == case['client_sample_time_ns']
+    for case in fixture['time_values']:
+        r = Reader(bytes.fromhex(case['hex']))
+        assert r.time(optional=case['optional']) == case['value'], case['name']
+        r.done()
+    for case in fixture['schedule_examples']:
+        now, interval, phase, delay = (int(case[k]) for k in ('now', 'interval', 'phase', 'consumption_delay'))
+        due = now + (phase - now) % interval
+        target = due + delay
+        assert (str(due) if due < MAX_TIME else None) == case['next_publication_time']
+        assert (str(target) if target < MAX_TIME else None) == case['target_time']
+    assert {(q['value']['channel'], q['value']['schedule']['kind']) for q in fixture['requests'].values()} == {(1, 'Periodic'), (1, 'OnChange'), (2, 'Periodic'), (2, 'OnChange')}
+    must_reject(lambda: Reader(b'\xff' * 8).time())
+    must_reject(lambda: Reader(b'\x02').optional_string())
+    for tag in (0, 3, 255):
+        must_reject(lambda: schedule(Reader(bytes([tag]))))
+    for field in ('interval', 'phase', 'consumption_delay'):
+        invalid = {'kind': 'Periodic', 'interval': '10', 'phase': '0', 'consumption_delay': '0', field: str(MAX_TIME)}
+        must_reject(lambda: validate_schedule(invalid))
+        raw = b'\x01' + b''.join(struct.pack('<Q', int(invalid[k])) for k in ('interval', 'phase', 'consumption_delay'))
+        must_reject(lambda: schedule(Reader(raw)))
+    must_reject(lambda: validate_schedule({'kind': 'Periodic', 'interval': '0', 'phase': '0', 'consumption_delay': '0'}))
     assert Reader(bytes.fromhex('ffffffff')).index(optional=True) is None
     must_reject(lambda: Reader(bytes.fromhex('ffffffff')).index())
     must_reject(lambda: datagram(b''))
@@ -297,15 +379,28 @@ def main():
     must_reject(lambda: datagram(bytes.fromhex(fixture['records'][0]['hex'])[4:]))
     for case in fixture['records']:
         raw = bytes.fromhex(case['hex'])
-        must_reject(lambda: record(raw[:-1]))
-        must_reject(lambda: record(raw + b'\x00'))
+        must_reject(lambda: record(raw[:-1], c))
+        must_reject(lambda: record(raw + b'\x00', c))
     first = bytes.fromhex(fixture['publications'][0]['hex'])
-    bad_padding = bytearray(first); bad_padding[16] |= 0x80
-    must_reject(lambda: publication(bad_padding, c, fixture['requests']['inputs']))
+    bad_padding = bytearray(first); bad_padding[20] |= 0x80
+    must_reject(lambda: publication(bad_padding, c, fixture['requests']['inputs']['value']))
+    bad_time = bytearray(first); bad_time[4:12] = b'\xff' * 8
+    must_reject(lambda: publication(bad_time, c, fixture['requests']['inputs']['value']))
+    bad_id = bytearray(first); bad_id[:4] = struct.pack('<I', 99)
+    must_reject(lambda: publication(bad_id, c, fixture['requests']['inputs']['value']))
+    for case in fixture['datagrams']:
+        if case['tag'] == 11:
+            for offset in (5, 13):
+                bad_time = bytearray.fromhex(case['hex']); bad_time[offset:offset+8] = b'\xff' * 8
+                must_reject(lambda: datagram(bad_time))
     bad_ref = json.loads(json.dumps(c)); bad_ref['sample_descriptors'][0]['press_count_sample'] = 0
     must_reject(lambda: validate_capabilities(bad_ref))
     check_links(fixture['requirements_commit'])
-    print(f"Verified {len(fixture['records'])} reliable records, {len(fixture['datagrams'])} clock datagrams, {len(fixture['publications'])} publications, {len(fixture['formats'])} scalar formats, clock arithmetic, malformed data and Markdown links.")
+    examples = (ROOT / 'encoding/examples.md').read_text()
+    wire_hex = {case[key] for group in ('records', 'datagrams', 'publications', 'time_values') for case in fixture[group] for key in ('hex', 'reliable_hex', 'unreliable_hex') if key in case}
+    for block in re.findall(r'```text\n([0-9a-f \n]+)\n```', examples):
+        assert ''.join(block.split()) in wire_hex, 'documentation byte example differs from vectors'
+    print(f"Verified {len(fixture['records'])} reliable records, {len(fixture['datagrams'])} clock datagrams, {len(fixture['publications'])} publications, {len(fixture['formats'])} scalar formats, NonMax times, all channel/schedule pairs, clock and schedule arithmetic, malformed data and Markdown links.")
 
 if __name__ == '__main__':
     main()

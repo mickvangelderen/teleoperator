@@ -1,363 +1,765 @@
 {
   "protocol_version": 1,
-  "requirements_commit": "bba9cbea1771a2b3d6ba83e3720da9fbf590a868",
-  "purpose": "Revised unpublished specification; independent of the current application fixture.",
-  "integer_representation": "u64 timestamps use decimal strings; floating values are compared after format rounding.",
+  "requirements_commit": "067f1ed53383a7c3b7fadc715917b175f114e48b",
+  "purpose": "Static protocol v1 wire expectations shared by independent Rust, TypeScript and Python checks.",
+  "integer_representation": "u64 times and durations use decimal strings; optional times use null; floats are compared after format rounding.",
   "capabilities": {
-    "sample_groups": [
-      {
-        "max_sample_rate_hz": 200.0
-      },
-      {
-        "max_sample_rate_hz": 90.0
-      }
-    ],
-    "sample_descriptors": [
-      {
-        "id": "/sample/0",
-        "name": "",
-        "description": "",
-        "kind": 2,
-        "supported_formats": [
-          1
-        ],
-        "group": 0,
-        "press_count_sample": 1,
-        "release_count_sample": 2
-      },
-      {
-        "id": "/sample/1",
-        "name": "",
-        "description": "",
-        "kind": 3,
-        "supported_formats": [
-          2,
-          3,
-          4,
-          5
-        ],
-        "group": 0
-      },
-      {
-        "id": "/sample/2",
-        "name": "",
-        "description": "",
-        "kind": 4,
-        "supported_formats": [
-          2,
-          3,
-          4,
-          5
-        ],
-        "group": 0
-      },
-      {
-        "id": "/sample/3",
-        "name": "",
-        "description": "",
-        "kind": 8,
-        "supported_formats": [
-          10,
-          11,
-          12,
-          13
-        ],
-        "group": 0
-      },
-      {
-        "id": "/sample/4",
-        "name": "",
-        "description": "",
-        "kind": 5,
-        "supported_formats": [
-          1
-        ],
-        "group": 0,
-        "touch_count_sample": 5,
-        "untouch_count_sample": 6
-      },
-      {
-        "id": "/sample/5",
-        "name": "",
-        "description": "",
-        "kind": 6,
-        "supported_formats": [
-          2,
-          3,
-          4,
-          5
-        ],
-        "group": 0
-      },
-      {
-        "id": "/sample/6",
-        "name": "",
-        "description": "",
-        "kind": 7,
-        "supported_formats": [
-          2,
-          3,
-          4,
-          5
-        ],
-        "group": 0
-      },
-      {
-        "id": "﻿/pose/左",
-        "name": "Left pose 🖐",
-        "description": "",
-        "kind": 10,
-        "supported_formats": [
-          10,
-          11
-        ],
-        "group": 0,
-        "supported_spaces": [
-          2,
-          5
-        ],
-        "position_valid_sample": 8,
-        "orientation_valid_sample": 9,
-        "position_tracked_sample": 10,
-        "orientation_tracked_sample": 11,
-        "confidence_sample": 12
-      },
-      {
-        "id": "/sample/8",
-        "name": "",
-        "description": "",
-        "kind": 12,
-        "supported_formats": [
-          1
-        ],
-        "group": 0
-      },
-      {
-        "id": "/sample/9",
-        "name": "",
-        "description": "",
-        "kind": 13,
-        "supported_formats": [
-          1
-        ],
-        "group": 0
-      },
-      {
-        "id": "/sample/10",
-        "name": "",
-        "description": "",
-        "kind": 14,
-        "supported_formats": [
-          1
-        ],
-        "group": 0
-      },
-      {
-        "id": "/sample/11",
-        "name": "",
-        "description": "",
-        "kind": 15,
-        "supported_formats": [
-          1
-        ],
-        "group": 0
-      },
-      {
-        "id": "/sample/12",
-        "name": "",
-        "description": "",
-        "kind": 16,
-        "supported_formats": [
-          10,
-          11,
-          12,
-          13
-        ],
-        "group": 0
-      },
-      {
-        "id": "/sample/13",
-        "name": "",
-        "description": "",
-        "kind": 10,
-        "supported_formats": [
-          10,
-          11
-        ],
-        "group": 1,
-        "supported_spaces": [
-          5
-        ],
-        "position_valid_sample": null,
-        "orientation_valid_sample": null,
-        "position_tracked_sample": null,
-        "orientation_tracked_sample": null,
-        "confidence_sample": null
-      },
-      {
-        "id": "/sample/14",
-        "name": "",
-        "description": "",
-        "kind": 11,
-        "supported_formats": [
-          2,
-          3,
-          4,
-          5
-        ],
-        "group": 0,
-        "revision_of": 1
-      },
-      {
-        "id": "/sample/15",
-        "name": "",
-        "description": "",
-        "kind": 11,
-        "supported_formats": [
-          2,
-          3,
-          4,
-          5
-        ],
-        "group": 1,
-        "revision_of": 1
-      },
-      {
-        "id": "/sample/16",
-        "name": "",
-        "description": "",
-        "kind": 10,
-        "supported_formats": [
-          10,
-          11
-        ],
-        "group": 0,
-        "supported_spaces": [
-          2,
-          5
-        ],
-        "position_valid_sample": null,
-        "orientation_valid_sample": null,
-        "position_tracked_sample": null,
-        "orientation_tracked_sample": null,
-        "confidence_sample": 12
-      },
-      {
-        "id": "/sample/17",
-        "name": "",
-        "description": "",
-        "kind": 10,
-        "supported_formats": [
-          10,
-          11
-        ],
-        "group": 1,
-        "supported_spaces": [
-          5
-        ],
-        "position_valid_sample": null,
-        "orientation_valid_sample": null,
-        "position_tracked_sample": null,
-        "orientation_tracked_sample": null,
-        "confidence_sample": null
-      }
-    ],
-    "skeletons": [
-      {
-        "joints": [
-          {
-            "parent": 0,
-            "pose_sample": 7,
-            "rest_pose_sample": 13
-          },
-          {
-            "parent": 0,
-            "pose_sample": 16,
-            "rest_pose_sample": 17
-          }
-        ]
-      }
-    ]
+    "device": {
+      "sample_groups": [
+        {
+          "max_sample_rate_hz": 200.0
+        },
+        {
+          "max_sample_rate_hz": 90.0
+        }
+      ],
+      "sample_descriptors": [
+        {
+          "id": "/sample/0",
+          "name": "",
+          "description": "",
+          "kind": 2,
+          "supported_formats": [
+            1
+          ],
+          "group": 0,
+          "press_count_sample": 1,
+          "release_count_sample": 2
+        },
+        {
+          "id": "/sample/1",
+          "name": "",
+          "description": "",
+          "kind": 3,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/2",
+          "name": "",
+          "description": "",
+          "kind": 4,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/3",
+          "name": "",
+          "description": "",
+          "kind": 8,
+          "supported_formats": [
+            10,
+            11,
+            12,
+            13
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/4",
+          "name": "",
+          "description": "",
+          "kind": 5,
+          "supported_formats": [
+            1
+          ],
+          "group": 0,
+          "touch_count_sample": 5,
+          "untouch_count_sample": 6
+        },
+        {
+          "id": "/sample/5",
+          "name": "",
+          "description": "",
+          "kind": 6,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/6",
+          "name": "",
+          "description": "",
+          "kind": 7,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0
+        },
+        {
+          "id": "﻿/pose/左",
+          "name": "Left pose 🖐",
+          "description": "",
+          "kind": 10,
+          "supported_formats": [
+            10,
+            11
+          ],
+          "group": 0,
+          "supported_spaces": [
+            2,
+            5,
+            6
+          ],
+          "position_valid_sample": 8,
+          "orientation_valid_sample": 9,
+          "position_tracked_sample": 10,
+          "orientation_tracked_sample": 11,
+          "confidence_sample": 12
+        },
+        {
+          "id": "/sample/8",
+          "name": "",
+          "description": "",
+          "kind": 12,
+          "supported_formats": [
+            1
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/9",
+          "name": "",
+          "description": "",
+          "kind": 13,
+          "supported_formats": [
+            1
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/10",
+          "name": "",
+          "description": "",
+          "kind": 14,
+          "supported_formats": [
+            1
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/11",
+          "name": "",
+          "description": "",
+          "kind": 15,
+          "supported_formats": [
+            1
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/12",
+          "name": "",
+          "description": "",
+          "kind": 16,
+          "supported_formats": [
+            10,
+            11,
+            12,
+            13
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/13",
+          "name": "",
+          "description": "",
+          "kind": 10,
+          "supported_formats": [
+            10,
+            11
+          ],
+          "group": 1,
+          "supported_spaces": [
+            5,
+            6
+          ],
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": null
+        },
+        {
+          "id": "/sample/14",
+          "name": "",
+          "description": "",
+          "kind": 11,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0,
+          "revision_of": 1
+        },
+        {
+          "id": "/sample/15",
+          "name": "",
+          "description": "",
+          "kind": 11,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 1,
+          "revision_of": 1
+        },
+        {
+          "id": "/sample/16",
+          "name": "",
+          "description": "",
+          "kind": 10,
+          "supported_formats": [
+            10,
+            11
+          ],
+          "group": 0,
+          "supported_spaces": [
+            2,
+            5,
+            6
+          ],
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": 12
+        },
+        {
+          "id": "/sample/17",
+          "name": "",
+          "description": "",
+          "kind": 10,
+          "supported_formats": [
+            10,
+            11
+          ],
+          "group": 1,
+          "supported_spaces": [
+            5,
+            6
+          ],
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": null
+        }
+      ],
+      "skeletons": [
+        {
+          "joints": [
+            {
+              "parent": 0,
+              "pose_sample": 7,
+              "rest_pose_sample": 13
+            },
+            {
+              "parent": 0,
+              "pose_sample": 16,
+              "rest_pose_sample": 17
+            }
+          ]
+        }
+      ]
+    },
+    "compact_inputs": {
+      "sample_groups": [
+        {
+          "max_sample_rate_hz": 200.0
+        }
+      ],
+      "sample_descriptors": [
+        {
+          "description": "",
+          "group": 0,
+          "id": "0",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "1",
+          "kind": 3,
+          "name": "",
+          "supported_formats": [
+            2
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "2",
+          "kind": 8,
+          "name": "",
+          "supported_formats": [
+            12
+          ]
+        }
+      ],
+      "skeletons": []
+    },
+    "poses": {
+      "sample_groups": [
+        {
+          "max_sample_rate_hz": 200.0
+        }
+      ],
+      "sample_descriptors": [
+        {
+          "description": "Position and orientation",
+          "group": 0,
+          "id": "/pose/左",
+          "kind": 10,
+          "name": "Left pose 🖐",
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": null,
+          "supported_formats": [
+            10
+          ],
+          "supported_spaces": [
+            2
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "1",
+          "kind": 10,
+          "name": "",
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": null,
+          "supported_formats": [
+            11
+          ],
+          "supported_spaces": [
+            2
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "2",
+          "kind": 9,
+          "name": "",
+          "supported_formats": [
+            14
+          ]
+        }
+      ],
+      "skeletons": []
+    },
+    "booleans": {
+      "sample_groups": [
+        {
+          "max_sample_rate_hz": 200.0
+        }
+      ],
+      "sample_descriptors": [
+        {
+          "description": "",
+          "group": 0,
+          "id": "0",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "1",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "2",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "3",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "4",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "5",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "6",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "7",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "8",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "9",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        }
+      ],
+      "skeletons": []
+    }
   },
   "requests": {
     "inputs": {
-      "subscription_id": 7,
-      "group": 0,
-      "delivery_mode": 1,
-      "publication_rate_hz": 60.0,
-      "samples": [
-        {
-          "descriptor": 0,
-          "format": 1,
-          "reference_space": 0
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 7,
+        "selection": {
+          "group": 0,
+          "samples": [
+            {
+              "descriptor": 0,
+              "format": 1
+            },
+            {
+              "descriptor": 1,
+              "format": 2
+            },
+            {
+              "descriptor": 3,
+              "format": 12
+            }
+          ]
         },
-        {
-          "descriptor": 1,
-          "format": 2,
-          "reference_space": 0
-        },
-        {
-          "descriptor": 3,
-          "format": 12,
-          "reference_space": 0
+        "channel": 1,
+        "schedule": {
+          "kind": "Periodic",
+          "interval": "16666667",
+          "phase": "5000000",
+          "consumption_delay": "25000000"
         }
-      ]
+      }
     },
     "quality": {
-      "subscription_id": 8,
-      "group": 0,
-      "delivery_mode": 1,
-      "publication_rate_hz": 60.0,
-      "samples": [
-        {
-          "descriptor": 7,
-          "format": 10,
-          "reference_space": 2
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 8,
+        "selection": {
+          "group": 0,
+          "samples": [
+            {
+              "descriptor": 7,
+              "format": 10,
+              "reference_space": 2
+            },
+            {
+              "descriptor": 8,
+              "format": 1
+            },
+            {
+              "descriptor": 9,
+              "format": 1
+            },
+            {
+              "descriptor": 12,
+              "format": 12
+            },
+            {
+              "descriptor": 14,
+              "format": 4
+            }
+          ]
         },
-        {
-          "descriptor": 8,
-          "format": 1,
-          "reference_space": 0
-        },
-        {
-          "descriptor": 9,
-          "format": 1,
-          "reference_space": 0
-        },
-        {
-          "descriptor": 12,
-          "format": 12,
-          "reference_space": 0
-        },
-        {
-          "descriptor": 14,
-          "format": 4,
-          "reference_space": 0
+        "channel": 1,
+        "schedule": {
+          "kind": "OnChange"
         }
-      ]
+      }
     },
     "rest": {
-      "subscription_id": 9,
-      "group": 1,
-      "delivery_mode": 2,
-      "publication_rate_hz": 60.0,
-      "samples": [
-        {
-          "descriptor": 13,
-          "format": 10,
-          "reference_space": 5
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 9,
+        "selection": {
+          "group": 1,
+          "samples": [
+            {
+              "descriptor": 13,
+              "format": 10,
+              "reference_space": 5
+            },
+            {
+              "descriptor": 17,
+              "format": 11,
+              "reference_space": 5
+            },
+            {
+              "descriptor": 15,
+              "format": 4
+            }
+          ]
         },
-        {
-          "descriptor": 17,
-          "format": 11,
-          "reference_space": 5
-        },
-        {
-          "descriptor": 15,
-          "format": 4,
-          "reference_space": 0
+        "channel": 2,
+        "schedule": {
+          "kind": "OnChange"
         }
-      ]
+      }
+    },
+    "model_periodic": {
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 10,
+        "selection": {
+          "group": 1,
+          "samples": [
+            {
+              "descriptor": 13,
+              "format": 10,
+              "reference_space": 6
+            },
+            {
+              "descriptor": 17,
+              "format": 11,
+              "reference_space": 6
+            },
+            {
+              "descriptor": 15,
+              "format": 4
+            }
+          ]
+        },
+        "channel": 2,
+        "schedule": {
+          "kind": "Periodic",
+          "interval": "20000000",
+          "phase": "25000000",
+          "consumption_delay": "0"
+        }
+      }
+    },
+    "compact_inputs": {
+      "capabilities": "compact_inputs",
+      "value": {
+        "subscription_id": 7,
+        "selection": {
+          "group": 0,
+          "samples": [
+            {
+              "descriptor": 0,
+              "format": 1
+            },
+            {
+              "descriptor": 1,
+              "format": 2
+            },
+            {
+              "descriptor": 2,
+              "format": 12
+            }
+          ]
+        },
+        "channel": 1,
+        "schedule": {
+          "kind": "Periodic",
+          "interval": "16666667",
+          "phase": "0",
+          "consumption_delay": "0"
+        }
+      }
+    },
+    "poses": {
+      "capabilities": "poses",
+      "value": {
+        "subscription_id": 7,
+        "selection": {
+          "group": 0,
+          "samples": [
+            {
+              "descriptor": 0,
+              "format": 10,
+              "reference_space": 2
+            },
+            {
+              "descriptor": 1,
+              "format": 11,
+              "reference_space": 2
+            },
+            {
+              "descriptor": 2,
+              "format": 14
+            }
+          ]
+        },
+        "channel": 1,
+        "schedule": {
+          "kind": "Periodic",
+          "interval": "16666667",
+          "phase": "0",
+          "consumption_delay": "0"
+        }
+      }
+    },
+    "booleans": {
+      "capabilities": "booleans",
+      "value": {
+        "subscription_id": 7,
+        "selection": {
+          "group": 0,
+          "samples": [
+            {
+              "descriptor": 0,
+              "format": 1
+            },
+            {
+              "descriptor": 1,
+              "format": 1
+            },
+            {
+              "descriptor": 2,
+              "format": 1
+            },
+            {
+              "descriptor": 3,
+              "format": 1
+            },
+            {
+              "descriptor": 4,
+              "format": 1
+            },
+            {
+              "descriptor": 5,
+              "format": 1
+            },
+            {
+              "descriptor": 6,
+              "format": 1
+            },
+            {
+              "descriptor": 7,
+              "format": 1
+            },
+            {
+              "descriptor": 8,
+              "format": 1
+            },
+            {
+              "descriptor": 9,
+              "format": 1
+            }
+          ]
+        },
+        "channel": 1,
+        "schedule": {
+          "kind": "Periodic",
+          "interval": "16666667",
+          "phase": "0",
+          "consumption_delay": "0"
+        }
+      }
     }
   },
   "records": [
@@ -382,667 +784,56 @@
     {
       "name": "capabilities",
       "tag": 3,
-      "value": {
-        "sample_groups": [
-          {
-            "max_sample_rate_hz": 200.0
-          },
-          {
-            "max_sample_rate_hz": 90.0
-          }
-        ],
-        "sample_descriptors": [
-          {
-            "id": "/sample/0",
-            "name": "",
-            "description": "",
-            "kind": 2,
-            "supported_formats": [
-              1
-            ],
-            "group": 0,
-            "press_count_sample": 1,
-            "release_count_sample": 2
-          },
-          {
-            "id": "/sample/1",
-            "name": "",
-            "description": "",
-            "kind": 3,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/2",
-            "name": "",
-            "description": "",
-            "kind": 4,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/3",
-            "name": "",
-            "description": "",
-            "kind": 8,
-            "supported_formats": [
-              10,
-              11,
-              12,
-              13
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/4",
-            "name": "",
-            "description": "",
-            "kind": 5,
-            "supported_formats": [
-              1
-            ],
-            "group": 0,
-            "touch_count_sample": 5,
-            "untouch_count_sample": 6
-          },
-          {
-            "id": "/sample/5",
-            "name": "",
-            "description": "",
-            "kind": 6,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/6",
-            "name": "",
-            "description": "",
-            "kind": 7,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0
-          },
-          {
-            "id": "﻿/pose/左",
-            "name": "Left pose 🖐",
-            "description": "",
-            "kind": 10,
-            "supported_formats": [
-              10,
-              11
-            ],
-            "group": 0,
-            "supported_spaces": [
-              2,
-              5
-            ],
-            "position_valid_sample": 8,
-            "orientation_valid_sample": 9,
-            "position_tracked_sample": 10,
-            "orientation_tracked_sample": 11,
-            "confidence_sample": 12
-          },
-          {
-            "id": "/sample/8",
-            "name": "",
-            "description": "",
-            "kind": 12,
-            "supported_formats": [
-              1
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/9",
-            "name": "",
-            "description": "",
-            "kind": 13,
-            "supported_formats": [
-              1
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/10",
-            "name": "",
-            "description": "",
-            "kind": 14,
-            "supported_formats": [
-              1
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/11",
-            "name": "",
-            "description": "",
-            "kind": 15,
-            "supported_formats": [
-              1
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/12",
-            "name": "",
-            "description": "",
-            "kind": 16,
-            "supported_formats": [
-              10,
-              11,
-              12,
-              13
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/13",
-            "name": "",
-            "description": "",
-            "kind": 10,
-            "supported_formats": [
-              10,
-              11
-            ],
-            "group": 1,
-            "supported_spaces": [
-              5
-            ],
-            "position_valid_sample": null,
-            "orientation_valid_sample": null,
-            "position_tracked_sample": null,
-            "orientation_tracked_sample": null,
-            "confidence_sample": null
-          },
-          {
-            "id": "/sample/14",
-            "name": "",
-            "description": "",
-            "kind": 11,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0,
-            "revision_of": 1
-          },
-          {
-            "id": "/sample/15",
-            "name": "",
-            "description": "",
-            "kind": 11,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 1,
-            "revision_of": 1
-          },
-          {
-            "id": "/sample/16",
-            "name": "",
-            "description": "",
-            "kind": 10,
-            "supported_formats": [
-              10,
-              11
-            ],
-            "group": 0,
-            "supported_spaces": [
-              2,
-              5
-            ],
-            "position_valid_sample": null,
-            "orientation_valid_sample": null,
-            "position_tracked_sample": null,
-            "orientation_tracked_sample": null,
-            "confidence_sample": 12
-          },
-          {
-            "id": "/sample/17",
-            "name": "",
-            "description": "",
-            "kind": 10,
-            "supported_formats": [
-              10,
-              11
-            ],
-            "group": 1,
-            "supported_spaces": [
-              5
-            ],
-            "position_valid_sample": null,
-            "orientation_valid_sample": null,
-            "position_tracked_sample": null,
-            "orientation_tracked_sample": null,
-            "confidence_sample": null
-          }
-        ],
-        "skeletons": [
-          {
-            "joints": [
-              {
-                "parent": 0,
-                "pose_sample": 7,
-                "rest_pose_sample": 13
-              },
-              {
-                "parent": 0,
-                "pose_sample": 16,
-                "rest_pose_sample": 17
-              }
-            ]
-          }
-        ]
-      },
-      "hex": "120300000302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b0000000002000000020508000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b010000000100000005ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b00000000020000000205ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b010000000100000005ffffffffffffffffffffffffffffffffffffffff010000000200000000000000070000000d000000000000001000000011000000"
+      "hex": "160300000302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b000000000300000002050608000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b0000000003000000020506ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff010000000200000000000000070000000d000000000000001000000011000000",
+      "capabilities": "device"
     },
     {
       "name": "shared_joint_descriptors_and_parent_cycle",
       "tag": 3,
-      "value": {
-        "sample_groups": [
-          {
-            "max_sample_rate_hz": 200.0
-          },
-          {
-            "max_sample_rate_hz": 90.0
-          }
-        ],
-        "sample_descriptors": [
-          {
-            "id": "/sample/0",
-            "name": "",
-            "description": "",
-            "kind": 2,
-            "supported_formats": [
-              1
-            ],
-            "group": 0,
-            "press_count_sample": 1,
-            "release_count_sample": 2
-          },
-          {
-            "id": "/sample/1",
-            "name": "",
-            "description": "",
-            "kind": 3,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/2",
-            "name": "",
-            "description": "",
-            "kind": 4,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/3",
-            "name": "",
-            "description": "",
-            "kind": 8,
-            "supported_formats": [
-              10,
-              11,
-              12,
-              13
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/4",
-            "name": "",
-            "description": "",
-            "kind": 5,
-            "supported_formats": [
-              1
-            ],
-            "group": 0,
-            "touch_count_sample": 5,
-            "untouch_count_sample": 6
-          },
-          {
-            "id": "/sample/5",
-            "name": "",
-            "description": "",
-            "kind": 6,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/6",
-            "name": "",
-            "description": "",
-            "kind": 7,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0
-          },
-          {
-            "id": "﻿/pose/左",
-            "name": "Left pose 🖐",
-            "description": "",
-            "kind": 10,
-            "supported_formats": [
-              10,
-              11
-            ],
-            "group": 0,
-            "supported_spaces": [
-              2,
-              5
-            ],
-            "position_valid_sample": 8,
-            "orientation_valid_sample": 9,
-            "position_tracked_sample": 10,
-            "orientation_tracked_sample": 11,
-            "confidence_sample": 12
-          },
-          {
-            "id": "/sample/8",
-            "name": "",
-            "description": "",
-            "kind": 12,
-            "supported_formats": [
-              1
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/9",
-            "name": "",
-            "description": "",
-            "kind": 13,
-            "supported_formats": [
-              1
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/10",
-            "name": "",
-            "description": "",
-            "kind": 14,
-            "supported_formats": [
-              1
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/11",
-            "name": "",
-            "description": "",
-            "kind": 15,
-            "supported_formats": [
-              1
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/12",
-            "name": "",
-            "description": "",
-            "kind": 16,
-            "supported_formats": [
-              10,
-              11,
-              12,
-              13
-            ],
-            "group": 0
-          },
-          {
-            "id": "/sample/13",
-            "name": "",
-            "description": "",
-            "kind": 10,
-            "supported_formats": [
-              10,
-              11
-            ],
-            "group": 1,
-            "supported_spaces": [
-              5
-            ],
-            "position_valid_sample": null,
-            "orientation_valid_sample": null,
-            "position_tracked_sample": null,
-            "orientation_tracked_sample": null,
-            "confidence_sample": null
-          },
-          {
-            "id": "/sample/14",
-            "name": "",
-            "description": "",
-            "kind": 11,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 0,
-            "revision_of": 1
-          },
-          {
-            "id": "/sample/15",
-            "name": "",
-            "description": "",
-            "kind": 11,
-            "supported_formats": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "group": 1,
-            "revision_of": 1
-          },
-          {
-            "id": "/sample/16",
-            "name": "",
-            "description": "",
-            "kind": 10,
-            "supported_formats": [
-              10,
-              11
-            ],
-            "group": 0,
-            "supported_spaces": [
-              2,
-              5
-            ],
-            "position_valid_sample": null,
-            "orientation_valid_sample": null,
-            "position_tracked_sample": null,
-            "orientation_tracked_sample": null,
-            "confidence_sample": 12
-          },
-          {
-            "id": "/sample/17",
-            "name": "",
-            "description": "",
-            "kind": 10,
-            "supported_formats": [
-              10,
-              11
-            ],
-            "group": 1,
-            "supported_spaces": [
-              5
-            ],
-            "position_valid_sample": null,
-            "orientation_valid_sample": null,
-            "position_tracked_sample": null,
-            "orientation_tracked_sample": null,
-            "confidence_sample": null
-          }
-        ],
-        "skeletons": [
-          {
-            "joints": [
-              {
-                "parent": 1,
-                "pose_sample": 7,
-                "rest_pose_sample": 13
-              },
-              {
-                "parent": 0,
-                "pose_sample": 7,
-                "rest_pose_sample": 13
-              }
-            ]
-          }
-        ]
-      },
-      "hex": "120300000302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b0000000002000000020508000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b010000000100000005ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b00000000020000000205ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b010000000100000005ffffffffffffffffffffffffffffffffffffffff010000000200000001000000070000000d00000000000000070000000d000000"
+      "hex": "160300000302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b000000000300000002050608000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b0000000003000000020506ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff010000000200000001000000070000000d00000000000000070000000d000000",
+      "capabilities": "device",
+      "skeletons": [
+        {
+          "joints": [
+            {
+              "parent": 1,
+              "pose_sample": 7,
+              "rest_pose_sample": 13
+            },
+            {
+              "parent": 0,
+              "pose_sample": 7,
+              "rest_pose_sample": 13
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "request_inputs",
       "tag": 4,
-      "value": {
-        "subscription_id": 7,
-        "group": 0,
-        "delivery_mode": 1,
-        "publication_rate_hz": 60.0,
-        "samples": [
-          {
-            "descriptor": 0,
-            "format": 1,
-            "reference_space": 0
-          },
-          {
-            "descriptor": 1,
-            "format": 2,
-            "reference_space": 0
-          },
-          {
-            "descriptor": 3,
-            "format": 12,
-            "reference_space": 0
-          }
-        ]
-      },
-      "hex": "24000000040700000000000000010000704203000000000000000100010000000200030000000c00"
+      "hex": "360000000407000000000000000300000000000000010100000002030000000c01012b50fe0000000000404b4c000000000040787d0100000000",
+      "request": "inputs"
     },
     {
       "name": "request_quality",
       "tag": 4,
-      "value": {
-        "subscription_id": 8,
-        "group": 0,
-        "delivery_mode": 1,
-        "publication_rate_hz": 60.0,
-        "samples": [
-          {
-            "descriptor": 7,
-            "format": 10,
-            "reference_space": 2
-          },
-          {
-            "descriptor": 8,
-            "format": 1,
-            "reference_space": 0
-          },
-          {
-            "descriptor": 9,
-            "format": 1,
-            "reference_space": 0
-          },
-          {
-            "descriptor": 12,
-            "format": 12,
-            "reference_space": 0
-          },
-          {
-            "descriptor": 14,
-            "format": 4,
-            "reference_space": 0
-          }
-        ]
-      },
-      "hex": "30000000040800000000000000010000704205000000070000000a020800000001000900000001000c0000000c000e0000000400"
+      "hex": "2900000004080000000000000005000000070000000a02080000000109000000010c0000000c0e000000040102",
+      "request": "quality"
     },
     {
       "name": "request_rest",
       "tag": 4,
-      "value": {
-        "subscription_id": 9,
-        "group": 1,
-        "delivery_mode": 2,
-        "publication_rate_hz": 60.0,
-        "samples": [
-          {
-            "descriptor": 13,
-            "format": 10,
-            "reference_space": 5
-          },
-          {
-            "descriptor": 17,
-            "format": 11,
-            "reference_space": 5
-          },
-          {
-            "descriptor": 15,
-            "format": 4,
-            "reference_space": 0
-          }
-        ]
-      },
-      "hex": "240000000409000000010000000200007042030000000d0000000a05110000000b050f0000000400"
+      "hex": "20000000040900000001000000030000000d0000000a05110000000b050f000000040202",
+      "request": "rest"
     },
     {
       "name": "acceptance",
       "tag": 5,
       "value": {
-        "subscription_id": 7,
-        "generation": 2
+        "subscription_id": 7
       },
-      "hex": "09000000050700000002000000"
+      "hex": "050000000507000000"
     },
     {
       "name": "rejection",
@@ -1051,100 +842,188 @@
         "subscription_id": 7,
         "reason": "Unavailable representation"
       },
-      "hex": "2300000006070000001a000000556e617661696c61626c6520726570726573656e746174696f6e"
+      "hex": "240000000607000000011a000000556e617661696c61626c6520726570726573656e746174696f6e"
     },
     {
       "name": "unsubscribe",
       "tag": 7,
       "value": {
-        "subscription_id": 7,
-        "generation": 2
+        "subscription_id": 7
       },
-      "hex": "09000000070700000002000000"
+      "hex": "050000000707000000"
     },
     {
       "name": "ended",
       "tag": 8,
       "value": {
         "subscription_id": 7,
-        "generation": 2,
         "reason": "Replaced"
       },
-      "hex": "15000000080700000002000000080000005265706c61636564"
+      "hex": "110000000807000000080000005265706c61636564"
+    },
+    {
+      "name": "request_model_periodic",
+      "tag": 4,
+      "hex": "38000000040a00000001000000030000000d0000000a06110000000b060f000000040201002d31010000000040787d01000000000000000000000000",
+      "request": "model_periodic"
+    },
+    {
+      "name": "rejection_without_reason",
+      "tag": 6,
+      "value": {
+        "subscription_id": 7,
+        "reason": null
+      },
+      "hex": "06000000060700000000"
+    },
+    {
+      "name": "rejection_empty_reason",
+      "tag": 6,
+      "value": {
+        "subscription_id": 7,
+        "reason": ""
+      },
+      "hex": "0a00000006070000000100000000"
+    },
+    {
+      "name": "update_periodic",
+      "tag": 12,
+      "value": {
+        "subscription_id": 7,
+        "schedule": {
+          "kind": "Periodic",
+          "interval": "10000000",
+          "phase": "25000000",
+          "consumption_delay": "9007199254740993"
+        }
+      },
+      "hex": "1e0000000c0700000001809698000000000040787d01000000000100000000002000"
+    },
+    {
+      "name": "update_on_change",
+      "tag": 12,
+      "value": {
+        "subscription_id": 7,
+        "schedule": {
+          "kind": "OnChange"
+        }
+      },
+      "hex": "060000000c0700000002"
+    },
+    {
+      "name": "capabilities_poses",
+      "tag": 3,
+      "hex": "b600000003010000000000484303000000090000002f706f73652fe5b7a60e0000004c65667420706f736520f09f969018000000506f736974696f6e20616e64206f7269656e746174696f6e0a010000000a000000000100000002ffffffffffffffffffffffffffffffffffffffff010000003100000000000000000a010000000b000000000100000002ffffffffffffffffffffffffffffffffffffffff0100000032000000000000000009010000000e0000000000000000",
+      "capabilities": "poses"
+    },
+    {
+      "name": "request_compact_inputs",
+      "tag": 4,
+      "hex": "360000000407000000000000000300000000000000010100000002020000000c01012b50fe000000000000000000000000000000000000000000",
+      "request": "compact_inputs"
+    },
+    {
+      "name": "rejection_rate_unavailable",
+      "tag": 6,
+      "hex": "1a000000060700000001100000005261746520756e617661696c61626c65",
+      "value": {
+        "subscription_id": 7,
+        "reason": "Rate unavailable"
+      }
+    },
+    {
+      "name": "ended_device_lost",
+      "tag": 8,
+      "hex": "1400000008070000000b000000446576696365206c6f7374",
+      "value": {
+        "subscription_id": 7,
+        "reason": "Device lost"
+      }
     }
   ],
   "publications": [
     {
       "name": "available",
-      "request": "inputs",
       "value": {
         "subscription_id": 7,
-        "generation": 2,
-        "acquired_at_ns": "1000000000",
+        "acquired_at": "1000000000",
+        "predicted_for": null,
         "values": [
           true,
           254,
           0.5019607843137255
         ]
       },
-      "hex": "070000000200000000ca9a3b000000000701fe80",
-      "unreliable_hex": "09070000000200000000ca9a3b000000000701fe80"
+      "hex": "0700000000ca9a3b00000000ffffffffffffffff0701fe80",
+      "unreliable_hex": "090700000000ca9a3b00000000ffffffffffffffff0701fe80",
+      "requests": [
+        "inputs",
+        "compact_inputs"
+      ]
     },
     {
       "name": "missing_boolean",
-      "request": "inputs",
       "value": {
         "subscription_id": 7,
-        "generation": 2,
-        "acquired_at_ns": "1020000000",
+        "acquired_at": "1020000000",
+        "predicted_for": null,
         "values": [
           null,
           1,
           0
         ]
       },
-      "hex": "070000000200000000f7cb3c00000000060100",
-      "unreliable_hex": "09070000000200000000f7cb3c00000000060100"
+      "hex": "0700000000f7cb3c00000000ffffffffffffffff060100",
+      "unreliable_hex": "090700000000f7cb3c00000000ffffffffffffffff060100",
+      "requests": [
+        "inputs",
+        "compact_inputs"
+      ]
     },
     {
       "name": "all_missing",
-      "request": "inputs",
       "value": {
         "subscription_id": 7,
-        "generation": 2,
-        "acquired_at_ns": "1020000000",
+        "acquired_at": "1020000000",
+        "predicted_for": null,
         "values": [
           null,
           null,
           null
         ]
       },
-      "hex": "070000000200000000f7cb3c0000000000",
-      "unreliable_hex": "09070000000200000000f7cb3c0000000000"
+      "hex": "0700000000f7cb3c00000000ffffffffffffffff00",
+      "unreliable_hex": "090700000000f7cb3c00000000ffffffffffffffff00",
+      "requests": [
+        "inputs",
+        "compact_inputs"
+      ]
     },
     {
       "name": "false_and_zero",
-      "request": "inputs",
       "value": {
         "subscription_id": 7,
-        "generation": 2,
-        "acquired_at_ns": "1040000000",
+        "acquired_at": "1040000000",
+        "predicted_for": null,
         "values": [
           false,
           0,
           0
         ]
       },
-      "hex": "07000000020000000024fd3d0000000007000000",
-      "unreliable_hex": "0907000000020000000024fd3d0000000007000000"
+      "hex": "070000000024fd3d00000000ffffffffffffffff07000000",
+      "unreliable_hex": "09070000000024fd3d00000000ffffffffffffffff07000000",
+      "requests": [
+        "inputs",
+        "compact_inputs"
+      ]
     },
     {
       "name": "pose_and_quality",
-      "request": "quality",
       "value": {
         "subscription_id": 8,
-        "generation": 2,
-        "acquired_at_ns": "9007199254740993",
+        "acquired_at": "9007199254740993",
+        "predicted_for": "9007199279740993",
         "values": [
           [
             1,
@@ -1161,16 +1040,18 @@
           7
         ]
       },
-      "hex": "080000000200000001000000000020001f020000803f000000c00000003f00000000000000009a99193fcdcc4c3f8007000000",
-      "unreliable_hex": "09080000000200000001000000000020001f020000803f000000c00000003f00000000000000009a99193fcdcc4c3f8007000000"
+      "hex": "08000000010000000000200041787d01000020001f020000803f000000c00000003f00000000000000009a99193fcdcc4c3f8007000000",
+      "unreliable_hex": "0908000000010000000000200041787d01000020001f020000803f000000c00000003f00000000000000009a99193fcdcc4c3f8007000000",
+      "requests": [
+        "quality"
+      ]
     },
     {
       "name": "reliable_rest",
-      "request": "rest",
       "value": {
         "subscription_id": 9,
-        "generation": 2,
-        "acquired_at_ns": "9007199254740993",
+        "acquired_at": "9007199254740993",
+        "predicted_for": null,
         "values": [
           [
             1,
@@ -1193,8 +1074,129 @@
           7
         ]
       },
-      "hex": "09000000020000000100000000002000070000803f00000040000040400000000000000000000000000000803f000000000000d03f000000000000e03f000000000000e83f00000000000000000000000000000000333333333333e33f9a9999999999e93f07000000",
-      "reliable_hex": "6a0000000909000000020000000100000000002000070000803f00000040000040400000000000000000000000000000803f000000000000d03f000000000000e03f000000000000e83f00000000000000000000000000000000333333333333e33f9a9999999999e93f07000000"
+      "hex": "090000000100000000002000ffffffffffffffff070000803f00000040000040400000000000000000000000000000803f000000000000d03f000000000000e03f000000000000e83f00000000000000000000000000000000333333333333e33f9a9999999999e93f07000000",
+      "reliable_hex": "6e00000009090000000100000000002000ffffffffffffffff070000803f00000040000040400000000000000000000000000000803f000000000000d03f000000000000e03f000000000000e83f00000000000000000000000000000000333333333333e33f9a9999999999e93f07000000",
+      "requests": [
+        "rest"
+      ]
+    },
+    {
+      "name": "model_periodic",
+      "value": {
+        "subscription_id": 10,
+        "acquired_at": "9007199254740993",
+        "predicted_for": null,
+        "values": [
+          [
+            1,
+            2,
+            3,
+            0,
+            0,
+            0,
+            1
+          ],
+          [
+            0.25,
+            0.5,
+            0.75,
+            0,
+            0,
+            0.6,
+            0.8
+          ],
+          7
+        ]
+      },
+      "hex": "0a0000000100000000002000ffffffffffffffff070000803f00000040000040400000000000000000000000000000803f000000000000d03f000000000000e03f000000000000e83f00000000000000000000000000000000333333333333e33f9a9999999999e93f07000000",
+      "reliable_hex": "6e000000090a0000000100000000002000ffffffffffffffff070000803f00000040000040400000000000000000000000000000803f000000000000d03f000000000000e03f000000000000e83f00000000000000000000000000000000333333333333e33f9a9999999999e93f07000000",
+      "requests": [
+        "model_periodic"
+      ]
+    },
+    {
+      "name": "poses_and_thumbstick",
+      "requests": [
+        "poses"
+      ],
+      "value": {
+        "subscription_id": 7,
+        "acquired_at": "9007199254740993",
+        "predicted_for": "9007199279740993",
+        "values": [
+          [
+            1.0,
+            -2.0,
+            0.5,
+            0.0,
+            0.0,
+            0.6000000238418579,
+            0.800000011920929
+          ],
+          [
+            1.0,
+            -2.0,
+            0.5,
+            0.0,
+            0.0,
+            0.6,
+            0.8
+          ],
+          [
+            -1,
+            1
+          ]
+        ]
+      },
+      "hex": "07000000010000000000200041787d0100002000070000803f000000c00000003f00000000000000009a99193fcdcc4c3f000000000000f03f00000000000000c0000000000000e03f00000000000000000000000000000000333333333333e33f9a9999999999e93f817f"
+    },
+    {
+      "name": "boolean_byte_boundary",
+      "requests": [
+        "booleans"
+      ],
+      "value": {
+        "subscription_id": 7,
+        "acquired_at": "0",
+        "predicted_for": null,
+        "values": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ]
+      },
+      "hex": "070000000000000000000000ffffffffffffffffff035501"
+    },
+    {
+      "name": "filtered_booleans",
+      "requests": [
+        "booleans"
+      ],
+      "value": {
+        "subscription_id": 7,
+        "acquired_at": "1",
+        "predicted_for": null,
+        "values": [
+          null,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          null
+        ]
+      },
+      "hex": "070000000100000000000000fffffffffffffffffe01aa"
     }
   ],
   "formats": [
@@ -1344,8 +1346,8 @@
       "tag": 11,
       "value": {
         "request_id": 42,
-        "received_at_ns": "1200",
-        "sent_at_ns": "1300"
+        "received_at": "1200",
+        "sent_at": "1300"
       },
       "hex": "0b2a000000b0040000000000001405000000000000"
     },
@@ -1354,10 +1356,88 @@
       "tag": 11,
       "value": {
         "request_id": 43,
-        "received_at_ns": "9007199254740993",
-        "sent_at_ns": "9007199254741993"
+        "received_at": "9007199254740993",
+        "sent_at": "9007199254741993"
       },
       "hex": "0b2b0000000100000000002000e903000000002000"
     }
-  ]
+  ],
+  "time_values": [
+    {
+      "name": "zero_instant",
+      "optional": false,
+      "value": "0",
+      "hex": "0000000000000000"
+    },
+    {
+      "name": "large_instant",
+      "optional": false,
+      "value": "9007199254740993",
+      "hex": "0100000000002000"
+    },
+    {
+      "name": "maximum_present_time",
+      "optional": false,
+      "value": "18446744073709551614",
+      "hex": "feffffffffffffff"
+    },
+    {
+      "name": "absent_optional_time",
+      "optional": true,
+      "value": null,
+      "hex": "ffffffffffffffff"
+    }
+  ],
+  "schedule_examples": [
+    {
+      "now": "100",
+      "interval": "20",
+      "phase": "5",
+      "consumption_delay": "30",
+      "next_publication_time": "105",
+      "target_time": "135"
+    },
+    {
+      "now": "105",
+      "interval": "20",
+      "phase": "45",
+      "consumption_delay": "0",
+      "next_publication_time": "105",
+      "target_time": "105"
+    },
+    {
+      "now": "106",
+      "interval": "20",
+      "phase": "45",
+      "consumption_delay": "30",
+      "next_publication_time": "125",
+      "target_time": "155"
+    },
+    {
+      "now": "9007199254740993",
+      "interval": "10",
+      "phase": "0",
+      "consumption_delay": "1",
+      "next_publication_time": "9007199254741000",
+      "target_time": "9007199254741001"
+    },
+    {
+      "now": "18446744073709551614",
+      "interval": "10",
+      "phase": "0",
+      "consumption_delay": "1",
+      "next_publication_time": null,
+      "target_time": null
+    },
+    {
+      "now": "18446744073709551610",
+      "interval": "10",
+      "phase": "0",
+      "consumption_delay": "5",
+      "next_publication_time": "18446744073709551610",
+      "target_time": null
+    }
+  ],
+  "maintenance": "Fixed protocol expectations consumed by implementations. Changes to expected values or bytes must be justified against the protocol specification, independently of implementation output.",
+  "provenance": "Consolidated without changing literal expected bytes from the independently authored application and specification corpora. Named setups share data; codecs do not generate expected bytes."
 }

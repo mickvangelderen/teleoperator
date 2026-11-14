@@ -25,6 +25,32 @@ pub struct Catalog {
     parents: Vec<i32>,
 }
 impl Catalog {
+    pub fn predicted_for(
+        &self,
+        request: &crate::protocol::Request,
+        sample: &Sample,
+        values: &[Option<Value>],
+    ) -> Option<u64> {
+        let predicted = request
+            .samples
+            .iter()
+            .zip(values)
+            .any(|(selection, value)| {
+                value.is_some()
+                    && matches!(
+                        self.sources.get(selection.descriptor as usize),
+                        Some(Source::Pose(_) | Source::Joint(_))
+                    )
+            });
+        if predicted {
+            sample
+                .target_at
+                .and_then(|t| u64::try_from(t).ok())
+                .filter(|t| *t < u64::MAX)
+        } else {
+            None
+        }
+    }
     pub fn snapshot(hub: &Hub) -> Self {
         let contract = Self::contract(hub);
         let skeleton = hub.skeleton.lock().unwrap().clone();
@@ -392,8 +418,56 @@ pub fn pose_value(p: &Pose) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{self, Message, Request, Selection, Session};
+    use crate::protocol::{self, Message, Request, Schedule, Selection, Session};
 
+    #[test]
+    fn prediction_metadata_comes_from_selected_available_live_sources() {
+        let hub = Hub::new("test");
+        hub.initialized.store(true, Ordering::SeqCst);
+        let poses = std::array::from_fn(|_| Pose {
+            position: [0.; 3],
+            orientation: [0., 0., 0., 1.],
+            flags: 3,
+            active: Some(true),
+        });
+        hub.acquire(&poses, &[], None, 100, Some(25_000_100));
+        let catalog = Catalog::snapshot(&hub);
+        let sample = hub.latest.lock().unwrap().clone().unwrap();
+        let mut request = Request {
+            id: 1,
+            group: 0,
+            delivery: 1,
+            schedule: Schedule::OnChange,
+            samples: vec![Selection {
+                descriptor: 0,
+                format: 10,
+                space: 2,
+            }],
+        };
+        assert_eq!(
+            catalog.predicted_for(&request, &sample, &[catalog.value(0, &sample)]),
+            Some(25_000_100)
+        );
+        assert_eq!(catalog.predicted_for(&request, &sample, &[None]), None);
+        request.samples[0] = Selection {
+            descriptor: 1,
+            format: 1,
+            space: 0,
+        };
+        assert_eq!(
+            catalog.predicted_for(&request, &sample, &[catalog.value(1, &sample)]),
+            None
+        );
+        let bytes = protocol::tracking(
+            &catalog.capabilities,
+            &request,
+            100,
+            None,
+            &[catalog.value(1, &sample)],
+        );
+        assert_eq!(&bytes[4..12], &100u64.to_le_bytes());
+        assert_eq!(&bytes[12..20], &u64::MAX.to_le_bytes());
+    }
     #[test]
     fn rest_publications_convert_common_space_poses_to_parent_space() {
         let h = Hub::new("test");
@@ -468,8 +542,8 @@ mod tests {
             id: 1,
             group: 1,
             delivery: 2,
-            rate: 1.,
-            // Deliberately omit the revision sample: native revision changes still publish.
+            schedule: Schedule::OnChange,
+            // Unselected native revisions must not trigger an OnChange publication.
             samples: c
                 .capabilities
                 .descriptors
@@ -486,14 +560,16 @@ mod tests {
         session
             .handle(Message::Subscribe(request.clone()), 0)
             .unwrap();
-        assert!(session.active[&1].on_change);
-        assert!(!c.capabilities.rest_group(0));
+        assert!(matches!(
+            session.active[&1].request.schedule,
+            Schedule::OnChange
+        ));
         let publish = |session: &mut Session, body: Option<&body::Body>, now| {
             h.acquire(&poses, &[], body, now, None);
             assert!(!c.changed(&h), "Availability does not change the catalog");
             let sample = h.latest.lock().unwrap().clone().unwrap();
             let sub = session.active.get_mut(&1).unwrap();
-            let Some(timestamp) = sub.timestamp(now, 0, now) else {
+            let Some(timestamp) = sub.timestamp(now, now) else {
                 return false;
             };
             let values = sub
@@ -502,31 +578,24 @@ mod tests {
                 .iter()
                 .map(|s| c.value(s.descriptor, &sample))
                 .collect::<Vec<_>>();
-            let bytes = protocol::tracking(
-                &c.capabilities,
-                &sub.request,
-                sub.generation,
-                timestamp,
-                &values,
-            );
-            let revision = body.map(|b| b.skeleton.version);
-            if !sub.should_publish(revision, &bytes) {
+            let bytes = protocol::tracking(&c.capabilities, &sub.request, timestamp, None, &values);
+            if !sub.should_publish(&bytes) {
                 return false;
             }
             assert!(
-                sub.should_publish(revision, &bytes),
+                sub.should_publish(&bytes),
                 "Only a successful send commits the snapshot"
             );
-            sub.published(now, now, revision, &bytes);
+            sub.published(&bytes);
             true
         };
         assert!(publish(&mut session, Some(&body), 0));
         for t in 1..=600 {
             assert!(!publish(&mut session, Some(&body), t * 5_000_000));
         }
-        // No one-second timer delay, even when the encoded poses are identical.
+        // Native revisions are not selected and cannot change the encoded snapshot.
         std::sync::Arc::make_mut(&mut body.skeleton).version += 256;
-        assert!(publish(&mut session, Some(&body), 3_005_000_000));
+        assert!(!publish(&mut session, Some(&body), 3_005_000_000));
         assert!(!publish(&mut session, Some(&body), 3_010_000_000));
         std::sync::Arc::make_mut(&mut body.skeleton).joints[1]
             .rest
@@ -551,12 +620,15 @@ mod tests {
                 3_040_000_000,
             )
             .unwrap();
-        assert!(!session.active[&1].on_change);
+        assert!(matches!(
+            session.active[&1].request.schedule,
+            Schedule::OnChange
+        ));
         assert!(publish(&mut session, Some(&body), 3_040_000_000));
         assert!(!publish(&mut session, Some(&body), 3_045_000_000));
         assert!(
-            publish(&mut session, Some(&body), 4_040_000_000),
-            "Unreliable snapshots refresh after packet loss"
+            !publish(&mut session, Some(&body), 4_040_000_000),
+            "Unreliable OnChange does not invent a retry or periodic refresh"
         );
     }
     #[test]

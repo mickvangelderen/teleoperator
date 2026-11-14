@@ -45,11 +45,56 @@ pub struct Selection {
     pub space: u8,
 }
 #[derive(Clone, Debug, PartialEq)]
+pub enum Schedule {
+    Periodic {
+        interval: u64,
+        phase: u64,
+        consumption_delay: u64,
+    },
+    OnChange,
+}
+impl Schedule {
+    pub fn validate(&self, max_rate: f32, now: u64) -> Result<()> {
+        if let Self::Periodic {
+            interval,
+            phase,
+            consumption_delay,
+        } = *self
+        {
+            if interval == 0
+                || [interval, phase, consumption_delay].contains(&u64::MAX)
+                || (interval as f64) < (1e9 / max_rate as f64).ceil()
+            {
+                return Err("Unsupported publication schedule".into());
+            }
+            self.next_at(now)
+                .and_then(|time| time.checked_add(consumption_delay))
+                .filter(|target| *target < u64::MAX)
+                .ok_or("Schedule time overflow")?;
+        }
+        Ok(())
+    }
+    pub fn next_at(&self, now: u64) -> Option<u64> {
+        match *self {
+            Self::Periodic {
+                interval, phase, ..
+            } if interval > 0 => {
+                let offset = (phase as u128 + interval as u128 - now as u128 % interval as u128)
+                    % interval as u128;
+                u64::try_from(now as u128 + offset)
+                    .ok()
+                    .filter(|t| *t < u64::MAX)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     pub id: u32,
     pub group: u32,
     pub delivery: u8,
-    pub rate: f32,
+    pub schedule: Schedule,
     pub samples: Vec<Selection>,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -59,23 +104,12 @@ pub enum Message {
     Selection(u16),
     Capabilities(Capabilities),
     Subscribe(Request),
-    Accepted {
-        id: u32,
-        generation: u32,
-    },
-    Rejected {
-        id: u32,
-        reason: String,
-    },
-    Unsubscribe {
-        id: u32,
-        generation: u32,
-    },
-    Ended {
-        id: u32,
-        generation: u32,
-        reason: String,
-    },
+    SubscribeBody(Vec<u8>),
+    Accepted { id: u32 },
+    Rejected { id: u32, reason: Option<String> },
+    Unsubscribe { id: u32 },
+    Ended { id: u32, reason: String },
+    UpdateSchedule { id: u32, schedule: Schedule },
 }
 
 pub fn compatible(kind: u8, format: u8) -> bool {
@@ -107,23 +141,6 @@ pub fn width(format: u8) -> usize {
     }
 }
 impl Capabilities {
-    pub fn rest_group(&self, group: u32) -> bool {
-        let rest: HashSet<_> = self
-            .skeletons
-            .iter()
-            .flatten()
-            .map(|j| j.rest_pose_sample)
-            .collect();
-        self.descriptors
-            .iter()
-            .enumerate()
-            .any(|(i, d)| d.group == group && rest.contains(&(i as u32)))
-            && self
-                .descriptors
-                .iter()
-                .enumerate()
-                .all(|(i, d)| d.group != group || rest.contains(&(i as u32)) || d.kind == 11)
-    }
     pub fn validate(&self) -> Result<()> {
         if self.groups.iter().any(|r| !r.is_finite() || *r <= 0.) {
             return Err("Invalid group rate".into());
@@ -138,7 +155,7 @@ impl Capabilities {
                 || d.formats.iter().collect::<HashSet<_>>().len() != d.formats.len()
                 || (d.kind == 10
                     && (d.spaces.is_empty()
-                        || d.spaces.iter().any(|s| !(1..=5).contains(s))
+                        || d.spaces.iter().any(|s| !(1..=6).contains(s))
                         || d.spaces.iter().collect::<HashSet<_>>().len() != d.spaces.len()))
                 || (d.kind != 10 && !d.spaces.is_empty())
             {
@@ -196,18 +213,12 @@ impl Capabilities {
             return Err("Unsupported delivery mode".into());
         }
         let max = self.groups.get(r.group as usize).ok_or("Unknown group")?;
-        if !r.rate.is_finite()
-            || r.rate <= 0.
-            || r.rate > *max
-            || 1e9 / r.rate as f64 >= i64::MAX as f64
-        {
-            return Err("Unsupported publication rate".into());
-        }
+        r.schedule.validate(*max, 0)?;
         if r.samples.is_empty() {
             return Err("Select at least one sample".into());
         }
         let mut seen = HashSet::new();
-        let mut size = 16 + r.samples.len().div_ceil(8);
+        let mut size = 20 + r.samples.len().div_ceil(8);
         let mut bits: usize = 0;
         for s in &r.samples {
             let d = self
@@ -269,6 +280,20 @@ impl<'a> Reader<'a> {
     fn u32(&mut self) -> Result<u32> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
+    fn u64(&mut self) -> Result<u64> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+    fn schedule(&mut self) -> Result<Schedule> {
+        match self.u8()? {
+            1 => Ok(Schedule::Periodic {
+                interval: self.u64()?,
+                phase: self.u64()?,
+                consumption_delay: self.u64()?,
+            }),
+            2 => Ok(Schedule::OnChange),
+            _ => Err("Invalid publication schedule tag".into()),
+        }
+    }
     fn count(&mut self, minimum: usize) -> Result<usize> {
         let n = self.u32()? as usize;
         if n > (self.bytes.len() - self.at) / minimum {
@@ -295,30 +320,13 @@ fn decode_client(body: &[u8]) -> Result<Message> {
             Message::Offer(versions)
         }
         4 => {
-            let id = r.u32()?;
-            let group = r.u32()?;
-            let delivery = r.u8()?;
-            let rate = f32::from_bits(r.u32()?);
-            let n = r.count(6)?;
-            let mut samples = Vec::with_capacity(n);
-            for _ in 0..n {
-                samples.push(Selection {
-                    descriptor: r.u32()?,
-                    format: r.u8()?,
-                    space: r.u8()?,
-                });
-            }
-            Message::Subscribe(Request {
-                id,
-                group,
-                delivery,
-                rate,
-                samples,
-            })
+            let body = r.take(body.len() - 1)?.to_vec();
+            Message::SubscribeBody(body)
         }
-        7 => Message::Unsubscribe {
+        7 => Message::Unsubscribe { id: r.u32()? },
+        12 => Message::UpdateSchedule {
             id: r.u32()?,
-            generation: r.u32()?,
+            schedule: r.schedule()?,
         },
         _ => return Err("Invalid client message tag or direction".into()),
     };
@@ -326,6 +334,38 @@ fn decode_client(body: &[u8]) -> Result<Message> {
         return Err("Trailing control bytes".into());
     }
     Ok(message)
+}
+fn decode_subscription(body: &[u8], capabilities: &Capabilities) -> Result<Request> {
+    let mut r = Reader { bytes: body, at: 0 };
+    let id = r.u32()?;
+    let group = r.u32()?;
+    let n = r.count(5)?;
+    let mut samples = Vec::with_capacity(n);
+    for _ in 0..n {
+        let descriptor = r.u32()?;
+        let kind = capabilities
+            .descriptors
+            .get(descriptor as usize)
+            .ok_or("Unknown descriptor in selection layout")?
+            .kind;
+        samples.push(Selection {
+            descriptor,
+            format: r.u8()?,
+            space: if kind == 10 { r.u8()? } else { 0 },
+        });
+    }
+    let delivery = r.u8()?;
+    let schedule = r.schedule()?;
+    if r.at != body.len() {
+        return Err("Trailing subscription bytes".into());
+    }
+    Ok(Request {
+        id,
+        group,
+        samples,
+        delivery,
+        schedule,
+    })
 }
 #[derive(Default)]
 pub struct ControlDecoder {
@@ -363,6 +403,21 @@ fn u32_bytes(b: &mut Vec<u8>, n: u32) {
 fn string(b: &mut Vec<u8>, s: &str) {
     u32_bytes(b, s.len() as u32);
     b.extend(s.as_bytes());
+}
+fn schedule_bytes(b: &mut Vec<u8>, schedule: &Schedule) {
+    match schedule {
+        Schedule::OnChange => b.push(2),
+        Schedule::Periodic {
+            interval,
+            phase,
+            consumption_delay,
+        } => {
+            b.push(1);
+            for value in [interval, phase, consumption_delay] {
+                b.extend(value.to_le_bytes());
+            }
+        }
+    }
 }
 pub fn clock_response(id: u32, received: u64, sent: u64) -> Vec<u8> {
     let mut b = vec![11];
@@ -435,40 +490,49 @@ pub fn encode(message: &Message) -> Vec<u8> {
             b.push(4);
             u32_bytes(&mut b, r.id);
             u32_bytes(&mut b, r.group);
-            b.push(r.delivery);
-            b.extend(r.rate.to_le_bytes());
             u32_bytes(&mut b, r.samples.len() as u32);
             for s in &r.samples {
                 u32_bytes(&mut b, s.descriptor);
-                b.extend([s.format, s.space]);
+                b.push(s.format);
+                if s.space != 0 {
+                    b.push(s.space);
+                }
             }
+            b.push(r.delivery);
+            schedule_bytes(&mut b, &r.schedule);
         }
-        Message::Accepted { id, generation } | Message::Unsubscribe { id, generation } => {
+        Message::SubscribeBody(body) => {
+            b.push(4);
+            b.extend(body);
+        }
+        Message::Accepted { id } | Message::Unsubscribe { id } => {
             b.push(if matches!(message, Message::Accepted { .. }) {
                 5
             } else {
                 7
             });
             u32_bytes(&mut b, *id);
-            u32_bytes(&mut b, *generation);
         }
         Message::Rejected { id, reason } => {
             b.push(6);
             u32_bytes(&mut b, *id);
-            string(&mut b, reason);
+            b.push(u8::from(reason.is_some()));
+            if let Some(reason) = reason {
+                string(&mut b, reason);
+            }
+        }
+        Message::UpdateSchedule { id, schedule } => {
+            b.push(12);
+            u32_bytes(&mut b, *id);
+            schedule_bytes(&mut b, schedule);
         }
         Message::Publication(body) => {
             b.push(9);
             b.extend(body);
         }
-        Message::Ended {
-            id,
-            generation,
-            reason,
-        } => {
+        Message::Ended { id, reason } => {
             b.push(8);
             u32_bytes(&mut b, *id);
-            u32_bytes(&mut b, *generation);
             string(&mut b, reason);
         }
     }
@@ -480,43 +544,44 @@ pub fn encode(message: &Message) -> Vec<u8> {
 #[derive(Clone, Debug)]
 pub struct Subscription {
     pub request: Request,
-    pub generation: u32,
-    pub next_due: i64,
-    pub last_acquired: Option<i64>,
-    pub on_change: bool,
-    last_publication: Option<(Option<u64>, Vec<u8>)>,
+    pub next_due: Option<u64>,
+    last_publication: Option<Vec<u8>>,
 }
 impl Subscription {
-    pub fn timestamp(&self, acquired: i64, epoch: i64, now: i64) -> Option<u64> {
-        if acquired > now
-            || self.last_acquired.is_some_and(|t| acquired <= t)
-            || (!self.on_change && now < self.next_due)
-        {
+    pub fn timestamp(&self, acquired: i64, now: i64) -> Option<u64> {
+        if acquired > now {
             return None;
         }
-        acquired
-            .checked_sub(epoch)
-            .and_then(|v| u64::try_from(v).ok())
+        u64::try_from(acquired).ok().filter(|t| *t < u64::MAX)
     }
-    pub fn should_publish(&self, revision: Option<u64>, body: &[u8]) -> bool {
-        !self.on_change
+    pub fn due(&self, now: u64) -> bool {
+        self.last_publication.is_none() || self.next_due.is_none_or(|t| now >= t)
+    }
+    pub fn advance(&mut self, now: u64) -> Result<()> {
+        if matches!(self.request.schedule, Schedule::Periodic { .. }) {
+            self.next_due = now
+                .checked_add(1)
+                .and_then(|t| self.request.schedule.next_at(t));
+            if self.next_due.is_none() {
+                return Err("Publication schedule exhausted".into());
+            }
+        }
+        Ok(())
+    }
+    pub fn should_publish(&self, body: &[u8]) -> bool {
+        !matches!(self.request.schedule, Schedule::OnChange)
             || self
                 .last_publication
                 .as_ref()
-                .is_none_or(|(previous_revision, previous)| {
-                    *previous_revision != revision || previous != &body[16..]
-                })
+                .is_none_or(|previous| previous != &body[20..])
     }
-    pub fn published(&mut self, acquired: i64, now: i64, revision: Option<u64>, body: &[u8]) {
-        self.last_acquired = Some(acquired);
-        if self.on_change {
-            // Ignore the id, generation and acquisition timestamp when comparing snapshots.
-            self.last_publication = Some((revision, body[16..].to_vec()));
-            return;
-        }
-        let period = (1e9 / self.request.rate as f64).ceil() as i64;
-        let steps = (now - self.next_due) / period + 1;
-        self.next_due = self.next_due.saturating_add(period.saturating_mul(steps));
+    pub fn published(&mut self, body: &[u8]) {
+        // Only selected encoded values and availability drive OnChange, including after an update.
+        self.last_publication = Some(body[20..].to_vec());
+    }
+    fn update(&mut self, schedule: Schedule, now: u64) {
+        self.next_due = schedule.next_at(now);
+        self.request.schedule = schedule;
     }
 }
 
@@ -525,8 +590,6 @@ pub struct Session {
     pub negotiated: bool,
     pub packet_limit: usize,
     pub active: BTreeMap<u32, Subscription>,
-    issued: BTreeMap<u32, u32>,
-    next_generation: u32,
 }
 impl Session {
     pub fn new(capabilities: Capabilities) -> Self {
@@ -535,8 +598,6 @@ impl Session {
             negotiated: false,
             packet_limit: MAX_PACKET,
             active: BTreeMap::new(),
-            issued: BTreeMap::new(),
-            next_generation: 1,
         }
     }
     pub fn handle(&mut self, message: Message, now: i64) -> Result<Vec<Message>> {
@@ -554,6 +615,11 @@ impl Session {
             }
             return Err("Version offer must be first".into());
         }
+        let message = if let Message::SubscribeBody(body) = message {
+            Message::Subscribe(decode_subscription(&body, &self.capabilities)?)
+        } else {
+            message
+        };
         match message {
             Message::Subscribe(request) => {
                 let id = request.id;
@@ -561,61 +627,56 @@ impl Session {
                     .capabilities
                     .validate_request(&request)
                     .and_then(|size| {
+                        request.schedule.validate(
+                            self.capabilities.groups[request.group as usize],
+                            now as u64,
+                        )?;
                         if request.delivery == 1 && size + 1 > self.packet_limit {
                             return Err("Tracking packet exceeds negotiated transport limit".into());
                         }
                         if self.active.len() >= MAX_SUBSCRIPTIONS && !self.active.contains_key(&id)
                         {
-                            Err("Subscription limit".into())
-                        } else {
-                            Ok(())
+                            return Err("Subscription limit".into());
                         }
+                        Ok(())
                     });
                 if let Err(reason) = validation {
-                    return Ok(vec![Message::Rejected { id, reason }]);
-                }
-                // Bound connection history as well as active subscriptions. Reconnect starts fresh.
-                if self.issued.len() >= 65_536 || self.next_generation == u32::MAX {
-                    return Err("Generation resource limit; reconnect".into());
+                    return Ok(vec![Message::Rejected {
+                        id,
+                        reason: Some(reason),
+                    }]);
                 }
                 let mut replies = self.end(id, "Replaced by a new subscription");
-                let generation = self.next_generation;
-                self.next_generation += 1;
-                self.issued.insert(generation, id);
                 self.active.insert(
                     id,
                     Subscription {
-                        on_change: request.delivery == 2
-                            && self.capabilities.rest_group(request.group),
-                        last_publication: None,
+                        next_due: request.schedule.next_at(now as u64),
                         request,
-                        generation,
-                        next_due: now,
-                        last_acquired: None,
+                        last_publication: None,
                     },
                 );
-                replies.push(Message::Accepted { id, generation });
+                replies.push(Message::Accepted { id });
                 Ok(replies)
             }
-            Message::Unsubscribe { id, generation } => {
-                if self.issued.get(&generation) != Some(&id) {
-                    return Err(
-                        "Unsubscription must identify a previously accepted generation".into(),
-                    );
+            Message::Unsubscribe { id } => {
+                self.active.remove(&id);
+                Ok(vec![Message::Ended {
+                    id,
+                    reason: "Unsubscribed".into(),
+                }])
+            }
+            Message::UpdateSchedule { id, schedule } => {
+                // Validate even for an ended id; a termination can race a well-formed update.
+                schedule.validate(
+                    self.active.get(&id).map_or(f32::MAX, |s| {
+                        self.capabilities.groups[s.request.group as usize]
+                    }),
+                    now as u64,
+                )?;
+                if let Some(sub) = self.active.get_mut(&id) {
+                    sub.update(schedule, now as u64);
                 }
-                if self
-                    .active
-                    .get(&id)
-                    .is_some_and(|s| s.generation == generation)
-                {
-                    Ok(self.end(id, "Unsubscribed"))
-                } else {
-                    Ok(vec![Message::Ended {
-                        id,
-                        generation,
-                        reason: "Generation is no longer active".into(),
-                    }])
-                }
+                Ok(vec![])
             }
             _ => Err("Message in invalid session phase".into()),
         }
@@ -623,10 +684,9 @@ impl Session {
     pub fn end(&mut self, id: u32, reason: &str) -> Vec<Message> {
         self.active
             .remove(&id)
-            .map(|s| {
+            .map(|_| {
                 vec![Message::Ended {
                     id,
-                    generation: s.generation,
                     reason: reason.into(),
                 }]
             })
@@ -715,8 +775,8 @@ fn encode_value(value: &Value, kind: u8, format: u8) -> Option<Vec<u8>> {
 pub fn tracking(
     c: &Capabilities,
     r: &Request,
-    generation: u32,
     timestamp: u64,
+    predicted_for: Option<u64>,
     values: &[Option<Value>],
 ) -> Vec<u8> {
     assert_eq!(r.samples.len(), values.len());
@@ -731,9 +791,10 @@ pub fn tracking(
         .collect();
     let mut b = Vec::new();
     u32_bytes(&mut b, r.id);
-    u32_bytes(&mut b, generation);
+    assert!(timestamp < u64::MAX && predicted_for != Some(u64::MAX));
     b.extend(timestamp.to_le_bytes());
-    b.resize(16 + r.samples.len().div_ceil(8), 0);
+    b.extend(predicted_for.unwrap_or(u64::MAX).to_le_bytes());
+    b.resize(20 + r.samples.len().div_ceil(8), 0);
     let booleans: Vec<_> = r
         .samples
         .iter()
@@ -753,7 +814,7 @@ pub fn tracking(
     }
     for (i, (s, value)) in r.samples.iter().zip(encoded).enumerate() {
         if let Some(value) = value {
-            b[16 + i / 8] |= 1 << (i % 8);
+            b[20 + i / 8] |= 1 << (i % 8);
             if s.format != 1 {
                 b.extend(value);
             }
@@ -765,102 +826,229 @@ pub fn tracking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn revised_capabilities_reliable_publications_and_clock_vectors() {
-        let spec: serde_json::Value = serde_json::from_str(include_str!(
-            "../../protocol/testdata/specification-v1.json"
-        ))
-        .unwrap();
+    fn fixture_capabilities(v: &serde_json::Value) -> Capabilities {
         let index = |v: &serde_json::Value, field: &str| v[field].as_u64().map(|n| n as u32);
-        for record in spec["records"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|r| r["tag"] == 3)
-        {
-            let v = &record["value"];
-            let c = Capabilities {
-                groups: v["sample_groups"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|g| g["max_sample_rate_hz"].as_f64().unwrap() as f32)
-                    .collect(),
-                descriptors: v["sample_descriptors"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|d| Descriptor {
-                        id: d["id"].as_str().unwrap().into(),
-                        name: d["name"].as_str().unwrap().into(),
-                        description: d["description"].as_str().unwrap().into(),
-                        kind: d["kind"].as_u64().unwrap() as u8,
-                        group: index(d, "group").unwrap(),
-                        formats: d["supported_formats"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .map(|f| f.as_u64().unwrap() as u8)
-                            .collect(),
-                        spaces: d["supported_spaces"].as_array().map_or_else(Vec::new, |s| {
-                            s.iter().map(|v| v.as_u64().unwrap() as u8).collect()
-                        }),
-                        press_count_sample: index(d, "press_count_sample"),
-                        release_count_sample: index(d, "release_count_sample"),
-                        touch_count_sample: index(d, "touch_count_sample"),
-                        untouch_count_sample: index(d, "untouch_count_sample"),
-                        position_valid_sample: index(d, "position_valid_sample"),
-                        orientation_valid_sample: index(d, "orientation_valid_sample"),
-                        position_tracked_sample: index(d, "position_tracked_sample"),
-                        orientation_tracked_sample: index(d, "orientation_tracked_sample"),
-                        confidence_sample: index(d, "confidence_sample"),
-                        revision_of: index(d, "revision_of"),
-                    })
-                    .collect(),
-                skeletons: v["skeletons"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|s| {
-                        s["joints"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .map(|j| Joint {
-                                parent: index(j, "parent").unwrap(),
-                                pose_sample: index(j, "pose_sample").unwrap(),
-                                rest_pose_sample: index(j, "rest_pose_sample").unwrap(),
-                            })
-                            .collect()
-                    })
-                    .collect(),
-            };
-            c.validate().unwrap();
-            assert_eq!(
-                encode(&Message::Capabilities(c.clone())),
-                hex(record["hex"].as_str().unwrap())
-            );
-            let mut invalid = c.clone();
-            invalid.descriptors[0].press_count_sample = Some(u32::MAX);
-            assert!(invalid.validate().is_err());
-            invalid = c.clone();
-            invalid.skeletons[0][0].pose_sample = 0;
-            assert!(invalid.validate().is_err());
-            invalid = c;
-            invalid.descriptors[14].revision_of = Some(u32::MAX);
-            assert!(invalid.validate().is_err());
+        Capabilities {
+            groups: v["sample_groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["max_sample_rate_hz"].as_f64().unwrap() as f32)
+                .collect(),
+            descriptors: v["sample_descriptors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| Descriptor {
+                    id: d["id"].as_str().unwrap().into(),
+                    name: d["name"].as_str().unwrap().into(),
+                    description: d["description"].as_str().unwrap().into(),
+                    kind: d["kind"].as_u64().unwrap() as u8,
+                    group: index(d, "group").unwrap(),
+                    formats: d["supported_formats"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|f| f.as_u64().unwrap() as u8)
+                        .collect(),
+                    spaces: d["supported_spaces"].as_array().map_or_else(Vec::new, |s| {
+                        s.iter().map(|v| v.as_u64().unwrap() as u8).collect()
+                    }),
+                    press_count_sample: index(d, "press_count_sample"),
+                    release_count_sample: index(d, "release_count_sample"),
+                    touch_count_sample: index(d, "touch_count_sample"),
+                    untouch_count_sample: index(d, "untouch_count_sample"),
+                    position_valid_sample: index(d, "position_valid_sample"),
+                    orientation_valid_sample: index(d, "orientation_valid_sample"),
+                    position_tracked_sample: index(d, "position_tracked_sample"),
+                    orientation_tracked_sample: index(d, "orientation_tracked_sample"),
+                    confidence_sample: index(d, "confidence_sample"),
+                    revision_of: index(d, "revision_of"),
+                })
+                .collect(),
+            skeletons: v["skeletons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    s["joints"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|j| Joint {
+                            parent: index(j, "parent").unwrap(),
+                            pose_sample: index(j, "pose_sample").unwrap(),
+                            rest_pose_sample: index(j, "rest_pose_sample").unwrap(),
+                        })
+                        .collect()
+                })
+                .collect(),
         }
-        for publication in spec["publications"].as_array().unwrap() {
-            if let Some(expected) = publication["reliable_hex"].as_str() {
+    }
+    fn fixture_schedule(v: &serde_json::Value) -> Schedule {
+        if v["kind"] == "OnChange" {
+            Schedule::OnChange
+        } else {
+            Schedule::Periodic {
+                interval: v["interval"].as_str().unwrap().parse().unwrap(),
+                phase: v["phase"].as_str().unwrap().parse().unwrap(),
+                consumption_delay: v["consumption_delay"].as_str().unwrap().parse().unwrap(),
+            }
+        }
+    }
+    fn fixture_request(v: &serde_json::Value) -> Request {
+        Request {
+            id: v["subscription_id"].as_u64().unwrap() as u32,
+            group: v["selection"]["group"].as_u64().unwrap() as u32,
+            delivery: v["channel"].as_u64().unwrap() as u8,
+            schedule: fixture_schedule(&v["schedule"]),
+            samples: v["selection"]["samples"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| Selection {
+                    descriptor: s["descriptor"].as_u64().unwrap() as u32,
+                    format: s["format"].as_u64().unwrap() as u8,
+                    space: s["reference_space"].as_u64().unwrap_or(0) as u8,
+                })
+                .collect(),
+        }
+    }
+    #[test]
+    fn shared_control_publication_and_clock_vectors() {
+        let f = fixture();
+        assert_eq!(f["protocol_version"], 1);
+        for record in f["records"].as_array().unwrap() {
+            let v = &record["value"];
+            let id = || v["subscription_id"].as_u64().unwrap() as u32;
+            let message = match record["tag"].as_u64().unwrap() {
+                1 => Message::Offer(
+                    v["supported_versions"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|n| n.as_u64().unwrap() as u16)
+                        .collect(),
+                ),
+                2 => Message::Selection(v["selected_version"].as_u64().unwrap() as u16),
+                3 => {
+                    let mut v = f["capabilities"][record["capabilities"].as_str().unwrap()].clone();
+                    if let Some(skeletons) = record.get("skeletons") {
+                        v["skeletons"] = skeletons.clone();
+                    }
+                    let c = fixture_capabilities(&v);
+                    c.validate().unwrap();
+                    Message::Capabilities(c)
+                }
+                4 => {
+                    let setup = &f["requests"][record["request"].as_str().unwrap()];
+                    let c = fixture_capabilities(
+                        &f["capabilities"][setup["capabilities"].as_str().unwrap()],
+                    );
+                    let r = fixture_request(&setup["value"]);
+                    c.validate_request(&r).unwrap();
+                    let wire = hex(record["hex"].as_str().unwrap());
+                    assert_eq!(decode_subscription(&wire[5..], &c).unwrap(), r);
+                    for end in 0..wire.len() - 5 {
+                        assert!(decode_subscription(&wire[5..5 + end], &c).is_err());
+                    }
+                    Message::Subscribe(r)
+                }
+                5 => Message::Accepted { id: id() },
+                6 => Message::Rejected {
+                    id: id(),
+                    reason: v["reason"].as_str().map(str::to_owned),
+                },
+                7 => Message::Unsubscribe { id: id() },
+                8 => Message::Ended {
+                    id: id(),
+                    reason: v["reason"].as_str().unwrap().into(),
+                },
+                12 => Message::UpdateSchedule {
+                    id: id(),
+                    schedule: fixture_schedule(&v["schedule"]),
+                },
+                tag => panic!("Unhandled fixture record {tag}"),
+            };
+            let expected = hex(record["hex"].as_str().unwrap());
+            assert_eq!(encode(&message), expected, "{}", record["name"]);
+            if matches!(
+                message,
+                Message::Offer(_)
+                    | Message::Subscribe(_)
+                    | Message::Unsubscribe { .. }
+                    | Message::UpdateSchedule { .. }
+            ) {
                 assert_eq!(
-                    encode(&Message::Publication(hex(publication["hex"]
-                        .as_str()
-                        .unwrap()))),
-                    hex(expected)
+                    ControlDecoder::default().feed(&expected).unwrap(),
+                    [if matches!(message, Message::Subscribe(_)) {
+                        Message::SubscribeBody(expected[5..].to_vec())
+                    } else {
+                        message
+                    }]
                 );
             }
         }
-        for datagram in spec["datagrams"]
+        let c = fixture_capabilities(&f["capabilities"]["device"]);
+        let mut invalid = c.clone();
+        invalid.descriptors[0].press_count_sample = Some(u32::MAX);
+        assert!(invalid.validate().is_err());
+        invalid = c.clone();
+        invalid.skeletons[0][0].pose_sample = 0;
+        assert!(invalid.validate().is_err());
+        invalid = c;
+        invalid.descriptors[14].revision_of = Some(u32::MAX);
+        assert!(invalid.validate().is_err());
+        for publication in f["publications"].as_array().unwrap() {
+            let expected = hex(publication["hex"].as_str().unwrap());
+            let v = &publication["value"];
+            for name in publication["requests"].as_array().unwrap() {
+                let setup = &f["requests"][name.as_str().unwrap()];
+                let c = fixture_capabilities(
+                    &f["capabilities"][setup["capabilities"].as_str().unwrap()],
+                );
+                let r = fixture_request(&setup["value"]);
+                c.validate_request(&r).unwrap();
+                let values: Vec<_> = v["values"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .zip(&r.samples)
+                    .map(|(v, s)| {
+                        if v.is_null() {
+                            return None;
+                        }
+                        Some(match s.format {
+                            1 => Value::Bit(v.as_bool().unwrap()),
+                            2..=5 => Value::Unsigned(v.as_u64().unwrap()),
+                            6..=9 => Value::Signed(v.as_i64().unwrap()),
+                            _ => Value::Numbers(if let Some(parts) = v.as_array() {
+                                parts.iter().map(|n| n.as_f64().unwrap()).collect()
+                            } else {
+                                vec![v.as_f64().unwrap()]
+                            }),
+                        })
+                    })
+                    .collect();
+                assert_eq!(
+                    tracking(
+                        &c,
+                        &r,
+                        v["acquired_at"].as_str().unwrap().parse().unwrap(),
+                        v["predicted_for"].as_str().map(|n| n.parse().unwrap()),
+                        &values
+                    ),
+                    expected,
+                    "{} / {}",
+                    publication["name"],
+                    name
+                );
+            }
+            if let Some(wire) = publication["reliable_hex"].as_str() {
+                assert_eq!(encode(&Message::Publication(expected)), hex(wire));
+            }
+        }
+        for datagram in f["datagrams"]
             .as_array()
             .unwrap()
             .iter()
@@ -869,9 +1057,9 @@ mod tests {
             let v = &datagram["value"];
             assert_eq!(
                 clock_response(
-                    index(v, "request_id").unwrap(),
-                    v["received_at_ns"].as_str().unwrap().parse().unwrap(),
-                    v["sent_at_ns"].as_str().unwrap().parse().unwrap()
+                    v["request_id"].as_u64().unwrap() as u32,
+                    v["received_at"].as_str().unwrap().parse().unwrap(),
+                    v["sent_at"].as_str().unwrap().parse().unwrap()
                 ),
                 hex(datagram["hex"].as_str().unwrap())
             );
@@ -890,7 +1078,11 @@ mod tests {
             id: 1,
             group: 0,
             delivery: 2,
-            rate: 60.,
+            schedule: Schedule::Periodic {
+                interval: 16_666_667,
+                phase: 0,
+                consumption_delay: 0,
+            },
             samples: vec![Selection {
                 descriptor: 0,
                 format: 11,
@@ -901,7 +1093,7 @@ mod tests {
             s.handle(Message::Subscribe(r.clone()), 100).unwrap()[0],
             Message::Accepted { .. }
         ));
-        assert_eq!(s.active[&1].timestamp(99, 0, 100), Some(99));
+        assert_eq!(s.active[&1].timestamp(99, 100), Some(99));
         let mut unreliable = r.clone();
         unreliable.delivery = 1;
         assert!(matches!(
@@ -917,31 +1109,10 @@ mod tests {
         ));
     }
     fn fixture() -> serde_json::Value {
-        serde_json::from_str(include_str!("../../protocol/testdata/protocol-v1.json")).unwrap()
-    }
-    fn vector(f: &serde_json::Value, name: &str) -> Vec<u8> {
-        if name == "request" {
-            let spec: serde_json::Value = serde_json::from_str(include_str!(
-                "../../protocol/testdata/specification-v1.json"
-            ))
-            .unwrap();
-            return hex(spec["records"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|v| v["name"] == "request_inputs")
-                .unwrap()["hex"]
-                .as_str()
-                .unwrap());
-        }
-        let entry = f["control"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .chain(f["tracking"].as_array().unwrap())
-            .find(|entry| entry["name"] == name)
-            .unwrap();
-        hex(entry["hex"].as_str().unwrap())
+        serde_json::from_str(include_str!(
+            "../../protocol/testdata/specification-v1.json"
+        ))
+        .unwrap()
     }
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -974,7 +1145,11 @@ mod tests {
             id: 7,
             group: 0,
             delivery: 1,
-            rate: 60.,
+            schedule: Schedule::Periodic {
+                interval: 16_666_667,
+                phase: 5_000_000,
+                consumption_delay: 25_000_000,
+            },
             samples: [1, 2, 12]
                 .into_iter()
                 .enumerate()
@@ -1013,7 +1188,11 @@ mod tests {
             id: 1,
             group: 0,
             delivery: 1,
-            rate: 60.,
+            schedule: Schedule::Periodic {
+                interval: 16_666_667,
+                phase: 0,
+                consumption_delay: 0,
+            },
             samples: (0..9)
                 .map(|descriptor| Selection {
                     descriptor,
@@ -1031,138 +1210,123 @@ mod tests {
                 }
             })
             .collect();
-        assert_eq!(&tracking(&c, &r, 1, 0, &values)[16..], &[0xfe, 0x01, 0xaa]);
+        assert_eq!(
+            &tracking(&c, &r, 0, None, &values)[20..],
+            &[0xfe, 0x01, 0xaa]
+        );
         values[8] = None;
-        assert_eq!(&tracking(&c, &r, 1, 0, &values)[16..], &[0xfe, 0x00, 0x2a]);
+        assert_eq!(
+            &tracking(&c, &r, 0, None, &values)[20..],
+            &[0xfe, 0x00, 0x2a]
+        );
     }
     #[test]
-    fn publisher_uses_fresh_connection_times_and_skips_missed_rate_slots() {
+    fn schedules_keep_phase_skip_missed_slots_and_allow_repeated_acquisitions() {
         let mut s = session();
-        s.handle(Message::Subscribe(request()), 1_000_000_000)
-            .unwrap();
+        let schedule = Schedule::Periodic {
+            interval: 10_000_000,
+            phase: 3_000_000,
+            consumption_delay: 5_000_000,
+        };
+        assert_eq!(schedule.next_at(3_000_000), Some(3_000_000));
+        assert_eq!(schedule.next_at(3_000_001), Some(13_000_000));
+        s.handle(
+            Message::Subscribe(Request {
+                schedule: schedule.clone(),
+                ..request()
+            }),
+            2_000_000,
+        )
+        .unwrap();
         let sub = s.active.get_mut(&7).unwrap();
+        assert!(
+            sub.due(2_000_000),
+            "Initial state is immediate before the first scheduled slot"
+        );
+        assert_eq!(sub.timestamp(1, 2_000_000), Some(1));
+        sub.published(&[0; 20]);
+        assert!(!sub.due(2_999_999));
+        assert!(sub.due(3_000_000));
+        sub.advance(3_000_000).unwrap();
+        assert_eq!(sub.next_due, Some(13_000_000));
         assert_eq!(
-            sub.timestamp(999_999_999, 1_000_000_000, 1_000_000_001),
-            None
+            sub.timestamp(3_000_001, 3_000_002),
+            Some(3_000_001),
+            "An acquisition between scheduling and copying the sample remains publishable"
         );
         assert_eq!(
-            sub.timestamp(1_000_000_000, 1_000_000_000, 1_000_000_001),
-            Some(0)
+            sub.timestamp(1, 13_000_000),
+            Some(1),
+            "Periodic can repeat an acquisition"
         );
-        assert_eq!(
-            sub.timestamp(1_000_000_001, 1_000_000_000, 1_000_000_001),
-            Some(1)
+        sub.advance(95_000_000).unwrap();
+        assert_eq!(sub.next_due, Some(103_000_000));
+        let selection = sub.request.samples.clone();
+        s.handle(
+            Message::UpdateSchedule {
+                id: 7,
+                schedule: Schedule::OnChange,
+            },
+            100_000_000,
+        )
+        .unwrap();
+        let sub = &s.active[&7];
+        assert_eq!(sub.request.samples, selection);
+        assert!(
+            !sub.should_publish(&[0; 20]),
+            "Schedule update preserves value baseline"
         );
-        assert_eq!(
-            sub.timestamp(1_000_000_002, 1_000_000_000, 1_000_000_001),
-            None
-        );
-        let mut sent = 0;
-        for i in 1..=200 {
-            let t = 1_000_000_000 + i * 5_000_000;
-            if sub.timestamp(t, 1_000_000_000, t).is_some() {
-                sent += 1;
-                sub.published(t, t, None, &[]);
-                assert_eq!(sub.timestamp(t, 1_000_000_000, t), None);
-            }
+        s.handle(Message::UpdateSchedule { id: 7, schedule }, 100_000_000)
+            .unwrap();
+        assert_eq!(s.active[&7].next_due, Some(103_000_000));
+        for interval in [0, 1, u64::MAX] {
+            assert!(
+                s.handle(
+                    Message::UpdateSchedule {
+                        id: 7,
+                        schedule: Schedule::Periodic {
+                            interval,
+                            phase: 0,
+                            consumption_delay: 0
+                        }
+                    },
+                    0
+                )
+                .is_err()
+            );
         }
-        assert_eq!(sent, 60);
-        let delayed = 10_000_000_000;
-        assert!(sub.timestamp(delayed, 1_000_000_000, delayed).is_some());
-        sub.published(delayed, delayed, None, &[]);
-        assert!(sub.next_due > delayed);
-        assert_eq!(sub.timestamp(delayed + 1, 1_000_000_000, delayed + 1), None);
-        let mut limited = session();
-        limited.packet_limit = 20;
-        assert!(matches!(
-            limited.handle(Message::Subscribe(request()), 0).unwrap()[0],
-            Message::Rejected { .. }
-        ));
-        limited.packet_limit = 21;
-        assert!(matches!(
-            limited.handle(Message::Subscribe(request()), 0).unwrap()[0],
-            Message::Accepted { .. }
-        ));
+        assert!(
+            Schedule::Periodic {
+                interval: 10,
+                phase: u64::MAX - 1,
+                consumption_delay: 0
+            }
+            .validate(f32::MAX, 0)
+            .is_ok()
+        );
+        assert!(
+            Schedule::Periodic {
+                interval: 10,
+                phase: 0,
+                consumption_delay: u64::MAX - 1
+            }
+            .validate(f32::MAX, 10)
+            .is_err()
+        );
+        assert!(
+            s.handle(
+                Message::UpdateSchedule {
+                    id: 999,
+                    schedule: Schedule::OnChange
+                },
+                0
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
     #[test]
-    fn exact_specification_vectors_and_segmented_control() {
-        let f = fixture();
-        assert_eq!(f["fixture_version"], 1);
-        assert_eq!(f["protocol_version"], 1);
-        for (name, message) in [
-            ("offer", Message::Offer(vec![1])),
-            ("selection", Message::Selection(1)),
-            ("request", Message::Subscribe(request())),
-            (
-                "acceptance",
-                Message::Accepted {
-                    id: 7,
-                    generation: 2,
-                },
-            ),
-            (
-                "rejection",
-                Message::Rejected {
-                    id: 7,
-                    reason: "Rate unavailable".into(),
-                },
-            ),
-            (
-                "unsubscribe",
-                Message::Unsubscribe {
-                    id: 7,
-                    generation: 2,
-                },
-            ),
-            (
-                "ended",
-                Message::Ended {
-                    id: 7,
-                    generation: 2,
-                    reason: "Device lost".into(),
-                },
-            ),
-        ] {
-            let expected = vector(&f, name);
-            assert_eq!(encode(&message), expected, "{name}");
-            if matches!(
-                message,
-                Message::Offer(_) | Message::Subscribe(_) | Message::Unsubscribe { .. }
-            ) {
-                assert_eq!(
-                    ControlDecoder::default().feed(&expected).unwrap(),
-                    [message]
-                );
-            }
-        }
-        let values = vec![
-            Some(Value::Bit(true)),
-            Some(Value::Unsigned(254)),
-            Some(Value::Numbers(vec![128. / 255.])),
-        ];
-        assert_eq!(
-            tracking(&capabilities(), &request(), 2, 1_000_000_000, &values),
-            vector(&f, "available")
-        );
-        let values = vec![
-            None,
-            Some(Value::Unsigned(1)),
-            Some(Value::Numbers(vec![0.])),
-        ];
-        assert_eq!(
-            tracking(&capabilities(), &request(), 2, 1_020_000_000, &values),
-            vector(&f, "missing_boolean")
-        );
-        assert_eq!(
-            tracking(
-                &capabilities(),
-                &request(),
-                2,
-                1_020_000_000,
-                &[None, None, None]
-            ),
-            vector(&f, "all_missing")
-        );
+    fn segmented_control() {
         let bytes = [
             encode(&Message::Offer(vec![1])),
             encode(&Message::Subscribe(request())),
@@ -1174,7 +1338,10 @@ mod tests {
             got.extend(d.feed(&bytes[split..]).unwrap());
             assert_eq!(
                 got,
-                vec![Message::Offer(vec![1]), Message::Subscribe(request())]
+                vec![
+                    Message::Offer(vec![1]),
+                    Message::SubscribeBody(encode(&Message::Subscribe(request()))[5..].to_vec())
+                ]
             );
         }
     }
@@ -1230,81 +1397,47 @@ mod tests {
         }
     }
     #[test]
-    fn validation_replacement_unsubscribe_and_server_termination() {
-        let mut s = session();
-        let r = request();
-        assert_eq!(
-            s.handle(Message::Subscribe(r.clone()), 10).unwrap(),
-            vec![Message::Accepted {
-                id: 7,
-                generation: 1
-            }]
-        );
-        let mut bad = r.clone();
-        bad.samples[0].format = 255;
-        assert!(matches!(
-            s.handle(Message::Subscribe(bad), 20).unwrap()[0],
-            Message::Rejected { .. }
-        ));
-        assert_eq!(s.active[&7].generation, 1);
-        let replies = s.handle(Message::Subscribe(r.clone()), 30).unwrap();
-        assert!(matches!(
-            replies.as_slice(),
-            [
-                Message::Ended { generation: 1, .. },
-                Message::Accepted { generation: 2, .. }
-            ]
-        ));
-        s.handle(
-            Message::Unsubscribe {
-                id: 7,
-                generation: 1,
-            },
-            40,
-        )
-        .unwrap();
-        assert_eq!(s.active[&7].generation, 2);
-        s.handle(
-            Message::Unsubscribe {
-                id: 7,
-                generation: 2,
-            },
-            50,
-        )
-        .unwrap();
-        assert!(s.active.is_empty());
-        s.handle(
-            Message::Unsubscribe {
-                id: 7,
-                generation: 2,
-            },
-            60,
-        )
-        .unwrap();
-        s.handle(Message::Subscribe(r), 70).unwrap();
-        assert_eq!(s.active[&7].generation, 3);
-        assert_eq!(
-            s.end(7, "Device lost"),
-            vec![Message::Ended {
-                id: 7,
-                generation: 3,
-                reason: "Device lost".into()
-            }]
-        );
-        assert!(
-            s.handle(
-                Message::Unsubscribe {
-                    id: 7,
-                    generation: 999
-                },
-                80
-            )
-            .is_err()
-        );
-        assert!(s.handle(Message::Offer(vec![1]), 90).is_err());
-        let mut fresh = session();
-        fresh.handle(Message::Subscribe(request()), 1).unwrap();
-        assert_eq!(fresh.active[&7].generation, 1);
+    fn all_channels_and_schedules_replacement_rejection_unsubscribe_and_reconnect() {
+        for delivery in [1, 2] {
+            for schedule in [Schedule::OnChange, request().schedule] {
+                let mut s = session();
+                let r = Request {
+                    delivery,
+                    schedule,
+                    ..request()
+                };
+                assert_eq!(
+                    s.handle(Message::Subscribe(r.clone()), 0).unwrap(),
+                    [Message::Accepted { id: 7 }]
+                );
+                let mut bad = r.clone();
+                bad.samples[0].format = 255;
+                assert!(matches!(
+                    s.handle(Message::Subscribe(bad), 1).unwrap()[0],
+                    Message::Rejected { .. }
+                ));
+                assert_eq!(s.active[&7].request, r);
+                assert!(matches!(
+                    s.handle(Message::Subscribe(r.clone()), 2)
+                        .unwrap()
+                        .as_slice(),
+                    [Message::Ended { id: 7, .. }, Message::Accepted { id: 7 }]
+                ));
+                assert_eq!(
+                    s.handle(Message::Unsubscribe { id: 7 }, 3).unwrap().len(),
+                    1
+                );
+                assert!(s.active.is_empty());
+                assert_eq!(
+                    s.handle(Message::Unsubscribe { id: 7 }, 4).unwrap().len(),
+                    1
+                );
+                s.handle(Message::Subscribe(r), 5).unwrap();
+                assert_eq!(s.end(7, "Device lost").len(), 1);
+                assert!(s.handle(Message::Offer(vec![1]), 6).is_err());
+                assert!(session().active.is_empty());
+            }
+        }
     }
     #[test]
     fn malformed_controls_and_readable_rejections() {
@@ -1317,41 +1450,51 @@ mod tests {
             encode(&Message::Offer(vec![0])),
             encode(&Message::Offer(vec![1, 1])),
         ] {
-            assert!(ControlDecoder::default().feed(&bytes).is_err(), "{bytes:?}");
+            assert!(ControlDecoder::default().feed(&bytes).is_err());
         }
-        let mut trailing = encode(&Message::Offer(vec![1]));
-        trailing.push(0);
-        trailing[0] += 1;
-        assert!(ControlDecoder::default().feed(&trailing).is_err());
-        let mut count = encode(&Message::Subscribe(request()));
-        count[18..22].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(ControlDecoder::default().feed(&count).is_err());
         let mut s = session();
-        for mutation in 0..9 {
+        for mutation in 0..8 {
             let mut r = request();
             match mutation {
                 0 => r.group = 1,
-                1 => r.rate = f32::NAN,
-                2 => r.rate = 201.,
+                1 => {
+                    r.schedule = Schedule::Periodic {
+                        interval: 0,
+                        phase: 0,
+                        consumption_delay: 0,
+                    }
+                }
+                2 => {
+                    r.schedule = Schedule::Periodic {
+                        interval: 1,
+                        phase: 0,
+                        consumption_delay: 0,
+                    }
+                }
                 3 => r.samples.clear(),
                 4 => r.samples[0].descriptor = 999,
                 5 => r.samples.push(r.samples[0].clone()),
                 6 => r.samples[0].space = 2,
-                7 => r.rate = f32::from_bits(1),
-                _ => r.rate = 0.,
+                _ => {
+                    r.schedule = Schedule::Periodic {
+                        interval: u64::MAX,
+                        phase: 0,
+                        consumption_delay: 0,
+                    }
+                }
             }
-            let parsed = ControlDecoder::default()
-                .feed(&encode(&Message::Subscribe(r)))
-                .unwrap()
-                .remove(0);
             assert!(matches!(
-                s.handle(parsed, 0).unwrap()[0],
+                s.handle(Message::Subscribe(r), 0).unwrap()[0],
                 Message::Rejected { .. }
             ));
         }
-        let mut s = Session::new(capabilities());
+        for body in [vec![0], vec![0; 12], vec![0; 20]] {
+            assert!(s.handle(Message::SubscribeBody(body), 0).is_err());
+        }
         assert_eq!(
-            s.handle(Message::Offer(vec![2]), 0).unwrap(),
+            Session::new(capabilities())
+                .handle(Message::Offer(vec![2]), 0)
+                .unwrap(),
             [Message::Selection(0)]
         );
     }

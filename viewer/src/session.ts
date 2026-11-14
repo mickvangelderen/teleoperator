@@ -1,10 +1,10 @@
-import { ControlDecoder, counterDelta, counterKind, decodeTracking, offer, restGroup, subscribe, unsubscribe, validateRequest, width } from "./protocol";
-import type { Capabilities, Packet, Request, ServerMessage } from "./protocol";
+import { ControlDecoder, counterDelta, counterKind, decodeTracking, offer, subscribe, unsubscribe, updateSchedule, validateRequest, validateSchedule, publicationRate, NON_MAX, width } from "./protocol";
+import type { Capabilities, Packet, Request, Schedule, ServerMessage } from "./protocol";
 import { FreshnessBaseline, summarizeFreshness } from "./freshness";
 import type { StreamFreshness } from "./freshness";
 
 export type Subscription = {
-  request: Request; generation: number; onChange: boolean; packet?: Packet; arrivedAt?: number;
+  request: Request; generation: number; packet?: Packet; arrivedAt?: number; acquiredAtArrival?: number;
   counters: Map<number, bigint>; deltas: Map<number, bigint>;
   arrivals: number[]; packets: number; bytes: number;
   freshness: FreshnessBaseline;
@@ -14,9 +14,10 @@ export class Session {
   capabilities?: Capabilities;
   readonly active = new Map<number, Subscription>();
   readonly pending = new Map<number, Request>();
-  readonly stopping = new Map<number, number>();
+  readonly stopping = new Set<number>();
   readonly revisions = new Map<number, { value: bigint; bits: number; timestamp: bigint; changedAt?: bigint }>();
-  private readonly issued = new Map<number, number>();
+  private nextGeneration = 1; // Local metric identity; never transmitted.
+  private nextId = 1;
   private readonly decoder = new ControlDecoder();
   detail = "Negotiating connection…";
   discarded = 0;
@@ -27,22 +28,35 @@ export class Session {
   start() { return offer(); }
   retire() {
     this.phase = "closed"; this.capabilities = undefined;
-    this.active.clear(); this.pending.clear(); this.stopping.clear(); this.issued.clear(); this.decoder.reset();
+    this.active.clear(); this.pending.clear(); this.stopping.clear(); this.decoder.reset();
     this.revisions.clear();
     this.clockRequests.clear(); this.clockObservations = []; this.clock = undefined;
   }
   request(request: Request) {
     if (this.phase !== "ready" || !this.capabilities || this.pending.has(request.id) || this.stopping.has(request.id)) throw new Error("Subscription request is not currently allowed");
-    // The exact binary32 rate sent on wire is the accepted target.
-    const r = { ...request, rate: Math.fround(request.rate), samples: request.samples.map(s => ({ ...s })) };
+    const r = { ...request, schedule: { ...request.schedule }, samples: request.samples.map(s => ({ ...s })) };
     validateRequest(this.capabilities, r);
     this.pending.set(r.id, r); return subscribe(r);
   }
   stop(id: number) {
     const active = this.active.get(id);
     if (!active || this.pending.has(id) || this.stopping.has(id)) throw new Error("No accepted subscription available to stop");
-    this.stopping.set(id, active.generation); this.active.delete(id);
-    return unsubscribe(id, active.generation);
+    this.stopping.add(id); this.active.delete(id);
+    return unsubscribe(id);
+  }
+  allocateId() {
+    while (this.active.has(this.nextId) || this.pending.has(this.nextId) || this.stopping.has(this.nextId)) this.nextId++;
+    if (this.nextId > 0xffffffff) throw new Error("Subscription ids exhausted; reconnect");
+    return this.nextId++;
+  }
+  changeSchedule(id: number, schedule: Schedule) {
+    const sub = this.active.get(id);
+    if (!sub || this.pending.has(id) || this.stopping.has(id)) throw new Error("No accepted subscription available to update");
+    validateSchedule(schedule, this.capabilities!.groups[sub.request.group]);
+    const bytes = updateSchedule(id, schedule);
+    sub.request.schedule = { ...schedule };
+    sub.freshness = new FreshnessBaseline();
+    return bytes;
   }
   control(bytes: Uint8Array, arrivedAt = performance.now()) {
     const packets: Packet[] = [];
@@ -56,7 +70,7 @@ export class Session {
     return packets;
   }
   requestClock(now: number) {
-    if (this.phase !== "ready" || this.nextClock > 0xffffffff) return undefined;
+    if (!["capabilities", "ready"].includes(this.phase) || this.nextClock > 0xffffffff) return undefined;
     const at = BigInt(Math.round(now * 1e6));
     for (const [id, sent] of this.clockRequests) if (at - sent > 10_000_000_000n) this.clockRequests.delete(id);
     if (this.clockRequests.size >= 16) return undefined;
@@ -65,12 +79,12 @@ export class Session {
     this.clockRequests.set(id, at); return bytes;
   }
   unreliable(bytes: Uint8Array, arrivedAt: number): Packet | null {
-    if (this.phase !== "ready" || bytes.length > 16_384) { this.discarded++; return null; }
+    if (!["capabilities", "ready"].includes(this.phase) || bytes.length > 16_384) { this.discarded++; return null; }
     if (bytes[0] === 9) return this.tracking(bytes.subarray(1), arrivedAt);
     if (bytes[0] !== 11 || bytes.length !== 21) { this.discarded++; return null; }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), id = view.getUint32(1, true);
     const t1 = this.clockRequests.get(id), t2 = view.getBigUint64(5, true), t3 = view.getBigUint64(13, true), t4 = BigInt(Math.round(arrivedAt * 1e6));
-    if (t1 === undefined || t3 < t2 || t4 < t1 || t4 - t1 > 10_000_000_000n) { this.discarded++; return null; }
+    if (t1 === undefined || t2 === NON_MAX || t3 === NON_MAX || t3 < t2 || t4 < t1 || t4 - t1 > 10_000_000_000n) { this.discarded++; return null; }
     this.clockRequests.delete(id);
     const delay = (t4 - t1) - (t3 - t2);
     if (delay < 0n) { this.discarded++; return null; }
@@ -79,20 +93,19 @@ export class Session {
     this.clock = this.clockObservations.reduce((best, o) => o.delay < best.delay ? o : best);
     return null;
   }
-  sampleAge(timestamp: bigint, now: number, renderToPhotonMs = 0, predictionHorizonMs = 0) {
+  sampleAge(timestamp: bigint, now: number, renderToPhotonMs = 0) {
     if (!this.clock || now - this.clock.at > 30_000) return undefined;
-    // shortcut: derive prediction time from acquisition + the fixed operator horizon until it is carried on wire.
-    return Number(BigInt(Math.round(now * 1e6)) - timestamp + this.clock.offset) / 1e6 + renderToPhotonMs - predictionHorizonMs;
+    return Number(BigInt(Math.round(now * 1e6)) - timestamp + this.clock.offset) / 1e6 + renderToPhotonMs;
   }
   // Policies can evaluate at their own control tick; freshness does not imply sample validity.
   freshness(now: number) {
     const streams: StreamFreshness[] = [];
     for (const sub of this.active.values()) {
-      if (sub.onChange) continue;
+      if (sub.request.schedule.kind === "onChange") continue;
       const age = sub.packet && this.sampleAge(sub.packet.timestamp, now);
       const ageMs = age !== undefined && age >= 0 ? age : undefined;
       const { thresholdMs, latencyMs, jitterMs } = sub.freshness;
-      streams.push({ id: sub.request.id, group: sub.request.group, generation: sub.generation, intervalMs: 1000 / sub.request.rate,
+      streams.push({ id: sub.request.id, group: sub.request.group, generation: sub.generation, intervalMs: 1000 / publicationRate(sub.request),
         ageMs, thresholdMs, latencyMs, jitterMs,
         status: ageMs === undefined || thresholdMs === undefined ? "Unknown" : ageMs > thresholdMs ? "Late" : "Fresh" });
     }
@@ -131,32 +144,29 @@ export class Session {
     switch (message.tag) {
       case 5: {
         const request = this.pending.get(message.id);
-        if (!request || !message.generation || this.issued.has(message.generation) || this.active.has(message.id)) throw new Error("Unexpected subscription acceptance");
-        if (this.issued.size >= 65536) throw new Error("Generation resource limit; reconnect");
-        this.pending.delete(message.id); this.issued.set(message.generation, message.id);
-        this.active.set(message.id, { request, generation: message.generation, onChange: request.delivery === 2 && restGroup(this.capabilities!, request.group), counters: new Map(), deltas: new Map(), arrivals: [], packets: 0, bytes: 0, freshness: new FreshnessBaseline() });
-        this.detail = `Subscription ${message.id} accepted · generation ${message.generation}`; break;
+        if (!request || this.active.has(message.id)) throw new Error("Unexpected subscription acceptance");
+        this.pending.delete(message.id);
+        this.active.set(message.id, { request, generation: this.nextGeneration++, counters: new Map(), deltas: new Map(), arrivals: [], packets: 0, bytes: 0, freshness: new FreshnessBaseline() });
+        this.detail = `Subscription ${message.id} accepted`; break;
       }
       case 6:
         if (!this.pending.delete(message.id)) throw new Error("Unexpected subscription rejection");
-        this.detail = `Subscription ${message.id} rejected: ${message.reason}`; break;
+        this.detail = `Subscription ${message.id} rejected${message.reason === undefined ? "" : `: ${message.reason}`}`; break;
       case 8: {
-        if (this.issued.get(message.generation) !== message.id) throw new Error("Unknown ended generation");
-        if (this.active.get(message.id)?.generation === message.generation) this.active.delete(message.id);
-        if (this.stopping.get(message.id) === message.generation) this.stopping.delete(message.id);
+        this.active.delete(message.id); this.stopping.delete(message.id);
         this.detail = `Subscription ${message.id} ended: ${message.reason}`; break;
       }
       default: throw new Error("Server message in invalid session phase");
     }
   }
   tracking(bytes: Uint8Array, arrivedAt: number, delivery = 1): Packet | null {
-    if (bytes.length < 16 || !this.capabilities) { this.discarded++; return null; }
+    if (bytes.length < 20 || !this.capabilities) { this.discarded++; return null; }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), active = this.active.get(view.getUint32(0, true));
-    if (!active || active.request.delivery !== delivery || active.generation !== view.getUint32(4, true)) { this.discarded++; return null; }
+    if (!active || active.request.delivery !== delivery) { this.discarded++; return null; }
     let packet: Packet;
-    try { packet = decodeTracking(bytes, this.capabilities, active.request, active.generation); }
+    try { packet = decodeTracking(bytes, this.capabilities, active.request); }
     catch { this.discarded++; return null; }
-    if (active.packet && packet.timestamp <= active.packet.timestamp) { this.discarded++; return null; }
+    if (active.packet && packet.timestamp < active.packet.timestamp) { this.discarded++; return null; }
     active.deltas.clear();
     packet.values.forEach((value, i) => {
       const s = active.request.samples[i];
@@ -174,8 +184,10 @@ export class Session {
       if (previous !== undefined) active.deltas.set(i, counterDelta(current, previous, s.format));
       active.counters.set(i, current);
     });
+    const acquired = !active.packet || packet.timestamp > active.packet.timestamp;
+    if (acquired) active.acquiredAtArrival = arrivedAt;
     active.packet = packet; active.arrivedAt = arrivedAt; active.packets++; active.bytes += bytes.length;
-    if (!active.onChange) active.freshness.observe(this.sampleAge(packet.timestamp, arrivedAt), arrivedAt, 1000 / active.request.rate, Number(this.clock?.delay ?? 0n) / 2e6);
+    if (acquired && active.request.schedule.kind !== "onChange") active.freshness.observe(this.sampleAge(packet.timestamp, arrivedAt), arrivedAt, 1000 / publicationRate(active.request), Number(this.clock?.delay ?? 0n) / 2e6);
     active.arrivals.push(arrivedAt);
     while (active.arrivals[0] < arrivedAt - 1000) active.arrivals.shift();
     return packet;

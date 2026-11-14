@@ -10,10 +10,10 @@ export async function checkMetricMedians(page) {
     const subscriptions = new Set();
     let estimate = 50, usedOldFrameTime = false, latestArguments;
     window.requestAnimationFrame = callback => requestFrame(time => callback(time - 250));
-    Session.prototype.sampleAge = function (_timestamp, now, renderToPhoton, predictionHorizon) {
+    Session.prototype.sampleAge = function (_timestamp, now, renderToPhoton) {
       if (renderToPhoton === undefined) return sampleAge.call(this, _timestamp, now);
       if (performance.now() - now > 100) usedOldFrameTime = true;
-      latestArguments = { renderToPhoton, predictionHorizon };
+      latestArguments = { renderToPhoton };
       return estimate;
     };
     Session.prototype.latestNetworkLatency = () => estimate;
@@ -30,7 +30,7 @@ export async function checkMetricMedians(page) {
       const packet = tracking.apply(this, args);
       if (packet) {
         const sub = this.active.get(packet.id);
-        if (!sub.onChange) { sub.arrivals = Array(Math.max(0, estimate ?? 0)).fill(args[1]); subscriptions.add(sub); }
+        if (sub.request.schedule.kind !== "onChange") { sub.arrivals = Array(Math.max(0, estimate ?? 0)).fill(args[1]); subscriptions.add(sub); }
       }
       return packet;
     };
@@ -76,8 +76,8 @@ export async function checkMetricMedians(page) {
   assert.deepEqual(result.sustained, expected(75), "All displayed values follow sustained changes within two seconds");
   for (const id of ["sample-age", "freshness-age", "estimated-latency", "freshness-threshold"]) assert.equal(result.missing[id], id === "freshness-threshold" ? "Late above —" : "—", "Missing estimates clear display history immediately");
   assert.equal(result.ahead, "-3.00 ms");
-  assert.deepEqual(result.defaults, { renderToPhoton: 20, predictionHorizon: 25 });
-  assert.deepEqual(result.changed, { renderToPhoton: 30, predictionHorizon: 25 });
+  assert.deepEqual(result.defaults, { renderToPhoton: 20 });
+  assert.deepEqual(result.changed, { renderToPhoton: 30 });
   assert.deepEqual(result.invalid, result.changed, "Invalid display delays do not affect the calculation");
   assert.equal(result.usedOldFrameTime, false, "Sample age uses current time rather than the earlier frame timestamp");
 }

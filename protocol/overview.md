@@ -31,21 +31,22 @@ sequenceDiagram
     C->>S: VersionOffer (reliable)
     S->>C: VersionSelection (reliable)
     S->>C: Capabilities (reliable)
-    C->>S: SubscriptionRequest (reliable)
+    C->>S: Subscribe (reliable)
     S->>C: SubscriptionAccepted (reliable)
     S-->>C: SamplePublication (selected channel)
-    C->>S: UnsubscribeRequest (reliable)
-    S->>C: SubscriptionEnded (reliable)
+    C->>S: Unsubscribe (reliable)
+    S->>C: Unsubscribed (reliable)
 ```
 
 The negotiated version applies to both channels for the connection.
 Only negotiation messages carry a protocol version.
 Capabilities supply the indices and layouts used by subsequent requests and publications.
-Subscriptions, pending operations and accepted generations belong to the connection and are discarded when it ends.
+Subscriptions, schedules and pending operations belong to the connection and are discarded when it ends.
 A new connection repeats negotiation and discovery.
 
 Server send order does not establish arrival order across channels.
-An unreliable publication can overtake its acceptance and is discarded until its generation is known.
+An unreliable publication for a new id can overtake its acceptance and is discarded until the id is accepted.
+Reusing an id has the ambiguity described in [replacement](interactions/05-replacement.md#unreliable-id-reuse).
 Reliable publications follow their acceptance in the same ordered channel.
 
 ## Samples and mappings
@@ -61,6 +62,6 @@ Malformed reliable framing, unknown reliable tags, invalid advertisements and re
 Malformed or unexpected unreliable messages are discarded.
 A structurally readable subscription request that cannot be fulfilled receives [SubscriptionRejected](types/SubscriptionRejected.md).
 A malformed publication is discarded without exposing its values.
-Unknown or retired generations are discarded before their publication values are decoded.
+Unknown or retired subscription ids are discarded before their publication values are decoded.
 
 Requirements: [PRO-0002](../design/requirements/protocol/PRO-0002.md), [PRO-0004](../design/requirements/protocol/PRO-0004.md), [PRO-0005](../design/requirements/protocol/PRO-0005.md), [PRO-0006](../design/requirements/protocol/PRO-0006.md), [PRO-0012](../design/requirements/protocol/PRO-0012.md), [PRO-0013](../design/requirements/protocol/PRO-0013.md), [PRO-0014](../design/requirements/protocol/PRO-0014.md), [PRO-0016](../design/requirements/protocol/PRO-0016.md), [PRO-0017](../design/requirements/protocol/PRO-0017.md), [PRO-0018](../design/requirements/protocol/PRO-0018.md), [PRO-0019](../design/requirements/protocol/PRO-0019.md).

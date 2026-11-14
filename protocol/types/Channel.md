@@ -1,4 +1,4 @@
-# DeliveryMode
+# Channel
 
 A `u8` selecting the channel for a subscription's publications.
 

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { checkMetricMedians, checkFrameRefresh } from "./frame-refresh.mjs";
 import { checkFreshness } from "./freshness.mjs";
+import { checkProtocol } from "./protocol-browser.mjs";
 import { checkTrackingColors } from "./tracking-colors.mjs";
 
 const url = process.env.VIEWER_URL || "http://127.0.0.1:5173";
@@ -64,7 +65,10 @@ try {
   assert.match(await page.locator("#subscription-1").textContent(), /on change · reliable · 1 packets/);
   assert.equal(await page.locator("#rate-1").isVisible(), false);
   await page.locator("#delivery-1").selectOption("1");
+  assert.equal(await page.locator("#rate-1").isVisible(), false, "Channel does not choose the schedule");
+  await page.locator("#schedule-1").selectOption("periodic");
   assert.equal(await page.locator("#rate-1").isVisible(), true);
+  await page.locator("#schedule-1").selectOption("onChange");
   await page.locator("#delivery-1").selectOption("2");
   await page.locator("#skeleton-view").selectOption("rest");
   await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyJoints === "70" && document.querySelector("#poses").dataset.poseCount === "0");
@@ -88,12 +92,12 @@ try {
   await page.locator("#rate-0").fill("30");
   await page.locator("#delivery-0").selectOption("2");
   await page.locator("#publish-0").click();
-  await page.waitForFunction(() => document.querySelector("#subscription-0").textContent.includes("generation 3") || document.querySelector("#subscription-0").textContent.includes("Generation 3"));
+  await page.waitForFunction(() => document.querySelector("#subscription-0").textContent.includes("Subscription 3"));
   await page.waitForFunction(() => { const n=parseFloat(document.querySelector("#arrival-rate").textContent); return n >= 20 && n < 40; });
   await page.locator("#rate-0").fill("0.000000000000000000000000000001");
   await page.locator("#publish-0").click();
-  await page.waitForFunction(() => document.querySelector("#publication-status").textContent.includes("rejected"));
-  assert.match(await page.locator("#subscription-0").textContent(), /Generation 3/);
+  await page.waitForFunction(() => /rejected|not sent/.test(document.querySelector("#publication-status").textContent));
+  assert.match(await page.locator("#subscription-0").textContent(), /Subscription 3/);
   await page.locator("#rate-0").fill("60");
   await page.locator("#delivery-0").selectOption("1");
   await page.getByRole("button", { name: "Clear selection" }).first().click();
@@ -112,11 +116,11 @@ try {
   await page.getByRole("button", { name: "Select all", exact: true }).first().click();
   await page.locator("#publish-0").click();
   await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyJoints === "70");
-  const restGeneration = (await page.locator("#subscription-1").textContent()).match(/Generation (\d+)/)[1];
+  const restGeneration = (await page.locator("#subscription-1").textContent()).match(/Subscription (\d+)/)[1];
   await page.locator("#publish-1").click();
   await page.waitForFunction(previous => {
     const text = document.querySelector("#subscription-1").textContent;
-    return !text.startsWith(`Generation ${previous} ·`) && text.includes("on change · reliable · 1 packets");
+    return !text.startsWith(`Subscription ${previous} ·`) && text.includes("on change · reliable · 1 packets");
   }, restGeneration);
   // More reconnects than the peer limit catches slots leaked by a closed session.
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -159,10 +163,12 @@ try {
   await page.getByRole("button", { name: "Disconnect" }).click();
   await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected");
   assert.deepEqual(consoleErrors, [], "No browser console errors during normal operation");
+  console.log(`Recording status: ${await page.locator("#recording-status").getAttribute("title")}`);
   if (process.env.EXPECT_RECORDING === "1") {
     assert.match(await page.locator("#recording-status").getAttribute("title"), /MiB saved/);
     assert.equal(await page.locator("#recording-status").getAttribute("class"), "tag");
   }
+  await checkProtocol(page);
   await page.route("**/api/offer", (route) =>
     route.fulfill({ status: 503, body: "Device unavailable" }),
   );

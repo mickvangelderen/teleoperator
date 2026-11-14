@@ -1,7 +1,7 @@
 import { Quaternion, Vector3 } from "three";
 import type { Pose, PoseFrame, JointHierarchy } from "./body-model";
 import type { Session, Subscription } from "./session";
-import { width } from "./protocol";
+import { width, publicationRate } from "./protocol";
 import type { Value } from "./protocol";
 
 export const poseSources = new Map([
@@ -9,7 +9,7 @@ export const poseSources = new Map([
   ["/user/hand/left/input/aim/pose", "left/aim"], ["/user/hand/left/input/grip/pose", "left/grip"],
   ["/user/hand/right/input/aim/pose", "right/aim"], ["/user/hand/right/input/grip/pose", "right/grip"],
 ]);
-export const stale = (s: Subscription, now: number) => s.arrivedAt === undefined || (!s.onChange && now - s.arrivedAt > Math.max(500, 3000 / s.request.rate));
+export const stale = (s: Subscription, now: number) => s.arrivedAt === undefined || (s.request.schedule.kind !== "onChange" && now - (s.acquiredAtArrival ?? s.arrivedAt) > Math.max(500, 3000 / publicationRate(s.request)));
 export type CurrentValue = { value: Value | null; stale: boolean; subscription: Subscription; selection: number };
 export function currentValues(session: Session | undefined, now: number) {
   const values = new Map<number, CurrentValue>();
@@ -33,7 +33,7 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
       const group = s.request.group, known = session?.revisions.get(group);
       if (!known || stale(s, now)) continue;
       // The self-revision proves which snapshot this publication contains. When it
-      // wasn't selected, a later observed change invalidates the older snapshot.
+      // was omitted, OnChange can retain unchanged selected values across revisions.
       const revisionIndex = s.request.samples.findIndex(selection => {
         const revision = c.descriptors[selection.descriptor];
         return revision.kind === 11 && revision.revision_of === group;
@@ -42,7 +42,7 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
       if (value != null) {
         const bits = 8 * width(s.request.samples[revisionIndex].format);
         if (BigInt.asUintN(Math.min(known.bits, bits), known.value) !== BigInt.asUintN(Math.min(known.bits, bits), BigInt(value as number | bigint))) outdated.add(group);
-      } else if (s.packet && known.changedAt !== undefined && s.packet.timestamp < known.changedAt) outdated.add(group);
+      } else if (s.request.schedule.kind !== "onChange" && s.packet && known.changedAt !== undefined && s.packet.timestamp < known.changedAt) outdated.add(group);
     }
   }
   const located = (index: number): LocatedPose | undefined => {

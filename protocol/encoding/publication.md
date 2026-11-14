@@ -8,9 +8,9 @@ Both channels carry the same [SamplePublication](../types/SamplePublication.md) 
 | Offset | Bytes    | Field                                         |
 | ------ | -------- | --------------------------------------------- |
 | 0      | 4        | `subscription_id`, `u32`.                     |
-| 4      | 4        | `generation`, `u32`.                          |
-| 8      | 8        | `acquired_at_ns`, `u64`.                      |
-| 16     | Variable | Availability, boolean values, numeric values. |
+| 4      | 8        | `acquired_at`, [Instant](../types/Instant.md). |
+| 12     | 8        | `predicted_for`, `Option<Instant>`.            |
+| 20     | Variable | Availability, boolean values, numeric values. |
 
 The accepted request supplies the sample count, value order, formats and component counts.
 The body is independently decodable from that context.
@@ -20,7 +20,8 @@ The body is independently decodable from that context.
 For `N` selections, write `ceil(N / 8)` bytes.
 Bit `i` is one when selection `i` has a value payload and zero when unavailable.
 An unavailable sample contributes no value bytes.
-All payload values describe the group's acquisition identified by the timestamp.
+All values come from the group's identified acquisition.
+Predicted values represent the actual common time in `predicted_for`, which is absent when no predicted samples are present.
 
 ## Boolean values
 
@@ -37,7 +38,7 @@ No per-value identifiers, lengths or padding are present.
 The body length is exactly:
 
 ```text
-16 + ceil(N / 8) + ceil(B / 8)
+20 + ceil(N / 8) + ceil(B / 8)
    + sum(component_count[i] * component_width_bytes[i]
          for each available non-bit selection i)
 ```
@@ -48,9 +49,9 @@ An unreliable publication, including its one-byte tag, must fit its transport me
 
 ## Validation
 
-Use `(subscription_id, generation)` to obtain the accepted layout.
-Discard unknown or retired generations before decoding values.
-For a known generation, the selected channel, exact length, bitmap padding and kind-specific numeric rules must be valid before exposing any values.
+Use `subscription_id` to obtain the accepted layout.
+Discard unknown or retired ids before decoding values.
+For an accepted id, the selected channel, exact length, bitmap padding and kind-specific numeric rules must be valid before exposing any values.
 A malformed publication is discarded as a unit.
 
-Requirements: [PRO-0001](../../design/requirements/protocol/PRO-0001.md), [PRO-0002](../../design/requirements/protocol/PRO-0002.md), [PRO-0006](../../design/requirements/protocol/PRO-0006.md), [PRO-0011](../../design/requirements/protocol/PRO-0011.md), [PRO-0012](../../design/requirements/protocol/PRO-0012.md), [PRO-0014](../../design/requirements/protocol/PRO-0014.md), [PRO-0019](../../design/requirements/protocol/PRO-0019.md).
+Requirements: [PRO-0001](../../design/requirements/protocol/PRO-0001.md), [PRO-0002](../../design/requirements/protocol/PRO-0002.md), [PRO-0006](../../design/requirements/protocol/PRO-0006.md), [PRO-0011](../../design/requirements/protocol/PRO-0011.md), [PRO-0012](../../design/requirements/protocol/PRO-0012.md), [PRO-0028](../../design/requirements/protocol/PRO-0028.md), [PRO-0019](../../design/requirements/protocol/PRO-0019.md).

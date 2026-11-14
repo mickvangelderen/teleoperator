@@ -1,5 +1,5 @@
 import { Session } from "./session";
-import { preferredFormat, restGroup } from "./protocol";
+import { preferredFormat, restGroup, periodic } from "./protocol";
 import type { Request } from "./protocol";
 import { profiler } from "./performance";
 import { recording, recordingId } from "./recording";
@@ -30,6 +30,7 @@ export class Connection {
   readonly state = initialState();
   readonly session = new Session();
   private offered = false;
+  private readonly replacements = new Map<number, number>();
   private subscribed = false;
   private readonly pc = new RTCPeerConnection({ iceServers: [] });
   private readonly abort = new AbortController();
@@ -118,7 +119,12 @@ export class Connection {
           profiler.transfer("received", bytes.length, arrivedAt);
           recording.packet(this.recordingId, "received", name === "control" ? "reliable" : "unreliable", bytes, arrivedAt);
           if (name === "control") {
-            for (const packet of this.session.control(bytes, arrivedAt)) profiler.trackingArrival(packet.id, `${this.recordingId}:${packet.generation}`, bytes.length, arrivedAt);
+            for (const packet of this.session.control(bytes, arrivedAt)) profiler.trackingArrival(packet.id, `${this.recordingId}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
+            for (const [id, previous] of this.replacements) {
+              if (this.session.pending.has(id)) continue;
+              this.replacements.delete(id);
+              if (this.session.active.has(id) && this.session.active.has(previous)) this.send(this.session.stop(previous));
+            }
             this.state.detail = this.session.detail;
             if (this.session.phase === "ready") {
               clearTimeout(this.deadline);
@@ -132,13 +138,13 @@ export class Connection {
                 c.groups.forEach((max, group) => {
                   const samples = c.descriptors.flatMap((d, descriptor) => d.group === group ? [{ descriptor, format: preferredFormat(d), space: d.spaces[0] ?? 0 }] : []);
                   const rest = restGroup(c, group);
-                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, rate: Math.min(max, 60), samples });
+                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, schedule: rest ? { kind: "onChange" } : periodic(Math.min(max, 60)), samples });
                 });
               }
             }
           } else {
             const packet = this.session.unreliable(bytes, arrivedAt);
-            if (packet) profiler.trackingArrival(packet.id, `${this.recordingId}:${packet.generation}`, bytes.length, arrivedAt);
+            if (packet) profiler.trackingArrival(packet.id, `${this.recordingId}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
           }
           this.emit();
         } catch (error) {
@@ -228,7 +234,22 @@ export class Connection {
   }
   publish(request: Request) {
     let bytes: Uint8Array;
-    try { bytes = this.session.request(request); }
+    try {
+      const previous = [...this.session.active.values()].find(s => s.request.group === request.group);
+      if ([...this.session.pending.values()].some(r => r.group === request.group)) throw new Error("A publication request is already pending");
+      const oldSchedule = previous?.request.schedule, schedule = request.schedule;
+      const scheduleChanged = oldSchedule?.kind !== schedule.kind || (schedule.kind === "periodic" && oldSchedule?.kind === "periodic"
+        && (oldSchedule.interval !== schedule.interval || oldSchedule.phase !== schedule.phase || oldSchedule.consumptionDelay !== schedule.consumptionDelay));
+      if (previous && previous.request.delivery === request.delivery && JSON.stringify(previous.request.samples) === JSON.stringify(request.samples)
+          && scheduleChanged) {
+        bytes = this.session.changeSchedule(previous.request.id, request.schedule);
+        if (this.send(bytes)) { this.state.detail = `Subscription ${previous.request.id} schedule updated`; this.emit(); }
+        return;
+      }
+      request = { ...request, id: this.session.allocateId() };
+      bytes = this.session.request(request);
+      if (previous) this.replacements.set(request.id, previous.request.id);
+    }
     catch (error) { this.state.detail = `Selection not sent: ${String(error)}. Choose a smaller or supported selection.`; this.emit(); return; }
     if (this.send(bytes)) { this.state.detail = `Subscription ${request.id} requested…`; this.emit(); }
   }

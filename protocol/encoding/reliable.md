@@ -16,12 +16,13 @@ Writes may split or coalesce records; the receiver parses the ordered byte seque
 | `0x01` | [VersionOffer](../types/VersionOffer.md)                 | Client → server | First client message.                      |
 | `0x02` | [VersionSelection](../types/VersionSelection.md)         | Server → client | Response to offer.                         |
 | `0x03` | [Capabilities](../types/Capabilities.md)                 | Server → client | Initial discovery after version selection. |
-| `0x04` | [SubscriptionRequest](../types/SubscriptionRequest.md)   | Client → server | After capabilities.                        |
+| `0x04` | [Subscribe](../types/Subscribe.md)   | Client → server | After capabilities.                        |
 | `0x05` | [SubscriptionAccepted](../types/SubscriptionAccepted.md) | Server → client | Response to request.                       |
 | `0x06` | [SubscriptionRejected](../types/SubscriptionRejected.md) | Server → client | Response to request.                       |
-| `0x07` | [UnsubscribeRequest](../types/UnsubscribeRequest.md)     | Client → server | For an accepted generation.                |
-| `0x08` | [SubscriptionEnded](../types/SubscriptionEnded.md)       | Server → client | Termination or unsubscription.             |
+| `0x07` | [Unsubscribe](../types/Unsubscribe.md)     | Client → server | For a subscription id.                |
+| `0x08` | [Unsubscribed](../types/Unsubscribed.md)       | Server → client | Termination or unsubscription.             |
 | `0x09` | [SamplePublication](../types/SamplePublication.md)       | Server → client | Accepted Reliable subscription.            |
+| `0x0C` | [UpdateSchedule](../types/UpdateSchedule.md)             | Client → server | Change a live publication schedule.        |
 
 Other tags are invalid in version 1.
 Control requests are processed in reliable receive order, with responses sent in that order.
@@ -33,4 +34,4 @@ The length prefix, negotiation tags and negotiation payload layouts are fixed be
 They use the [primitive encoding](primitives.md).
 The selected version then defines the other record types and [unreliable messages](unreliable.md).
 
-Requirements: [PRO-0001](../../design/requirements/protocol/PRO-0001.md), [PRO-0002](../../design/requirements/protocol/PRO-0002.md), [PRO-0004](../../design/requirements/protocol/PRO-0004.md), [PRO-0014](../../design/requirements/protocol/PRO-0014.md), [PRO-0019](../../design/requirements/protocol/PRO-0019.md).
+Requirements: [PRO-0001](../../design/requirements/protocol/PRO-0001.md), [PRO-0002](../../design/requirements/protocol/PRO-0002.md), [PRO-0004](../../design/requirements/protocol/PRO-0004.md), [PRO-0024](../../design/requirements/protocol/PRO-0024.md), [PRO-0019](../../design/requirements/protocol/PRO-0019.md).

@@ -1,12 +1,12 @@
 # Tracking protocol specification
 
 Clients discover a device's inputs, poses and skeleton mappings, select the values and representations they need, and subscribe to their publication.
-Subscriptions choose reliable or unreliable delivery.
-Sample references associate inputs with edge counters and poses with quality data, while clock exchanges let clients estimate the age of acquired data.
+Subscriptions choose reliable or unreliable delivery and periodic or on-change timing.
+Sample references associate inputs with edge counters and poses with quality data, while clock exchanges and actual prediction timestamps let clients relate samples to consumption time.
 
 ## Status
 
-This is an unpublished version 1 wire specification derived from requirements at commit `bba9cbea1771a2b3d6ba83e3720da9fbf590a868`.
+This is an unpublished version 1 wire specification derived from requirements at commit `067f1ed53383a7c3b7fadc715917b175f114e48b`.
 `MUST`, `MUST NOT` and `SHOULD` express obligations in this specification.
 Concrete encoding choices and their requirement basis are recorded in [derivation](derivation.md).
 
@@ -21,6 +21,7 @@ Start with [transport and sessions](overview.md), then follow the interactions:
 5. [Replace a subscription](interactions/05-replacement.md).
 6. [End a subscription](interactions/06-unsubscription.md).
 7. [Estimate clock offset and delay](interactions/07-clock-estimation.md).
+8. [Schedule publications and update timing](interactions/08-scheduling.md).
 
 ## Reference
 
@@ -31,9 +32,11 @@ Start with [transport and sessions](overview.md), then follow the interactions:
 | Skeleton mapping      | [Skeleton](types/Skeleton.md), [Joint](types/Joint.md)                                                                                                                                                                                                |
 | Indices               | [SampleGroupIndex](types/SampleGroupIndex.md), [SampleDescriptorIndex](types/SampleDescriptorIndex.md), [JointIndex](types/JointIndex.md), [NonMax](types/NonMax.md)                                                                                  |
 | Sample interpretation | [SampleKind](types/SampleKind.md), [SampleFormat](types/SampleFormat.md), [ReferenceSpace](types/ReferenceSpace.md)                                                                                                                                   |
-| Subscription          | [DeliveryMode](types/DeliveryMode.md), [SampleSelection](types/SampleSelection.md), [SubscriptionRequest](types/SubscriptionRequest.md), [SubscriptionAccepted](types/SubscriptionAccepted.md), [SubscriptionRejected](types/SubscriptionRejected.md) |
+| Subscription          | [Channel](types/Channel.md), [SampleSelection](types/SampleSelection.md), [SampleSelectionEntry](types/SampleSelectionEntry.md), [Subscribe](types/Subscribe.md), [SubscriptionAccepted](types/SubscriptionAccepted.md), [SubscriptionRejected](types/SubscriptionRejected.md) |
+| Scheduling | [PublicationSchedule](types/PublicationSchedule.md), [PublicationSchedulePeriodic](types/PublicationSchedulePeriodic.md), [UpdateSchedule](types/UpdateSchedule.md) |
+| Time | [Instant](types/Instant.md), [Duration](types/Duration.md) |
 | Publication           | [SamplePublication](types/SamplePublication.md)                                                                                                                                                                                                       |
-| Unsubscription        | [UnsubscribeRequest](types/UnsubscribeRequest.md), [SubscriptionEnded](types/SubscriptionEnded.md)                                                                                                                                                    |
+| Unsubscription        | [Unsubscribe](types/Unsubscribe.md), [Unsubscribed](types/Unsubscribed.md)                                                                                                                                                    |
 | Clock estimation      | [ClockRequest](types/ClockRequest.md), [ClockResponse](types/ClockResponse.md)                                                                                                                                                                        |
 
 Wire definitions cover [primitives](encoding/primitives.md), [reliable records](encoding/reliable.md), [unreliable messages](encoding/unreliable.md) and [sample publication bodies](encoding/publication.md).

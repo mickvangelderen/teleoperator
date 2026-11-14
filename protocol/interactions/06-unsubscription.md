@@ -1,14 +1,14 @@
 # Unsubscription and termination
 
-The client sends [UnsubscribeRequest](../types/UnsubscribeRequest.md) on the reliable channel, identifying the accepted subscription id and generation.
-The server stops that generation and sends [SubscriptionEnded](../types/SubscriptionEnded.md) with a reason.
-An already ended generation receives an ending notification without affecting another generation using the same id.
+The client sends [Unsubscribe](../types/Unsubscribe.md) on the reliable channel, identifying the subscription id.
+The server stops that subscription and sends [Unsubscribed](../types/Unsubscribed.md) with a reason.
+An unknown or already ended id receives an ending notification without affecting other ids.
 
-The server can also terminate a subscription and send an ending notification with a reason.
-The client retires only the indicated generation.
-An ending notification for an old generation does not reject a pending replacement.
-Late publications for retired generations are discarded.
+The server can also terminate a subscription for any reason and send an ending notification.
+The client retires the indicated id but preserves a pending replacement request for that id.
+Publications for retired ids are discarded.
+Reusing an id has the [unordered-packet limitation](05-replacement.md#unreliable-id-reuse).
 
-Connection loss retires all subscription and pending-operation state.
+Connection loss retires all subscription, schedule and pending-operation state.
 
-Requirements: [PRO-0005](../../design/requirements/protocol/PRO-0005.md), [PRO-0014](../../design/requirements/protocol/PRO-0014.md).
+Requirements: [PRO-0005](../../design/requirements/protocol/PRO-0005.md), [PRO-0024](../../design/requirements/protocol/PRO-0024.md).

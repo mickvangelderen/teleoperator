@@ -8,8 +8,8 @@ Ids are not reused within the connection.
 | Timestamp | Observation                                                             |
 | --------- | ----------------------------------------------------------------------- |
 | `t1`      | Client time immediately before submitting the request for transmission. |
-| `t2`      | `received_at_ns` in the response.                                       |
-| `t3`      | `sent_at_ns` in the response.                                           |
+| `t2`      | `received_at` in the response.                                       |
+| `t3`      | `sent_at` in the response.                                           |
 | `t4`      | Client time immediately upon receiving the complete response.           |
 
 Use nanoseconds for all four observations.
@@ -19,7 +19,7 @@ Compute signed differences without unsigned wraparound:
 ```text
 server_minus_client = ((t2 - t1) + (t3 - t4)) / 2
 round_trip_delay    = (t4 - t1) - (t3 - t2)
-client_sample_time  = acquired_at_ns - server_minus_client
+client_sample_time  = acquired_at - server_minus_client
 ```
 
 These are best-effort estimates using the four-timestamp method in [RFC 5905, section 8](https://www.rfc-editor.org/rfc/rfc5905.html#section-8).

@@ -5,12 +5,15 @@ The accepted request and capabilities define the payload layout.
 
 ## Receiving a publication
 
-1. Find the accepted subscription matching both id and generation.
-2. Discard publications with unknown or retired generations, including unreliable publications that overtake acceptance.
+1. Find the accepted subscription matching the subscription id.
+2. Discard publications with unknown or retired ids, including unreliable publications for a new id that overtake acceptance.
 3. Check that the publication arrived on the selected channel.
 4. Decode and validate the complete [publication body](../encoding/publication.md) before exposing its values.
 
 Clients can compare acquisition timestamps to recognize stale arrivals on the unreliable channel.
+Id reuse has the [replacement ambiguity](05-replacement.md#unreliable-id-reuse); timestamps do not resolve it.
+`predicted_for` reports the actual common prediction time when predicted samples are present.
+Publication timing follows the [selected schedule](08-scheduling.md).
 Independent decoding does not require receipt of an earlier publication.
 
 ## Availability and quality

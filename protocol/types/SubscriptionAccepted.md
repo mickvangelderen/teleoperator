@@ -1,14 +1,13 @@
 # SubscriptionAccepted
 
-Server-to-client reliable response accepting the outstanding request for an id.
+Server-to-client reliable response accepting the outstanding Subscribe request for an id.
 
-| Field, in wire order | Encoding | Meaning                                                         |
-| -------------------- | -------- | --------------------------------------------------------------- |
-| `subscription_id`    | `u32`    | Id from the request.                                            |
-| `generation`         | `u32`    | Nonzero acceptance identifier, never reused in this connection. |
+| Field, in wire order | Encoding | Meaning |
+| -------------------- | -------- | ------- |
+| `subscription_id` | `u32` | Id from the accepted request. |
 
-The client binds the generation to the pending request's selections, formats, spaces and delivery mode.
-These provide the interpretation metadata for [SamplePublication](SamplePublication.md).
-See [replacement](../interactions/05-replacement.md) for generation lifetime.
+The client binds the pending request's selection, channel and schedule to this id.
+No generation or revision field is present.
+See [replacement](../interactions/05-replacement.md) for the limits of id reuse.
 
-Requirements: [PRO-0014](../../design/requirements/protocol/PRO-0014.md).
+Requirements: [PRO-0024](../../design/requirements/protocol/PRO-0024.md).

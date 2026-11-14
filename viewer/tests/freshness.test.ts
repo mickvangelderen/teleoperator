@@ -1,3 +1,4 @@
+import { periodic, NON_MAX } from "../src/protocol";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FreshnessBaseline } from "../src/freshness";
@@ -9,16 +10,16 @@ function session(rate = 100, delivery = 1) {
   s.receive({ tag: 3, capabilities: { groups: [200], skeletons: [], descriptors: [
     { id: "button", name: "Button", description: "", kind: 2, formats: [1], spaces: [], group: 0 },
   ] } });
-  s.request({ id: 1, group: 0, delivery, rate, samples: [{ descriptor: 0, format: 1, space: 0 }] });
-  s.receive({ tag: 5, id: 1, generation: 1 });
+  s.request({ id: 1, group: 0, delivery, schedule:periodic(rate), samples: [{ descriptor: 0, format: 1, space: 0 }] });
+  s.receive({ tag: 5, id: 1 });
   s.clock = { offset: 9_007_199_254_740_993n, delay: 20_000_000n, at: 1000 };
   return s;
 }
-function packet(s: Session, acquired: number, arrived: number, id = 1, generation = 1) {
-  const bytes = Buffer.alloc(18);
-  bytes.writeUInt32LE(id); bytes.writeUInt32LE(generation, 4);
-  bytes.writeBigUInt64LE(9_007_199_254_740_993n + BigInt(Math.round(acquired * 1e6)), 8);
-  bytes[16] = bytes[17] = 1;
+function packet(s: Session, acquired: number, arrived: number, id = 1) {
+  const bytes = Buffer.alloc(22);
+  bytes.writeUInt32LE(id); bytes.writeBigUInt64LE(NON_MAX, 12);
+  bytes.writeBigUInt64LE(9_007_199_254_740_993n + BigInt(Math.round(acquired * 1e6)), 4);
+  bytes[20] = bytes[21] = 1;
   return s.tracking(bytes, arrived, s.active.get(id)!.request.delivery);
 }
 
@@ -68,16 +69,16 @@ test("threshold uses two-second median latency, two intervals, and robust jitter
 
 test("one fresh stream cannot mask a late or unmeasurable stream", () => {
   const s = session();
-  s.request({ ...s.active.get(1)!.request, id: 2, rate: 10 });
-  s.receive({ tag: 5, id: 2, generation: 2 });
+  s.request({ ...s.active.get(1)!.request, id: 2, schedule:periodic(10) });
+  s.receive({ tag: 5, id: 2 });
   packet(s, 1000, 1010);
   assert.equal(s.freshness(1010).status, "Unknown");
-  packet(s, 1000, 1010, 2, 2);
-  packet(s, 1100, 1110, 2, 2);
+  packet(s, 1000, 1010, 2);
+  packet(s, 1100, 1110, 2);
   assert.equal(s.freshness(1110).status, "Late");
   assert.equal(s.freshness(1110).worst!.id, 1);
   assert.equal(s.freshness(1110).streams.find(x => x.id === 2)!.status, "Fresh");
-  s.active.get(1)!.onChange = true;
+  s.changeSchedule(1, { kind: "onChange" });
   assert.equal(s.freshness(1110).status, "Fresh", "On-change snapshots do not age the indicator");
   s.stop(2);
   assert.equal(s.freshness(1110).status, "Inactive");
@@ -92,10 +93,23 @@ test("missing/expired clocks, replacement and retirement never retain a healthy 
   assert.equal(s.freshness(1020).status, "Fresh");
   assert.equal(s.freshness(31_001).status, "Unknown");
   const request = s.active.get(1)!.request;
-  s.request(request); s.receive({ tag: 8, id: 1, generation: 1, reason: "Replaced" });
-  s.receive({ tag: 5, id: 1, generation: 2 });
+  s.request(request); s.receive({ tag: 8, id: 1, reason: "Replaced" });
+  s.receive({ tag: 5, id: 1 });
   assert.equal(s.freshness(1020).status, "Unknown");
   assert.equal(s.freshness(1020).worst!.thresholdMs, undefined);
   s.retire();
   assert.equal(s.freshness(1020).status, "Inactive");
+});
+
+
+test("repeated frozen acquisitions never train a stale stream back to Fresh", () => {
+  const s=session();packet(s,1000,1010);
+  const sub=s.active.get(1)!, threshold=sub.freshness.thresholdMs;
+  for(let now=1040;now<=6040;now+=10) {
+    assert.ok(packet(s,1000,now));
+    assert.equal(s.freshness(now).status,"Late");
+    assert.equal(sub.freshness.thresholdMs,threshold);
+  }
+  assert.ok(sub.packets>500);assert.equal(sub.acquiredAtArrival,1010);
+  packet(s,6050,6060);assert.equal(s.freshness(6060).status,"Fresh");
 });

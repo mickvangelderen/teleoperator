@@ -1,13 +1,16 @@
 # SubscriptionRejected
 
-Server-to-client reliable response rejecting the outstanding request for an id.
+Server-to-client reliable response rejecting the outstanding Subscribe request for an id.
 
-| Field, in wire order | Encoding | Meaning                     |
-| -------------------- | -------- | --------------------------- |
-| `subscription_id`    | `u32`    | Id from the request.        |
-| `reason`             | `string` | Human-readable explanation. |
+| Field, in wire order | Encoding | Meaning |
+| -------------------- | -------- | ------- |
+| `subscription_id` | `u32` | Id from the rejected request. |
+| `reason` | `Option<string>` | Optional explanation. |
 
-The response leaves an existing subscription unchanged.
-See [subscription](../interactions/03-subscription.md).
+The optional reason uses a `u8` presence tag: `0` means absent; `1` is followed by a [string](../encoding/primitives.md).
+Other presence tags are invalid.
+An empty present string and an absent reason are distinct encodings.
+Servers SHOULD explain a rejection.
+Rejection leaves any existing subscription unchanged.
 
-Requirements: [PRO-0014](../../design/requirements/protocol/PRO-0014.md).
+Requirements: [PRO-0024](../../design/requirements/protocol/PRO-0024.md).
