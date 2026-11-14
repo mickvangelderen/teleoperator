@@ -1,20 +1,14 @@
 # SampleSelection
 
-One requested sample representation within a [SubscriptionRequest](SubscriptionRequest.md).
+A sample and representation selected by a subscription.
 
-| Field, in wire order | Encoding | Meaning |
-| --- | --- | --- |
-| `descriptor` | `u32` | Zero-based index into [Capabilities.sample_descriptors](Capabilities.md). |
-| `format` | [SampleFormat](SampleFormat.md), `u8` | One of the descriptor's advertised formats. |
-| `reference_space` | `u8` | Advertised [ReferenceSpace](ReferenceSpace.md) for a pose; `0` meaning absent for all other kinds. |
+| Field, in wire order | Encoding                                          | Meaning                                                                         |
+| -------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `descriptor`         | [SampleDescriptorIndex](SampleDescriptorIndex.md) | Selected sample.                                                                |
+| `format`             | [SampleFormat](SampleFormat.md), `u8`             | Advertised encoding format.                                                     |
+| `reference_space`    | `u8`                                              | Advertised [ReferenceSpace](ReferenceSpace.md) for a pose; `0` for other kinds. |
 
-For a pose, `reference_space == 0` is invalid.
-For a non-pose sample, a nonzero reference space is invalid.
-The absent marker is not a valid `ReferenceSpace` value.
-This fixed six-byte selection layout allows a server to read and reject unknown descriptor indices without needing their kind.
+The encoding is six bytes.
+The descriptor belongs to the request's group and its kind determines the component count.
 
-The descriptor MUST belong to the request's group, and its kind determines the component count.
-The selected format applies to every component.
-See [primitive encoding](../encoding/primitives.md).
-
-Sources: [PRO-0007](../../design/requirements/protocol/PRO-0007.md), [PRO-0011](../../design/requirements/protocol/PRO-0011.md), [PRO-0013](../../design/requirements/protocol/PRO-0013.md), and [PRO-0014](../../design/requirements/protocol/PRO-0014.md).
+Requirements: [PRO-0007](../../design/requirements/protocol/PRO-0007.md), [PRO-0011](../../design/requirements/protocol/PRO-0011.md), [PRO-0013](../../design/requirements/protocol/PRO-0013.md), [PRO-0014](../../design/requirements/protocol/PRO-0014.md).

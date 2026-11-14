@@ -1,27 +1,19 @@
 # ReferenceSpace
 
-A `u8` tag identifying the frame in which a pose is expressed.
+A `u8` identifying the coordinate frame of a pose.
 
-| Space | Value | Meaning |
-| --- | --- | --- |
-| invalid | `0x00` | Never a valid reference space. |
-| `view` | `0x01` | Origin and orientation follow the primary viewer's view frame, using the centroid of the view origins for stereo. |
-| `local` | `0x02` | World-locked, gravity-aligned frame with runtime-established origin and initial heading. |
-| `stage` | `0x03` | Origin at the floor centre of the runtime-defined rectangular play area. |
-| `local_floor` | `0x04` | Same orientation and horizontal origin as `local`, with vertical origin at the runtime's estimated floor level. |
-| reserved | `0x05`–`0xFF` | Forbidden in this version. |
+| Space         | Value  | Semantics                                                                                                           |
+| ------------- | ------ | ------------------------------------------------------------------------------------------------------------------- |
+| invalid       | `0x00` | Never valid.                                                                                                        |
+| `view`        | `0x01` | Origin and orientation follow the primary viewer's view frame, using the centroid of the view origins for stereo.   |
+| `local`       | `0x02` | World-locked, gravity-aligned frame with an origin and initial heading established by the runtime.                  |
+| `stage`       | `0x03` | Origin at the floor centre of the runtime-defined rectangular play area.                                            |
+| `local_floor` | `0x04` | Same orientation and horizontal origin as `local`, with the vertical origin at the runtime's estimated floor level. |
+| `parent`      | `0x05` | Parent joint's corresponding pose frame, resolved through the skeleton mapping ([Joint](Joint.md)).                 |
+| reserved      | *      | Reserved for future use.                                                                                            |
 
-The selected space MUST appear in the pose descriptor's `supported_spaces`.
-It applies to that selection for the lifetime of the accepted subscription.
-Selecting a different space requires full subscription replacement.
-If the pose cannot be located in the selected space for an acquisition, mark it unavailable.
+A selection uses a space advertised by its pose descriptor.
+Position is in meters, and orientation rotates from the source frame into the selected frame.
+Coordinates use the right-handed convention of the named OpenXR spaces: positive Y up, positive X right and negative Z forward in the defining orientation.
 
-This draft uses the Cartesian right-handed convention underlying the requirements' OpenXR reference spaces.
-Positions are in meters; orientations rotate vectors from the tracked source's frame into the selected reference frame.
-Reference frame axis conventions follow the named OpenXR spaces, with positive Y up, positive X right, and negative Z forward in the frame's defining orientation.
-World-locked frame axes do not continually follow the viewer.
-See the [Khronos OpenXR reference guide](https://registry.khronos.org/OpenXR/specs/1.0/refguide/openxr-10-reference-guide.pdf) and the reference-space definitions linked in [PRO-0015](../../design/requirements/protocol/PRO-0015.md).
-
-See [pose component order](SampleKind.md) and [selection encoding](SampleSelection.md).
-
-Source: [PRO-0015](../../design/requirements/protocol/PRO-0015.md).
+Requirements: [PRO-0015](../../design/requirements/protocol/PRO-0015.md).

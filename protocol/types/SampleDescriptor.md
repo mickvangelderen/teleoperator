@@ -1,27 +1,53 @@
 # SampleDescriptor
 
-One individually addressable source of tracking data.
+One individually selectable source of sample data.
 
-| Field, in wire order | Encoding | Meaning |
-| --- | --- | --- |
-| `id` | `string` | Nonempty, device-stable identifier, unique within the advertisement. |
-| `name` | `string` | Device-provided human-readable name. |
-| `description` | `string` | Device-provided human-readable description. |
-| `kind` | [SampleKind](SampleKind.md), `u8` | Semantic meaning and component count. |
-| `supported_formats` | `list<SampleFormat>` | Nonempty list of distinct [SampleFormat](SampleFormat.md) values compatible with `kind`. |
-| `group` | `u32` | Index into [Capabilities.sample_groups](Capabilities.md). |
-| `supported_spaces` | `list<ReferenceSpace>`, only for `kind == pose` | Nonempty list of distinct supported [ReferenceSpace](ReferenceSpace.md) values. |
+| Field, in wire order | Encoding                                | Meaning                                                 |
+| -------------------- | --------------------------------------- | ------------------------------------------------------- |
+| `id`                 | `string`                                | Device-stable unique identifier.                        |
+| `name`               | `string`                                | Device-provided name.                                   |
+| `description`        | `string`                                | Device-provided description.                            |
+| `kind`               | [SampleKind](SampleKind.md), `u8`       | Semantic kind.                                          |
+| `supported_formats`  | `list<SampleFormat>`                    | Non-empty list of supported [formats](SampleFormat.md). |
+| `group`              | [SampleGroupIndex](SampleGroupIndex.md) | Acquisition group.                                      |
+| Kind-specific fields | As below                                | Appended in the order shown for the selected kind.      |
 
-For all non-pose kinds, the descriptor ends after `group`; there is no kind-specific payload.
-Invalid and reserved enum values are forbidden.
-Names and descriptions may be empty; identity comes from `id`.
+For ids corresponding to OpenXR interaction profile components, use the component path.
+[SampleDescriptorIndex](SampleDescriptorIndex.md) identifies this descriptor in capabilities.
 
-Use an OpenXR interaction profile component path when the source corresponds to such a component.
-Other sources, including derived counter values and individually exposed body joints, still need distinct device-stable ids.
-A `generic` descriptor denotes one scalar, without protocol-defined units or semantics.
+## pressed
 
-The descriptor's zero-based position in the capabilities list is its compact connection-local selector.
-The string id is stable across connections; the list index is not.
-See [control encoding](../encoding/control.md) and [primitive encoding](../encoding/primitives.md).
+| Field                  | Encoding                        | Meaning                            |
+| ---------------------- | ------------------------------- | ---------------------------------- |
+| `press_count_sample`   | `Option<SampleDescriptorIndex>` | Associated `press_count` sample.   |
+| `release_count_sample` | `Option<SampleDescriptorIndex>` | Associated `release_count` sample. |
 
-Source: [PRO-0013](../../design/requirements/protocol/PRO-0013.md).
+## touched
+
+| Field                  | Encoding                        | Meaning                            |
+| ---------------------- | ------------------------------- | ---------------------------------- |
+| `touch_count_sample`   | `Option<SampleDescriptorIndex>` | Associated `touch_count` sample.   |
+| `untouch_count_sample` | `Option<SampleDescriptorIndex>` | Associated `untouch_count` sample. |
+
+## pose
+
+| Field                        | Encoding                        | Meaning                                                  |
+| ---------------------------- | ------------------------------- | -------------------------------------------------------- |
+| `supported_spaces`           | `list<ReferenceSpace>`          | Non-empty list of supported [spaces](ReferenceSpace.md). |
+| `position_valid_sample`      | `Option<SampleDescriptorIndex>` | Applicable `position_valid` sample.                      |
+| `orientation_valid_sample`   | `Option<SampleDescriptorIndex>` | Applicable `orientation_valid` sample.                   |
+| `position_tracked_sample`    | `Option<SampleDescriptorIndex>` | Applicable `position_tracked` sample.                    |
+| `orientation_tracked_sample` | `Option<SampleDescriptorIndex>` | Applicable `orientation_tracked` sample.                 |
+| `confidence_sample`          | `Option<SampleDescriptorIndex>` | Applicable `confidence` sample.                          |
+
+## revision
+
+| Field         | Encoding                                | Meaning                              |
+| ------------- | --------------------------------------- | ------------------------------------ |
+| `revision_of` | [SampleGroupIndex](SampleGroupIndex.md) | Group whose data is being versioned. |
+
+All other kinds have no appended fields.
+Optional indices use [NonMax](NonMax.md), with `u32::MAX` denoting absence.
+A present sample reference identifies a descriptor of the kind specified by its field.
+
+Requirements: [PRO-0013](../../design/requirements/protocol/PRO-0013.md), [PRO-0020](../../design/requirements/protocol/PRO-0020.md).

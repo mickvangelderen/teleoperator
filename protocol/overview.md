@@ -1,83 +1,66 @@
 # Transport and sessions
 
-## Required transport behavior
+## Channels
 
-A connection supplies two logical channels belonging to the same session.
-The transport binding MUST keep data from different connections separate, including after reconnecting.
+A connection provides two logical channels in each direction.
+The transport binding keeps data from different connections separate.
 
-| Channel | Information | Delivery requirement |
-| --- | --- | --- |
-| Control | Negotiation, capabilities, subscription requests, acceptance, rejection, unsubscription, and termination reasons | Reliable, ordered delivery in each direction, or connection failure |
-| Tracking | Current sample values, availability, cumulative edge counters, and acquisition timestamps | Unordered, zero retransmissions, no acknowledgement prerequisite |
+| Channel      | Delivery                                             |
+| ------------ | ---------------------------------------------------- |
+| `reliable`   | Ordered, guaranteed delivery, or connection failure. |
+| `unreliable` | Unordered delivery without retransmission.           |
 
-Tracking delivery MUST NOT wait for recovery of an earlier tracking packet or a lost control message.
-A transport that puts both channels behind one reliable ordered delivery stream does not satisfy this requirement.
-An implementation MUST NOT add application-level tracking retries or acknowledgements.
-If sending falls behind, discard superseded tracking samples instead of preserving a backlog.
+The reliable channel carries [framed records](encoding/reliable.md), including control messages and reliable sample publications.
+The unreliable channel preserves message boundaries and carries [tagged messages](encoding/unreliable.md) for sample publications and clock exchanges.
+An unreliable publication is independently decodable using its accepted subscription and capabilities.
+It MUST fit one transport message including its tag; its maximum size is checked when admitting the subscription.
+Reliable records can span transport writes or messages and are reassembled using their length prefix.
 
-Control uses the [length-prefixed framing](encoding/control.md) defined here, whether carried in a stream or by a message transport.
-Tracking requires a transport that preserves individual packet boundaries.
-Each publication MUST fit one tracking transport message; this protocol does not split a publication into dependent fragments.
-The server MUST reject a subscription whose maximum encoded packet would exceed its transport's message limit.
-
-The specification defines transport capabilities rather than selecting a particular transport product or connection-establishment mechanism.
+The transport must provide the two delivery behaviors independently; putting both behind one reliable ordered stream does not provide unreliable delivery.
+Transport establishment and platform integration are binding-specific.
 
 ## Session lifecycle
 
-Each connection starts without negotiated state.
-The client offers versions, the server selects one, and the server advertises capabilities.
-Only then can the client request subscriptions.
-Accepted subscriptions produce independent tracking packets.
+The client sends a version offer, the server selects a version, and the server advertises capabilities.
+The client then requests subscriptions.
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant S as Server
-    C->>S: VersionOffer (control)
-    S->>C: VersionSelection (control)
-    S->>C: Capabilities (control)
-    C->>S: SubscriptionRequest (control)
-    S->>C: SubscriptionAccepted (control)
-    S-->>C: TrackingPacket (tracking, zero retries)
-    S-->>C: TrackingPacket (tracking, zero retries)
-    C->>S: UnsubscribeRequest (control)
-    S->>C: SubscriptionEnded (control)
+    C->>S: VersionOffer (reliable)
+    S->>C: VersionSelection (reliable)
+    S->>C: Capabilities (reliable)
+    C->>S: SubscriptionRequest (reliable)
+    S->>C: SubscriptionAccepted (reliable)
+    S-->>C: SamplePublication (selected channel)
+    C->>S: UnsubscribeRequest (reliable)
+    S->>C: SubscriptionEnded (reliable)
 ```
 
-The diagram shows server send order, not arrival order between channels.
-Tracking can arrive before its acceptance message and is discarded until the client has the corresponding interpretation metadata.
-Later packets remain independently usable.
+The negotiated version applies to both channels for the connection.
+Only negotiation messages carry a protocol version.
+Capabilities supply the indices and layouts used by subsequent requests and publications.
+Subscriptions, pending operations and accepted generations belong to the connection and are discarded when it ends.
+A new connection repeats negotiation and discovery.
 
-The negotiated version applies to both channels until disconnection.
-The server MUST NOT transmit tracking before successful negotiation and acceptance of a subscription.
-Only negotiation messages contain version numbers.
+Server send order does not establish arrival order across channels.
+An unreliable publication can overtake its acceptance and is discarded until its generation is known.
+Reliable publications follow their acceptance in the same ordered channel.
 
-Capabilities and their list indices are fixed for the connection.
-All subscription state, generation identifiers, acquisition timestamps, and decoder layouts belong to that connection.
-When either required channel fails, both peers MUST retire the session and discard its state.
-A new connection repeats negotiation, discovery, and subscription, including after a server restart.
-Persisted device-stable sample identifiers can help the client choose from the new advertisement, but previous indices and subscriptions cannot be reused as negotiated state.
+## Samples and mappings
 
-## Interpreting samples
+A [SampleDescriptor](types/SampleDescriptor.md) identifies a selectable sample, its kind, formats and acquisition group.
+Optional descriptor references associate input states with counters and poses with quality samples.
+[Joint](types/Joint.md) references associate live and rest-pose samples with a parent within a [Skeleton](types/Skeleton.md).
+Subscriptions select samples from one group and establish their value order and representations.
 
-A [SampleDescriptor](types/SampleDescriptor.md) describes an individually selectable value.
-Its [SampleKind](types/SampleKind.md) supplies semantics and component count; its [SampleFormat](types/SampleFormat.md) supplies the representation of each component.
-Each body joint is selectable through its own descriptor, ordinarily with kind `pose`.
-A selected pose includes a [ReferenceSpace](types/ReferenceSpace.md).
+## Invalid messages
 
-Each descriptor belongs to one [SampleGroup](types/SampleGroup.md).
-A subscription selects values from just one group, so one acquisition timestamp applies to the whole packet.
-Separate groups require separate subscriptions and do not imply simultaneous acquisition.
+Malformed reliable framing, unknown reliable tags, invalid advertisements and reliable messages in an invalid phase end the connection.
+Malformed or unexpected unreliable messages are discarded.
+A structurally readable subscription request that cannot be fulfilled receives [SubscriptionRejected](types/SubscriptionRejected.md).
+A malformed publication is discarded without exposing its values.
+Unknown or retired generations are discarded before their publication values are decoded.
 
-Acceptance binds the client's requested sample order, formats, and spaces to a server-assigned generation.
-A tracking packet identifies that subscription and generation instead of repeating its schema.
-It carries availability and complete current values, with no dependence on any earlier tracking packet.
-
-## Invalid data
-
-Malformed control framing, invalid bootstrap messages, invalid advertisements, unknown message tags, and messages in an invalid session phase MUST end the connection.
-A syntactically readable subscription request that cannot be fulfilled receives [SubscriptionRejected](types/SubscriptionRejected.md) with a reason.
-Malformed tracking packets MUST be discarded without updating the latest accepted sample or timestamp.
-Unavailable data is represented by availability bits, never by an invented zero value.
-
-Sources: [PRO-0002](../design/requirements/protocol/PRO-0002.md), [PRO-0003](../design/requirements/protocol/PRO-0003.md), [PRO-0004](../design/requirements/protocol/PRO-0004.md), [PRO-0005](../design/requirements/protocol/PRO-0005.md), [PRO-0006](../design/requirements/protocol/PRO-0006.md), [PRO-0007](../design/requirements/protocol/PRO-0007.md), [PRO-0012](../design/requirements/protocol/PRO-0012.md), and [PRO-0014](../design/requirements/protocol/PRO-0014.md).
+Requirements: [PRO-0002](../design/requirements/protocol/PRO-0002.md), [PRO-0004](../design/requirements/protocol/PRO-0004.md), [PRO-0005](../design/requirements/protocol/PRO-0005.md), [PRO-0006](../design/requirements/protocol/PRO-0006.md), [PRO-0012](../design/requirements/protocol/PRO-0012.md), [PRO-0013](../design/requirements/protocol/PRO-0013.md), [PRO-0014](../design/requirements/protocol/PRO-0014.md), [PRO-0016](../design/requirements/protocol/PRO-0016.md), [PRO-0017](../design/requirements/protocol/PRO-0017.md), [PRO-0018](../design/requirements/protocol/PRO-0018.md), [PRO-0019](../design/requirements/protocol/PRO-0019.md).

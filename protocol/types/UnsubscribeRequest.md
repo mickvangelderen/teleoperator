@@ -1,14 +1,13 @@
 # UnsubscribeRequest
 
-Client-to-server control request to end one accepted subscription generation.
+Client-to-server reliable request to end an accepted subscription.
 
-| Field, in wire order | Encoding | Meaning |
-| --- | --- | --- |
-| `subscription_id` | `u32` | Client-assigned subscription id. |
-| `generation` | `u32` | Nonzero generation returned in [SubscriptionAccepted](SubscriptionAccepted.md). |
+| Field, in wire order | Encoding | Meaning                          |
+| -------------------- | -------- | -------------------------------- |
+| `subscription_id`    | `u32`    | Client-assigned id.              |
+| `generation`         | `u32`    | Accepted generation being ended. |
 
-The pair identifies exactly which accepted subscription is being ended, including if the id has since been reused.
-The server responds with [SubscriptionEnded](SubscriptionEnded.md) for this pair.
-See [unsubscription](../interactions/06-unsubscription.md) and [control encoding](../encoding/control.md).
+The generation distinguishes this request from operations on a replacement using the same id.
+See [unsubscription](../interactions/06-unsubscription.md).
 
-Source: [PRO-0014](../../design/requirements/protocol/PRO-0014.md).
+Requirements: [PRO-0014](../../design/requirements/protocol/PRO-0014.md).

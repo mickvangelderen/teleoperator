@@ -1,17 +1,14 @@
 # SubscriptionAccepted
 
-Server-to-client control response accepting the outstanding request for an id exactly as requested.
+Server-to-client reliable response accepting the outstanding request for an id.
 
-| Field, in wire order | Encoding | Meaning |
-| --- | --- | --- |
-| `subscription_id` | `u32` | Id from the accepted request. |
-| `generation` | `u32` | Nonzero server-assigned identifier, never reused in this connection. |
+| Field, in wire order | Encoding | Meaning                                                         |
+| -------------------- | -------- | --------------------------------------------------------------- |
+| `subscription_id`    | `u32`    | Id from the request.                                            |
+| `generation`         | `u32`    | Nonzero acceptance identifier, never reused in this connection. |
 
-The client associates this generation with the outstanding [SubscriptionRequest](SubscriptionRequest.md), including its ordered selections, formats, reference spaces, and rate.
-Together, these supply the interpretation metadata for [TrackingPacket](TrackingPacket.md).
-No echoed schema is required because acceptance never changes the request.
-There MUST be a corresponding outstanding request.
+The client binds the generation to the pending request's selections, formats, spaces and delivery mode.
+These provide the interpretation metadata for [SamplePublication](SamplePublication.md).
+See [replacement](../interactions/05-replacement.md) for generation lifetime.
 
-See [replacement](../interactions/05-replacement.md) for generation lifetime and [control encoding](../encoding/control.md) for framing.
-
-Source: [PRO-0014](../../design/requirements/protocol/PRO-0014.md).
+Requirements: [PRO-0014](../../design/requirements/protocol/PRO-0014.md).
