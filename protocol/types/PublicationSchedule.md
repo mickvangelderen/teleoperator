@@ -10,7 +10,7 @@ Desired timing of a subscription's publications, independent of its channel.
 The tag is followed immediately by the variant's payload.
 Other tags are invalid in version 1.
 Periodic occupies 25 bytes; OnChange occupies one byte.
-OnChange publishes when a selected value or its availability changes.
+OnChange publishes when a selected value changes, including selected quality/status values.
 See [publication timing](../interactions/08-scheduling.md).
 
 Requirements: [PRO-0026](../../design/requirements/protocol/PRO-0026.md).

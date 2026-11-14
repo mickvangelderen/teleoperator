@@ -104,10 +104,18 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
     if (!result || result.space === 5 || !(result.pose.flags & 2)) continue;
     poses.push(result.pose); sources.push(poseSources.get(d.id) ?? d.id); spaces.add(result.space);
   }
-  const confidences = c?.skeletons.flatMap(s => s.joints.flatMap(j => {
-    const value = read(c.descriptors[j.pose_sample].confidence_sample);
+  const confidenceIndices = new Set(c?.skeletons.flatMap(s => s.joints.flatMap(j => {
+    const index = c.descriptors[j.pose_sample].confidence_sample;
+    return index == null ? [] : [index];
+  })) ?? []);
+  const confidences = [...confidenceIndices].flatMap(index => {
+    const descriptor = c!.descriptors[index];
+    // Operator binding convention; servers without a companion report ordinary confidence.
+    const validity = c!.descriptors.findIndex(d => d.id === `${descriptor.id}/valid` && d.kind === 1 && d.formats.includes(1));
+    if (validity >= 0 && (c!.descriptors[validity].group !== descriptor.group || read(validity) !== true || current.get(validity)?.subscription.packet?.timestamp !== current.get(index)?.subscription.packet?.timestamp)) return [];
+    const value = read(index);
     return typeof value === "number" ? [value] : [];
-  })) ?? [];
+  });
   const confidence = confidences.length ? Math.min(...confidences) : undefined;
   const trackedJoints = body.poses.filter(p => (p.flags & 14) === 14).length;
   const mixedSpaces = spaces.size > 1;

@@ -103,19 +103,12 @@ def request(r, c):
     return q
 
 
-def record(data, c=None):
+def message(data, c=None):
+    assert 0 < len(data) <= 65_535, 'message size'
     r = Reader(data)
-    assert r.number('I') == len(data) - 4, 'record length'
     tag = r.number('B')
-    assert tag in (*range(1, 10), 12), 'invalid reliable tag'
+    assert 1 <= tag <= 12, 'invalid message tag'
     return tag, payload(r, tag, c)
-
-
-def datagram(data):
-    r = Reader(data)
-    tag = r.number('B')
-    assert tag in (9, 10, 11), 'invalid unreliable tag'
-    return tag, payload(r, tag)
 
 
 def payload(r, tag, c=None):
@@ -196,8 +189,6 @@ def validate_request(c, q):
 
 def bitmap(r, count):
     raw = r.take((count + 7) // 8)
-    if count % 8:
-        assert raw[-1] >> (count % 8) == 0, 'nonzero bitmap padding'
     return [bool(raw[i // 8] & (1 << (i % 8))) for i in range(count)]
 
 
@@ -215,13 +206,9 @@ def publication(data, c, q):
     result = {'subscription_id': r.number('I'), 'acquired_at': r.time(), 'predicted_for': r.time(optional=True)}
     assert result['subscription_id'] == q['subscription_id'], 'unknown subscription'
     samples = q['selection']['samples']
-    present = bitmap(r, len(samples))
-    bits = iter(bitmap(r, sum(ok and s['format'] == 1 for ok, s in zip(present, samples))))
+    bits = iter(bitmap(r, sum(s['format'] == 1 for s in samples)))
     values = []
-    for ok, s in zip(present, samples):
-        if not ok:
-            values.append(None)
-            continue
+    for s in samples:
         kind = c['sample_descriptors'][s['descriptor']]['kind']
         if s['format'] == 1:
             value = next(bits)
@@ -304,7 +291,7 @@ def main():
             case_caps, expected = fixture['capabilities'][setup['capabilities']], setup['value']
         else:
             expected = case['value']
-        tag, value = record(bytes.fromhex(case['hex']), case_caps)
+        tag, value = message(bytes.fromhex(case['hex']), case_caps)
         assert tag == case['tag'] and equivalent(value, expected), case['name']
         if tag == 3:
             validate_capabilities(value)
@@ -314,25 +301,20 @@ def main():
             validate_schedule(value['schedule'])
     for case in fixture['datagrams']:
         raw = bytes.fromhex(case['hex'])
-        tag, value = datagram(raw)
+        tag, value = message(raw)
         assert tag == case['tag'] and equivalent(value, case['value']), case['name']
-        must_reject(lambda: datagram(raw[:-1]))
-        must_reject(lambda: datagram(raw + b'\x00'))
-        must_reject(lambda: record(struct.pack('<I', len(raw)) + raw))
+        must_reject(lambda: message(raw[:-1]))
+        must_reject(lambda: message(raw + b'\x00'))
+        assert tag in (10, 11), 'clock channel routing'
     for case in fixture['publications']:
-        body = bytes.fromhex(case['hex'])
+        tag, body = message(bytes.fromhex(case['hex']))
+        assert tag == 9
         for name in case['requests']:
             setup = fixture['requests'][name]
             case_caps, q = fixture['capabilities'][setup['capabilities']], setup['value']
             assert equivalent(publication(body, case_caps, q), case['value']), (case['name'], name)
             must_reject(lambda: publication(body[:-1], case_caps, q))
             must_reject(lambda: publication(body + b'\x00', case_caps, q))
-        if 'reliable_hex' in case:
-            tag, framed_body = record(bytes.fromhex(case['reliable_hex']))
-            assert tag == 9 and framed_body == body
-        if 'unreliable_hex' in case:
-            tag, framed_body = datagram(bytes.fromhex(case['unreliable_hex']))
-            assert tag == 9 and framed_body == body
     for case in fixture['formats']:
         raw = bytes.fromhex(case['hex'])
         r = Reader(raw)
@@ -374,16 +356,16 @@ def main():
     must_reject(lambda: validate_schedule({'kind': 'Periodic', 'interval': '0', 'phase': '0', 'consumption_delay': '0'}))
     assert Reader(bytes.fromhex('ffffffff')).index(optional=True) is None
     must_reject(lambda: Reader(bytes.fromhex('ffffffff')).index())
-    must_reject(lambda: datagram(b''))
-    must_reject(lambda: datagram(b'\x00'))
-    must_reject(lambda: datagram(bytes.fromhex(fixture['records'][0]['hex'])[4:]))
+    must_reject(lambda: message(b''))
+    must_reject(lambda: message(b'\x00'))
+    must_reject(lambda: message(b'\x01' * 65_536))
     for case in fixture['records']:
         raw = bytes.fromhex(case['hex'])
-        must_reject(lambda: record(raw[:-1], c))
-        must_reject(lambda: record(raw + b'\x00', c))
-    first = bytes.fromhex(fixture['publications'][0]['hex'])
+        must_reject(lambda: message(raw[:-1], c))
+        must_reject(lambda: message(raw + b'\x00', c))
+    first = bytes.fromhex(fixture['publications'][0]['hex'])[1:]
     bad_padding = bytearray(first); bad_padding[20] |= 0x80
-    must_reject(lambda: publication(bad_padding, c, fixture['requests']['inputs']['value']))
+    assert publication(bad_padding, c, fixture['requests']['inputs']['value']) == publication(first, c, fixture['requests']['inputs']['value'])
     bad_time = bytearray(first); bad_time[4:12] = b'\xff' * 8
     must_reject(lambda: publication(bad_time, c, fixture['requests']['inputs']['value']))
     bad_id = bytearray(first); bad_id[:4] = struct.pack('<I', 99)
@@ -392,15 +374,15 @@ def main():
         if case['tag'] == 11:
             for offset in (5, 13):
                 bad_time = bytearray.fromhex(case['hex']); bad_time[offset:offset+8] = b'\xff' * 8
-                must_reject(lambda: datagram(bad_time))
+                must_reject(lambda: message(bad_time))
     bad_ref = json.loads(json.dumps(c)); bad_ref['sample_descriptors'][0]['press_count_sample'] = 0
     must_reject(lambda: validate_capabilities(bad_ref))
     check_links(fixture['requirements_commit'])
     examples = (ROOT / 'encoding/examples.md').read_text()
-    wire_hex = {case[key] for group in ('records', 'datagrams', 'publications', 'time_values') for case in fixture[group] for key in ('hex', 'reliable_hex', 'unreliable_hex') if key in case}
+    wire_hex = {case[key] for group in ('records', 'datagrams', 'publications', 'time_values') for case in fixture[group] for key in ('hex',)}
     for block in re.findall(r'```text\n([0-9a-f \n]+)\n```', examples):
         assert ''.join(block.split()) in wire_hex, 'documentation byte example differs from vectors'
-    print(f"Verified {len(fixture['records'])} reliable records, {len(fixture['datagrams'])} clock datagrams, {len(fixture['publications'])} publications, {len(fixture['formats'])} scalar formats, NonMax times, all channel/schedule pairs, clock and schedule arithmetic, malformed data and Markdown links.")
+    print(f"Verified {len(fixture['records'])} reliable messages, {len(fixture['datagrams'])} clock datagrams, {len(fixture['publications'])} publications, {len(fixture['formats'])} scalar formats, NonMax times, all channel/schedule pairs, clock and schedule arithmetic, malformed data and Markdown links.")
 
 if __name__ == '__main__':
     main()

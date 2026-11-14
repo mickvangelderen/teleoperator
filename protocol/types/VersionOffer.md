@@ -8,6 +8,6 @@ Client-to-server reliable message that begins a new session.
 
 This draft's version is `1`.
 The list need not be sorted; the server selects the highest common version.
-See [negotiation](../interactions/01-negotiation.md) and [bootstrap framing](../encoding/reliable.md).
+See [negotiation](../interactions/01-negotiation.md) and [bootstrap encoding](../encoding/messages.md#bootstrap).
 
 Source: [PRO-0004](../../design/requirements/protocol/PRO-0004.md).

@@ -40,7 +40,7 @@ test("valid f64-only poses use an advertised default; oversized selections leave
     const c=caps(); assert.equal(preferredFormat(c.descriptors[0]),11);
     const first=connection(c); first.publish({...request,samples:[{...request.samples[0],format:preferredFormat(c.descriptors[0])}]});
     assert.equal(first.state.status,"Connected");assert.equal(first.session.pending.size,1);first.close();
-    const many=caps(); many.descriptors=Array.from({length:400},(_,i)=>({...many.descriptors[0],id:String(i)}));
+    const many=caps(); many.descriptors=Array.from({length:1200},(_,i)=>({...many.descriptors[0],id:String(i)}));
     const large=connection(many);large.publish({...request,samples:many.descriptors.map((d,descriptor)=>({descriptor,format:preferredFormat(d),space:2}))});
     assert.equal(large.state.status,"Connected");assert.equal(large.session.pending.size,0);assert.equal(Peer.latest.closed,false);assert.match(large.state.detail,/smaller/);
     large.publish(request);assert.equal(large.session.pending.size,1);large.close();
@@ -62,16 +62,15 @@ test("reliable send failures retire prepared subscription and unsubscription sta
   } finally {Object.assign(globalThis,{RTCPeerConnection:original});}
 });
 
-test("control records fragment at the negotiated limit; partial send failures retire the session", () => {
+test("control messages send whole and reject the smaller negotiated limit", () => {
   const original=globalThis.RTCPeerConnection;Object.assign(globalThis,{RTCPeerConnection:Peer});
   try {
-    const caps: Capabilities={ skeletons: [], groups:[60],descriptors:Array.from({length:40},(_,i)=>({id:String(i),name:"",description:"",kind:2,formats:[1],spaces:[],group:0}))};
-    const request={id:1,group:0,delivery: 1, schedule:periodic(60),samples:caps.descriptors.map((_,descriptor)=>({descriptor,format:1,space:0}))};
-    const c=connection(caps);Peer.latest.sctp.maxMessageSize=128;c.publish(request);
-    assert.equal(Peer.latest.control.sent.length,2);assert.ok(Peer.latest.control.sent.every(b=>b.length<=128));
-    assert.deepEqual(new Uint8Array(Buffer.concat(Peer.latest.control.sent)),subscribe(request));assert.equal(c.state.status,"Connected");c.close();
-    const failed=connection(caps);Peer.latest.sctp.maxMessageSize=128;Peer.latest.control.failAfter=1;failed.publish(request);
-    assert.equal(Peer.latest.control.sent.length,1);assert.equal(failed.state.status,"Error");assert.equal(failed.session.pending.size,0);
+    const caps: Capabilities={skeletons:[],groups:[60],descriptors:Array.from({length:40},(_,i)=>({id:String(i),name:"",description:"",kind:2,formats:[1],spaces:[],group:0}))};
+    const request={id:1,group:0,delivery:1,schedule:periodic(60),samples:caps.descriptors.map((_,descriptor)=>({descriptor,format:1,space:0}))};
+    const c=connection(caps);c.publish(request);
+    assert.equal(Peer.latest.control.sent.length,1);assert.deepEqual(Peer.latest.control.sent[0],subscribe(request));c.close();
+    const limited=connection(caps);Peer.latest.sctp.maxMessageSize=128;limited.publish(request);
+    assert.equal(Peer.latest.control.sent.length,0);assert.equal(limited.state.status,"Error");assert.equal(limited.session.pending.size,0);
   }finally{Object.assign(globalThis,{RTCPeerConnection:original});}
 });
 
@@ -88,12 +87,12 @@ test("freshness observers and recordings change during silence without disconnec
   try {
     await c.connect();
     c.session.receive({ tag: 2, version: 1 }); c.session.receive({ tag: 3, capabilities: caps() });
-    Peer.latest.control.onmessage!({ data: new ArrayBuffer(0) });
+    Peer.latest.control.onmessage!({ data: Uint8Array.of(8,99,0,0,0,1,0,0,0,97).buffer });
     c.session.receive({ tag: 5, id: 1 });
     c.session.clock = { offset: 0n, delay: 20_000_000n, at: now };
-    const bytes = new Uint8Array(78), view = new DataView(bytes.buffer);
+    const bytes = new Uint8Array(77), view = new DataView(bytes.buffer);
     bytes[0] = 9; view.setUint32(1, 1, true); view.setBigUint64(13, NON_MAX, true);
-    view.setBigUint64(5, 990_000_000n, true); bytes[21] = 1; view.setFloat64(70, 1, true);
+    view.setBigUint64(5, 990_000_000n, true); view.setFloat64(69, 1, true);
     Peer.latest.tracking.onmessage!({ data: bytes.buffer });
     assert.equal(c.state.freshness.status, "Fresh");
     now = 1044; context.mock.timers.tick(48);

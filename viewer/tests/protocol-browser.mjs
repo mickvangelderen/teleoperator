@@ -7,7 +7,7 @@ export async function checkProtocol(page) {
     const session = new Session(), pc = new RTCPeerConnection({iceServers: []});
     const reliable = pc.createDataChannel("reliable", {ordered:true,protocol:"xrop"});
     const unreliable = pc.createDataChannel("unreliable", {ordered:false,maxRetransmits:0,protocol:"xrop"});
-    const errors = [], wirePublications = new Map();
+    const errors = [], capabilityMessages = [], wirePublications = new Map();
     const wait = async (condition, label) => {
       const end = performance.now()+10000;
       while (!condition()) {
@@ -20,7 +20,10 @@ export async function checkProtocol(page) {
       dc.binaryType="arraybuffer";
       dc.onmessage=event=>{try {
         const bytes=new Uint8Array(event.data);
-        if(dc===reliable)session.control(bytes,performance.now());else {
+        if(dc===reliable){
+          if(bytes[0]===3)capabilityMessages.push(bytes.length);
+          session.control(bytes,performance.now());
+        }else {
           if (bytes[0] === 9 && bytes.length >= 21) {
             const id = new DataView(bytes.buffer).getUint32(1,true), previous = wirePublications.get(id);
             wirePublications.set(id,{count:(previous?.count ?? 0)+1,body:bytes.slice(1)});
@@ -29,8 +32,7 @@ export async function checkProtocol(page) {
         }
       }catch(e){errors.push(String(e));}};
     }
-    // Split reliable records deliberately, including inside pose selections and schedule fields.
-    const send=bytes=>{for(let i=0;i<bytes.length;i+=3)reliable.send(bytes.subarray(i,i+3));};
+    const send=bytes=>reliable.send(bytes);
     try {
       await pc.setLocalDescription(await pc.createOffer());
       await wait(()=>pc.iceGatheringState==="complete","ICE gathering");
@@ -77,7 +79,7 @@ export async function checkProtocol(page) {
       const probe=session.requestClock(performance.now());unreliable.send(probe);
       await wait(()=>!!session.clock,"clock response");
       send(session.stop(id));await wait(()=>!session.stopping.has(id),"final unsubscribe");
-      return {counts,prediction,clock:!!session.clock,errors};
+      return {counts,prediction,clock:!!session.clock,capabilityMessages,errors};
     }finally{pc.close();session.retire();}
   });
   for(const item of results.counts){
@@ -85,6 +87,9 @@ export async function checkProtocol(page) {
     if(item.kind==="onChange")assert.equal(item.packets,1);
     else assert.ok(item.packets>=3,JSON.stringify(item));
   }
+  assert.equal(results.capabilityMessages.length,1,"Full capabilities arrive as one WebRTC message");
+  assert.ok(results.capabilityMessages[0]>16_384 && results.capabilityMessages[0]<=65_535);
+  console.log(`Full catalog WebRTC message: ${results.capabilityMessages[0]} bytes`);
   assert.equal(results.prediction,"25000000","Wire time reflects the actual synthetic target");
   assert.equal(results.clock,true);
   assert.deepEqual(results.errors,[]);

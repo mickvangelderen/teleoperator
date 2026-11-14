@@ -1,7 +1,7 @@
 # Clock offset estimation
 
 After version negotiation, the client sends [ClockRequest](../types/ClockRequest.md) and the server returns [ClockResponse](../types/ClockResponse.md), both over the unreliable channel.
-Each uses one [tagged transport message](../encoding/unreliable.md).
+Each uses one [tagged transport message](../encoding/messages.md) on the unreliable channel.
 The client keeps the local send time associated with each outstanding request id.
 Ids are not reused within the connection.
 

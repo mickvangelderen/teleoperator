@@ -54,7 +54,7 @@ try {
     await page.locator("#error").textContent(),
   );
   await page.waitForFunction(() => document.querySelector("#poses").dataset.poseCount === "5" && document.querySelector("#poses").dataset.bodyJoints === "70");
-  assert.match(await page.locator("#sample-summary").textContent(), /517 samples/);
+  assert.match(await page.locator("#sample-summary").textContent(), /545 samples/);
   await page.waitForFunction(() => parseFloat(document.querySelector("#arrival-rate").textContent) > 40);
   await page.waitForFunction(() => document.querySelector("#estimated-latency").textContent.endsWith(" ms") && document.querySelector("#sample-age").textContent.endsWith(" ms"));
   assert.equal(await page.locator(".metric").filter({ has: page.locator("#sample-age") }).locator("label").textContent(), "SAMPLE AGE AT PHOTON");

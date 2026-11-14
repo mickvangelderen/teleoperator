@@ -5,19 +5,17 @@ import { Session } from "../src/session";
 import { spatialFrames, stale } from "../src/tracking-view";
 import type { Capabilities, Value } from "../src/protocol";
 
-function publish(s: Session, id: number, timestamp: bigint, values: (Value | null)[], arrivedAt = 100) {
-  const sub = s.active.get(id)!, header = Buffer.alloc(21), payload: Buffer[] = [];
+function publish(s: Session, id: number, timestamp: bigint, values: Value[], arrivedAt = 100) {
+  const sub = s.active.get(id)!, header = Buffer.alloc(20), payload: Buffer[] = [];
   header.writeUInt32LE(id); header.writeBigUInt64LE(timestamp,4); header.writeBigUInt64LE(NON_MAX,12);
   let booleans = 0, count = 0;
   values.forEach((value,i) => {
-    if (value === null) return;
-    header[20] |= 1 << i;
     const format = sub.request.samples[i].format;
     if (format === 1) { if (value) booleans |= 1 << count; count++; return; }
-    const bytes = Buffer.alloc(format === 2 ? 1 : format === 4 ? 4 : 28);
+    const bytes = Buffer.alloc(format === 2 ? 1 : format === 4 ? 4 : Array.isArray(value) ? value.length * 4 : 4);
     if (format === 2) bytes.writeUInt8(Number(value));
     else if (format === 4) bytes.writeUInt32LE(Number(value));
-    else (value as number[]).forEach((v,j) => bytes.writeFloatLE(v,j*4));
+    else (Array.isArray(value) ? value : [Number(value)]).forEach((v,j) => bytes.writeFloatLE(v,j*4));
     payload.push(bytes);
   });
   assert.ok(s.tracking(Buffer.concat([header, ...(count ? [Buffer.from([booleans])] : []), ...payload]), arrivedAt, sub.request.delivery));
@@ -42,7 +40,7 @@ function setup() {
   publish(s,0,2n,[[1,2,3,0,0,Math.SQRT1_2,Math.SQRT1_2],[1,0,0,0,0,0,1],true,true,1]);
   return s;
 }
-test("tracking loss is distinct from missing tracking samples and never changes validity", () => {
+test("tracking loss is distinct from unselected tracking samples and never changes validity", () => {
   const s = new Session();
   const capabilities: Capabilities = { groups: [60], skeletons: [{ joints: [{ parent: 0, pose_sample: 0, rest_pose_sample: 0 }] }], descriptors: [
     { id: "pose", kind: 10, formats: [10], spaces: [2], position_valid_sample: 1, orientation_valid_sample: 2, position_tracked_sample: 3, orientation_tracked_sample: 4 },
@@ -56,7 +54,7 @@ test("tracking loss is distinct from missing tracking samples and never changes 
   s.receive({ tag: 5, id: 1 });
   const pose = [0, 1, 0, 0, 0, 0, 1];
   let timestamp = 1n;
-  for (const [position, orientation, expected] of [[true, true, true], [false, true, false], [true, false, false], [false, false, false], [true, null, undefined], [null, false, false], [null, null, undefined]] as const) {
+  for (const [position, orientation, expected] of [[true, true, true], [false, true, false], [true, false, false], [false, false, false]] as const) {
     publish(s, 1, timestamp++, [pose, true, true, position, orientation]);
     const joint = spatialFrames(s, 101).body.poses[0];
     assert.equal(joint.tracked, expected);
@@ -92,12 +90,10 @@ test("cycles and unanchored live roots are not rendered as world poses", () => {
   c.descriptors[0].spaces=[5]; s.capabilities=c; s.active.get(0)!.request.samples[0].space=5;
   assert.equal(spatialFrames(s,101).body.active,false);
 });
-test("reliable rest snapshots persist, become unavailable explicitly, and reset with their subscription", () => {
+test("reliable rest snapshots persist and reset with replacement or termination", () => {
   const s = setup(), rest = s.active.get(1)!;
   assert.equal(rest.request.schedule.kind,"onChange"); assert.equal(s.active.get(0)!.request.schedule.kind,"periodic");
   assert.equal(stale(rest,60_000),false); assert.equal(spatialFrames(s,60_000,true).body.active,true);
-  publish(s,1,3n,[null,null,null],60_001);
-  assert.equal(spatialFrames(s,60_002,true).body.active,false);
   publish(s,1,4n,[[0,0,0,0,0,0,1],[2,0,0,0,0,0,1],257],60_003);
   assert.equal(spatialFrames(s,120_000,true).body.active,true);
   s.request(rest.request); s.receive({tag:8,id:1,reason:"replaced"}); s.receive({tag:5,id:1});
@@ -149,4 +145,34 @@ test("repeated periodic acquisitions count packets without keeping frozen poses 
   assert.equal(stale(sub,1001),true);assert.equal(spatialFrames(s,1001).body.active,false);
   assert.equal(spatialFrames(s,1001,true).body.active,true,"OnChange rest remains available");
   publish(s,0,timestamp+1n,values,1002);assert.equal(stale(sub,1003),false);
+});
+
+
+test("confidence summaries honor arbitrary-id validity companions without confusing unknown and measured zero", () => {
+  const confidence = "arbitrary/device/quality";
+  const make = (companion: boolean, selected: boolean, statusGroup = 0) => {
+    const c: Capabilities = {groups:[60,60],skeletons:[{joints:[{parent:0,pose_sample:0,rest_pose_sample:0}]}],descriptors:[
+      {id:"joint",kind:10,formats:[10],spaces:[2],confidence_sample:1},
+      {id:confidence,kind:16,formats:[10],spaces:[]},
+      ...(companion ? [{id:`${confidence}/valid`,kind:1,formats:[1],spaces:[]}] : []),
+    ].map((d,i)=>({...d,name:d.id,description:"",group:i===2?statusGroup:0}))};
+    const s=new Session();s.receive({tag:2,version:1});s.receive({tag:3,capabilities:c});
+    s.request({id:1,group:0,delivery:1,schedule:periodic(60),samples:c.descriptors.flatMap((d,descriptor)=>descriptor===2&&!selected?[]:[{descriptor,format:d.formats[0],space:d.spaces[0]??0}])});
+    s.receive({tag:5,id:1});return s;
+  };
+  const pose=[0,1,0,0,0,0,1], s=make(true,true);
+  publish(s,1,1n,[pose,0,false]);assert.equal(spatialFrames(s,101).confidence,undefined);
+  publish(s,1,2n,[pose,0,true]);assert.equal(spatialFrames(s,101).confidence,0);
+  const missing=make(true,false);publish(missing,1,1n,[pose,0]);assert.equal(spatialFrames(missing,101).confidence,undefined);
+  const wrongGroup=make(true,false,1);publish(wrongGroup,1,1n,[pose,0]);
+  wrongGroup.request({id:2,group:1,delivery:1,schedule:periodic(60),samples:[{descriptor:2,format:1,space:0}]});wrongGroup.receive({tag:5,id:2});
+  publish(wrongGroup,2,1n,[true]);assert.equal(spatialFrames(wrongGroup,101).confidence,undefined,"Matching timestamps in different groups do not prove validity");
+  const ordinary=make(false,false);publish(ordinary,1,1n,[pose,0]);assert.equal(spatialFrames(ordinary,101).confidence,0);
+  // A stale separately selected companion cannot validate a fresh numerical confidence.
+  const r=s.active.get(1)!.request;s.request({...r,id:2,samples:[r.samples[2]]});s.receive({tag:5,id:2});
+  publish(s,2,3n,[true],100);s.active.get(1)!.request.samples.pop();
+  publish(s,1,4n,[pose,0],1000);assert.equal(spatialFrames(s,1001).confidence,undefined);
+  publish(s,2,3n,[true],1002);assert.equal(spatialFrames(s,1003).confidence,undefined,"Fresh older status cannot validate a newer confidence");
+  publish(s,2,5n,[true],1004);assert.equal(spatialFrames(s,1005).confidence,undefined,"Newer status cannot validate an older confidence");
+  publish(s,1,5n,[pose,0],1006);assert.equal(spatialFrames(s,1007).confidence,0,"Separate subscriptions may join the same acquisition");
 });

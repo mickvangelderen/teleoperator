@@ -10,14 +10,14 @@ The transport binding keeps data from different connections separate.
 | `reliable`   | Ordered, guaranteed delivery, or connection failure. |
 | `unreliable` | Unordered delivery without retransmission.           |
 
-The reliable channel carries [framed records](encoding/reliable.md), including control messages and reliable sample publications.
-The unreliable channel preserves message boundaries and carries [tagged messages](encoding/unreliable.md) for sample publications and clock exchanges.
-An unreliable publication is independently decodable using its accepted subscription and capabilities.
-It MUST fit one transport message including its tag; its maximum size is checked when admitting the subscription.
-Reliable records can span transport writes or messages and are reassembled using their length prefix.
+Both channels preserve message boundaries and carry the same [tag-and-payload encoding](encoding/messages.md).
+Each complete protocol message MUST fit one transport message including its tag; publications' fixed sizes are checked when admitting subscriptions on either channel.
+Each publication is independently decodable using its accepted subscription and capabilities.
+The reliable channel carries control and reliable publications; the unreliable channel carries unreliable publications and clock exchanges.
 
 The transport must provide the two delivery behaviors independently; putting both behind one reliable ordered stream does not provide unreliable delivery.
 Transport establishment and platform integration are binding-specific.
+The [operator binding](bindings/operator.md) defines the current WebRTC message limit and source-quality policy.
 
 ## Session lifecycle
 
@@ -58,7 +58,7 @@ Subscriptions select samples from one group and establish their value order and 
 
 ## Invalid messages
 
-Malformed reliable framing, unknown reliable tags, invalid advertisements and reliable messages in an invalid phase end the connection.
+Malformed reliable control, unknown reliable tags, invalid advertisements and reliable messages in an invalid phase end the connection.
 Malformed or unexpected unreliable messages are discarded.
 A structurally readable subscription request that cannot be fulfilled receives [SubscriptionRejected](types/SubscriptionRejected.md).
 A malformed publication is discarded without exposing its values.

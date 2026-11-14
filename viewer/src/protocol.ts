@@ -1,6 +1,5 @@
 // Version 1 wire contract; no device identities or rendering assumptions.
-export const MAX_CONTROL = 1_048_576;
-export const MAX_PACKET = 16_384;
+export const MAX_MESSAGE = 65_535;
 export const kindNames = ["invalid", "generic", "pressed", "press_count", "release_count", "touched", "touch_count", "untouch_count", "trigger", "thumbstick", "pose", "revision", "position_valid", "orientation_valid", "position_tracked", "orientation_tracked", "confidence"];
 export const formatNames = ["invalid", "bit", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "unorm8", "unorm16", "snorm8", "snorm16"];
 export const spaceNames = ["absent", "view", "local", "stage", "local_floor", "parent", "model"];
@@ -36,7 +35,7 @@ export type ServerMessage =
   | { tag: 8; id: number; reason: string }
   | { tag: 9; body: Uint8Array };
 export type Value = boolean | number | bigint | number[];
-export type Packet = { id: number; timestamp: bigint; predictedFor: bigint | null; values: (Value | null)[] };
+export type Packet = { id: number; timestamp: bigint; predictedFor: bigint | null; values: Value[] };
 export const components = (kind: number) => kind === 9 ? 2 : kind === 10 ? 7 : 1;
 export const width = (format: number) => [0, 0, 1, 2, 4, 8, 1, 2, 4, 8, 4, 8, 1, 2, 1, 2][format] ?? 0;
 export const counterKind = (kind: number) => [3, 4, 6, 7, 11].includes(kind);
@@ -80,14 +79,14 @@ export function validateRequest(c: Capabilities, r: Request) {
   check(Number.isInteger(r.group) && r.group >= 0 && r.group < c.groups.length, "Unknown group");
   validateSchedule(r.schedule, c.groups[r.group]);
   check(r.samples.length && unique(r.samples.map(s => s.descriptor)), "Empty or duplicate sample selection");
-  let size = 20 + Math.ceil(r.samples.length / 8), bits = 0;
+  let size = 20, bits = 0;
   for (const s of r.samples) {
     const d = c.descriptors[s.descriptor];
     check(d && d.group === r.group && d.formats.includes(s.format) && compatible(d.kind, s.format), "Unsupported sample selection");
     check(d.kind === 10 ? d.spaces.includes(s.space) : s.space === 0, "Unsupported reference space");
     if (s.format === 1) bits++; else size += components(d.kind) * width(s.format);
   }
-  check(size + Math.ceil(bits / 8) + 1 <= (r.delivery === 1 ? MAX_PACKET : MAX_CONTROL), "Publication too large");
+  check(size + Math.ceil(bits / 8) + 1 <= MAX_MESSAGE, "Publication too large");
 }
 class Reader {
   at = 0;
@@ -105,7 +104,6 @@ class Reader {
   done() { check(this.at === this.bytes.length, "Trailing bytes"); }
   bitmap(n: number) {
     const size = Math.ceil(n / 8), start = this.take(size), bytes = this.bytes.subarray(start, start + size);
-    if (n % 8) check((bytes[size - 1] >> (n % 8)) === 0, "Nonzero bitmap padding");
     return (i: number) => !!(bytes[i >> 3] & (1 << (i % 8)));
   }
   number(format: number): number | bigint {
@@ -120,7 +118,8 @@ class Reader {
     }
   }
 }
-function decodeServer(bytes: Uint8Array): ServerMessage {
+export function decodeServer(bytes: Uint8Array): ServerMessage {
+  check(bytes.length <= MAX_MESSAGE, "Message size limit");
   const r = new Reader(bytes), tag = r.u8();
   let message: ServerMessage;
   switch (tag) {
@@ -153,25 +152,8 @@ function decodeServer(bytes: Uint8Array): ServerMessage {
   if (message.tag === 8) check(message.reason.length > 0, "Missing reason");
   return message;
 }
-export class ControlDecoder {
-  private pending = new Uint8Array(0);
-  reset() { this.pending = new Uint8Array(0); }
-  feed(bytes: Uint8Array): ServerMessage[] {
-    check(this.pending.length + bytes.length <= MAX_CONTROL * 2, "Control buffer limit");
-    const joined = new Uint8Array(this.pending.length + bytes.length); joined.set(this.pending); joined.set(bytes, this.pending.length);
-    let at = 0;
-    const view = new DataView(joined.buffer), result: ServerMessage[] = [];
-    while (joined.length - at >= 4) {
-      const n = view.getUint32(at, true); check(n > 0 && n <= MAX_CONTROL, "Control record length limit");
-      if (joined.length - at < n + 4) break;
-      result.push(decodeServer(joined.subarray(at + 4, at + 4 + n))); at += n + 4;
-      check(result.length <= 1024, "Too many control records");
-    }
-    this.pending = joined.slice(at); return result;
-  }
-}
 class Writer {
-  bytes: number[] = [0, 0, 0, 0];
+  bytes: number[] = [];
   u8(n: number) { this.bytes.push(n); }
   u16(n: number) { this.bytes.push(n & 255, n >>> 8); }
   u32(n: number) { this.bytes.push(n & 255, n >>> 8 & 255, n >>> 16 & 255, n >>> 24); }
@@ -180,7 +162,7 @@ class Writer {
     validateSchedule(s); this.u8(s.kind === "periodic" ? 1 : 2);
     if (s.kind === "periodic") { this.u64(s.interval); this.u64(s.phase); this.u64(s.consumptionDelay); }
   }
-  finish() { const bytes = new Uint8Array(this.bytes); new DataView(bytes.buffer).setUint32(0, bytes.length - 4, true); return bytes; }
+  finish() { return new Uint8Array(this.bytes); }
 }
 export function offer() { const w = new Writer(); w.u8(1); w.u32(1); w.u16(1); return w.finish(); }
 export function subscribe(r: Request) {
@@ -191,15 +173,13 @@ export function subscribe(r: Request) {
 export function unsubscribe(id: number) { const w = new Writer(); w.u8(7); w.u32(id); return w.finish(); }
 export function updateSchedule(id: number, schedule: Schedule) { const w = new Writer(); w.u8(12); w.u32(id); w.schedule(schedule); return w.finish(); }
 export function decodeTracking(bytes: Uint8Array, c: Capabilities, request: Request): Packet {
-  check(bytes.length <= (request.delivery === 1 ? MAX_PACKET - 1 : MAX_CONTROL - 1), "Publication size limit");
+  check(bytes.length <= (MAX_MESSAGE - 1), "Publication size limit");
   const r = new Reader(bytes), id = r.u32(), timestamp = r.u64(), predicted = r.u64();
   const predictedFor = predicted === NON_MAX ? null : predicted;
   check(id === request.id && timestamp < NON_MAX, "Unexpected subscription or invalid acquisition time");
-  const available = r.bitmap(request.samples.length);
-  const booleans = r.bitmap(request.samples.filter((s, i) => available(i) && s.format === 1).length);
+  const booleans = r.bitmap(request.samples.filter(s => s.format === 1).length);
   let bit = 0;
-  const values = request.samples.map((s, i): Value | null => {
-    if (!available(i)) return null;
+  const values = request.samples.map((s): Value => {
     const d = c.descriptors[s.descriptor]; check(compatible(d.kind, s.format), "Invalid layout");
     if (s.format === 1) return booleans(bit++);
     const v = Array.from({ length: components(d.kind) }, () => r.number(s.format));

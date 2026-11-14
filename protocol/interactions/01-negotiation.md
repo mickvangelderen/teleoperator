@@ -6,7 +6,7 @@
 4. A successful selection is followed by [capability advertising](02-capabilities.md).
 
 This draft defines version `1`.
-Offer and selection use the fixed [bootstrap encoding](../encoding/reliable.md#bootstrap).
+Offer and selection use the fixed [bootstrap encoding](../encoding/messages.md#bootstrap).
 The client rejects a nonzero selection it did not offer.
 The selected version applies to both channels for the connection.
 No sample publication is sent before negotiation succeeds.

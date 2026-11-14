@@ -1,7 +1,7 @@
 use crate::diagnostics::Event;
 use crate::tracking::Hub;
 use crate::{
-    protocol::{self, ControlDecoder, Message, Session},
+    protocol::{self, Message, Session},
     publication::Catalog,
 };
 use axum::{
@@ -119,7 +119,7 @@ impl Peer {
                     return;
                 }
                 if message.is_string
-                    || message.data.len() > protocol::MAX_CONTROL * 2
+                    || message.data.len() > protocol::MAX_MESSAGE
                     || peer
                         .events
                         .try_send(PeerEvent::Control(message.data))
@@ -140,42 +140,66 @@ impl Peer {
         control: bool,
     ) -> Result<(), String> {
         let buffered = dc.buffered_amount().await;
-        if control && buffered > protocol::MAX_CONTROL {
+        if control && buffered.saturating_add(message.len()) > 1_048_576 {
             return Err("Control backpressure limit".into());
         }
         if !control && message.first() == Some(&11) {
             message[13..21].copy_from_slice(&(self.hub.now() as u64).to_le_bytes());
         }
-        let data = bytes::Bytes::from(message);
-        let chunk_size = if control {
-            self.message_limit
-        } else {
-            data.len()
-        };
-        for start in (0..data.len()).step_by(chunk_size) {
-            let chunk = data.slice(start..(start + chunk_size).min(data.len()));
-            self.hub.trace.record(
-                self.hub.now(),
-                Event::Packet {
-                    peer: self.id,
-                    channel: if control { "reliable" } else { "unreliable" },
-                    action: "send",
-                    data: chunk.clone(),
-                    buffered_bytes: buffered,
-                },
-            );
-            timeout(Duration::from_secs(2), dc.send(&chunk))
-                .await
-                .map_err(|_| "Data channel send timed out")?
-                .map_err(|e| e.to_string())?;
+        if message.len() > self.message_limit {
+            return Err("Message exceeds negotiated transport limit".into());
         }
+        let data = bytes::Bytes::from(message);
+        self.hub.trace.record(
+            self.hub.now(),
+            Event::Packet {
+                peer: self.id,
+                channel: if control { "reliable" } else { "unreliable" },
+                action: "send",
+                data: data.clone(),
+                buffered_bytes: buffered,
+            },
+        );
+        timeout(Duration::from_secs(2), dc.send(&data))
+            .await
+            .map_err(|_| "Data channel send timed out")?
+            .map_err(|e| e.to_string())?;
         Ok(())
+    }
+    fn handle_control(
+        &self,
+        catalog: &mut Catalog,
+        state: &mut Session,
+        message: Message,
+    ) -> protocol::Result<Vec<Message>> {
+        let message = if let Message::SubscribeBody(body) = message {
+            Message::Subscribe(protocol::decode_subscription(&body, &state.capabilities)?)
+        } else {
+            message
+        };
+        if let Message::Subscribe(request) = &message {
+            let sample = self.hub.latest.lock().unwrap().clone();
+            if let Some(sample) = sample {
+                catalog.refresh_skeleton(&self.hub, &sample);
+                let validation = state.capabilities.validate_request(request).and_then(|_| {
+                    let timestamp = u64::try_from(sample.acquired_at)
+                        .map_err(|_| "Invalid acquisition time")?;
+                    catalog.publication(request, &sample, timestamp).map(|_| ())
+                });
+                if let Err(reason) = validation {
+                    return Ok(vec![Message::Rejected {
+                        id: request.id,
+                        reason: Some(reason),
+                    }]);
+                }
+            }
+        }
+        state.handle(message, self.hub.now())
     }
     async fn run(&self, mut incoming: mpsc::Receiver<PeerEvent>) -> Result<(), String> {
         let mut updates = self.hub.updates.subscribe();
         let mut control = None;
         let mut tracking: Option<Arc<RTCDataChannel>> = None;
-        let mut decoder = ControlDecoder::default();
         let mut session: Option<(Catalog, Session)> = None;
         let mut pending_offer = None;
         let deadline = tokio::time::sleep(Duration::from_secs(12));
@@ -199,16 +223,15 @@ impl Peer {
                     },
                     PeerEvent::Channel(dc) => { if dc.label() == "reliable" { control = Some(dc); } else { tracking = Some(dc); } },
                     PeerEvent::Control(bytes) => {
-                        for message in decoder.feed(&bytes)? {
-                            if let Some((_, state)) = session.as_mut() {
-                                for reply in state.handle(message, self.hub.now())? {
-                                    self.send(control.as_ref().ok_or("Missing control channel")?, protocol::encode(&reply), true).await?;
-                                }
+                        let message = protocol::decode_client(&bytes)?;
+                        if let Some((catalog, state)) = session.as_mut() {
+                            for reply in self.handle_control(catalog, state, message)? {
+                                self.send(control.as_ref().ok_or("Missing control channel")?, protocol::encode(&reply), true).await?;
+                            }
                             } else {
                                 if pending_offer.is_some() || !matches!(message, Message::Offer(_)) { return Err("Version offer must be first".into()); }
                                 pending_offer = Some(message);
                             }
-                        }
                     },
                 },
                 _ = updates.changed() => {},
@@ -256,6 +279,10 @@ impl Peer {
             {
                 continue;
             }
+            let sample = self.hub.latest.lock().unwrap().clone();
+            let Some(sample) = sample else {
+                continue;
+            };
             if !self.hub.available.load(Ordering::SeqCst) {
                 for id in session.active.keys().copied().collect::<Vec<_>>() {
                     for reply in session.end(id, "Device acquisition stopped") {
@@ -265,16 +292,14 @@ impl Peer {
                 }
                 continue;
             }
-            let sample = self.hub.latest.lock().unwrap().clone();
-            let Some(sample) = sample else {
-                continue;
-            };
             // Recenter keeps the selected space; wait for an acquisition in its new origin.
             if sample.reference_version != *self.hub.reference_version.lock().unwrap() {
                 continue;
             }
             // Acquisition can advance after due-slot bookkeeping; validate the copied sample now.
             let sampled_at = self.hub.now();
+            catalog.refresh_skeleton(&self.hub, &sample);
+            let mut ended = Vec::new();
             for subscription in session.active.values_mut() {
                 if !due.contains(&subscription.request.id) {
                     continue;
@@ -283,19 +308,13 @@ impl Peer {
                     continue;
                 };
                 // Skip superseded acquisitions under congestion; never retain a tracking backlog.
-                let values = subscription
-                    .request
-                    .samples
-                    .iter()
-                    .map(|s| catalog.value(s.descriptor, &sample))
-                    .collect::<Vec<_>>();
-                let packet = protocol::tracking(
-                    &catalog.capabilities,
-                    &subscription.request,
-                    timestamp,
-                    catalog.predicted_for(&subscription.request, &sample, &values),
-                    &values,
-                );
+                let packet = match catalog.publication(&subscription.request, &sample, timestamp) {
+                    Ok(packet) => packet,
+                    Err(reason) => {
+                        ended.push((subscription.request.id, reason));
+                        continue;
+                    }
+                };
                 if !subscription.should_publish(&packet) {
                     continue;
                 }
@@ -305,23 +324,25 @@ impl Peer {
                 } else {
                     dc
                 };
-                let framed = if reliable {
-                    protocol::encode(&Message::Publication(packet.clone()))
-                } else {
-                    [&[9], packet.as_slice()].concat()
-                };
+                let framed = protocol::encode(&Message::Publication(packet.clone()));
                 if !reliable && !tracking_fits(channel.buffered_amount().await, framed.len()) {
                     continue;
                 }
                 self.send(channel, framed, reliable).await?;
                 subscription.published(&packet);
             }
+            for (id, reason) in ended {
+                for reply in session.end(id, &reason) {
+                    self.send(control.as_ref().unwrap(), protocol::encode(&reply), true)
+                        .await?;
+                }
+            }
         }
     }
 }
 
 fn tracking_fits(buffered: usize, packet: usize) -> bool {
-    buffered.saturating_add(packet) <= protocol::MAX_PACKET
+    packet <= protocol::MAX_MESSAGE && (buffered == 0 || buffered.saturating_add(packet) <= 16_384)
 }
 
 type HttpError = (StatusCode, String);
@@ -358,9 +379,9 @@ async fn offer(
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(65_536);
     let message_limit = if remote_limit == 0 {
-        protocol::MAX_PACKET
+        protocol::MAX_MESSAGE
     } else {
-        (remote_limit as usize).min(protocol::MAX_PACKET)
+        (remote_limit as usize).min(protocol::MAX_MESSAGE)
     };
     let (events, incoming) = mpsc::channel(32);
     let peer = Arc::new(Peer {
@@ -484,10 +505,133 @@ pub async fn serve(
 mod tests {
     use super::*;
     #[test]
+    fn source_admission_waits_initially_and_rejects_malformed_replacement_atomically() {
+        use crate::{
+            inputs,
+            protocol::{Request, Schedule, Selection},
+            tracking::Pose,
+        };
+        let hub = Hub::new("test");
+        hub.initialized.store(true, Ordering::SeqCst);
+        let (events, _) = mpsc::channel(4);
+        let peer = Peer {
+            id: 1,
+            channels: AtomicU8::new(0),
+            hub: hub.clone(),
+            close: Notify::new(),
+            events,
+            message_limit: protocol::MAX_MESSAGE,
+        };
+        let mut catalog = Catalog::snapshot(&hub);
+        let mut session = Session::new(catalog.capabilities.clone());
+        session.handle(Message::Offer(vec![1]), 0).unwrap();
+        let head = Request {
+            id: 1,
+            group: 0,
+            delivery: 1,
+            schedule: Schedule::OnChange,
+            samples: vec![Selection {
+                descriptor: 0,
+                format: 10,
+                space: 2,
+            }],
+        };
+        let submit = |peer: &Peer, c: &mut Catalog, s: &mut Session, r: Request| {
+            peer.handle_control(
+                c,
+                s,
+                protocol::decode_client(&protocol::encode(&Message::Subscribe(r))).unwrap(),
+            )
+            .unwrap()
+        };
+        assert!(
+            matches!(
+                submit(&peer, &mut catalog, &mut session, head.clone())[0],
+                Message::Accepted { .. }
+            ),
+            "No acquisition yet waits for actual data"
+        );
+        let poses = std::array::from_fn(|_| Pose::default());
+        let mut inputs: Vec<_> = inputs::definitions()
+            .iter()
+            .map(|d| inputs::Input::inactive(d.kind))
+            .collect();
+        hub.acquire(&poses, &inputs, None, 100, None);
+        let active = catalog
+            .capabilities
+            .descriptors
+            .iter()
+            .position(|d| d.id == "/user/hand/left/input/x/click/active")
+            .unwrap() as u32;
+        let status = Request {
+            id: 2,
+            samples: vec![Selection {
+                descriptor: active,
+                format: 1,
+                space: 0,
+            }],
+            ..head.clone()
+        };
+        assert!(matches!(
+            submit(&peer, &mut catalog, &mut session, status.clone())[0],
+            Message::Accepted { .. }
+        ));
+        // A malformed action variant invalidates its status as well as the original value.
+        let action = inputs::definitions()
+            .iter()
+            .position(|d| d.source == "left" && d.id == "primary/click")
+            .unwrap();
+        inputs[action].value = inputs::Value::Scalar(0.5);
+        inputs[action].active = true;
+        hub.acquire(&poses, &inputs, None, 101, None);
+        let replacement = Request {
+            id: 1,
+            ..status.clone()
+        };
+        assert!(matches!(
+            submit(&peer, &mut catalog, &mut session, replacement)[0],
+            Message::Rejected { .. }
+        ));
+        assert_eq!(session.active[&1].request, head);
+        let sample = hub.latest.lock().unwrap().clone().unwrap();
+        assert!(
+            catalog
+                .publication(&session.active[&1].request, &sample, 101)
+                .is_ok()
+        );
+        let failed: Vec<_> = session
+            .active
+            .values()
+            .filter(|s| catalog.publication(&s.request, &sample, 101).is_err())
+            .map(|s| s.request.id)
+            .collect();
+        assert_eq!(failed, [2]);
+        for id in failed {
+            session.end(id, "Selected source contract failed");
+        }
+        assert!(session.active.contains_key(&1));
+        assert!(!session.active.contains_key(&2));
+        // Missing action slots reject without losing an existing useful head selection.
+        hub.latest.lock().unwrap().as_mut().unwrap().inputs.clear();
+        assert!(matches!(
+            submit(
+                &peer,
+                &mut catalog,
+                &mut session,
+                Request { id: 1, ..status }
+            )[0],
+            Message::Rejected { .. }
+        ));
+        assert_eq!(session.active[&1].request, head);
+    }
+    #[test]
     fn tracking_backpressure_counts_the_new_packet_without_overflow() {
-        assert!(tracking_fits(protocol::MAX_PACKET - 20, 20));
-        assert!(!tracking_fits(protocol::MAX_PACKET - 19, 20));
-        assert!(!tracking_fits(protocol::MAX_PACKET, 20));
+        assert!(tracking_fits(16_384 - 20, 20));
+        assert!(!tracking_fits(16_384 - 19, 20));
+        assert!(!tracking_fits(16_384, 20));
         assert!(!tracking_fits(usize::MAX, 20));
+        assert!(tracking_fits(0, protocol::MAX_MESSAGE));
+        assert!(!tracking_fits(1, protocol::MAX_MESSAGE));
+        assert!(!tracking_fits(0, protocol::MAX_MESSAGE + 1));
     }
 }

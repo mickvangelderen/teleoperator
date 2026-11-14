@@ -16,10 +16,10 @@ function session(rate = 100, delivery = 1) {
   return s;
 }
 function packet(s: Session, acquired: number, arrived: number, id = 1) {
-  const bytes = Buffer.alloc(22);
+  const bytes = Buffer.alloc(21);
   bytes.writeUInt32LE(id); bytes.writeBigUInt64LE(NON_MAX, 12);
   bytes.writeBigUInt64LE(9_007_199_254_740_993n + BigInt(Math.round(acquired * 1e6)), 4);
-  bytes[20] = bytes[21] = 1;
+  bytes[20] = 1;
   return s.tracking(bytes, arrived, s.active.get(id)!.request.delivery);
 }
 

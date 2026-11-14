@@ -24,6 +24,7 @@ Acquisition timestamps cannot establish a reliable replacement boundary because 
 
 Clients needing unambiguous interpretation across unreliable selection or channel changes SHOULD use a fresh subscription id and unsubscribe the old id.
 They should avoid reusing such ids during the connection.
+Unsubscription releases the old active state, but its response does not prove that delayed packets on the other channel have drained, even after one or two round trips.
 Same-id replacement is supported, but does not guarantee isolation from delayed unreliable publications.
 The protocol adds no acknowledgments, drain handshake or speculative timestamp cutoff to overcome this limit.
 

@@ -6,7 +6,7 @@ Sample references associate inputs with edge counters and poses with quality dat
 
 ## Status
 
-This is an unpublished version 1 wire specification derived from requirements at commit `067f1ed53383a7c3b7fadc715917b175f114e48b`.
+This is an unpublished version 1 wire specification derived from requirements at commit `067f1ed53383a7c3b7fadc715917b175f114e48b`, with the explicit [feedback overrides](derivation.md#feedback-overrides).
 `MUST`, `MUST NOT` and `SHOULD` express obligations in this specification.
 Concrete encoding choices and their requirement basis are recorded in [derivation](derivation.md).
 
@@ -39,5 +39,6 @@ Start with [transport and sessions](overview.md), then follow the interactions:
 | Unsubscription        | [Unsubscribe](types/Unsubscribe.md), [Unsubscribed](types/Unsubscribed.md)                                                                                                                                                    |
 | Clock estimation      | [ClockRequest](types/ClockRequest.md), [ClockResponse](types/ClockResponse.md)                                                                                                                                                                        |
 
-Wire definitions cover [primitives](encoding/primitives.md), [reliable records](encoding/reliable.md), [unreliable messages](encoding/unreliable.md) and [sample publication bodies](encoding/publication.md).
+Wire definitions cover [primitives](encoding/primitives.md), [messages on either channel](encoding/messages.md) and [sample publication bodies](encoding/publication.md).
+The [operator binding](bindings/operator.md) defines the current WebRTC and source-quality policies.
 [Worked examples](encoding/examples.md) and [specification vectors](testdata/specification-v1.json) provide exact bytes.

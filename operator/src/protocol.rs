@@ -1,8 +1,7 @@
 //! Version 1 wire records and connection-local subscription state.
 use std::collections::{BTreeMap, HashSet};
 
-pub const MAX_CONTROL: usize = 1_048_576;
-pub const MAX_PACKET: usize = 16_384;
+pub const MAX_MESSAGE: usize = 65_535;
 pub const MAX_SUBSCRIPTIONS: usize = 16;
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -218,7 +217,7 @@ impl Capabilities {
             return Err("Select at least one sample".into());
         }
         let mut seen = HashSet::new();
-        let mut size = 20 + r.samples.len().div_ceil(8);
+        let mut size = 20;
         let mut bits: usize = 0;
         for s in &r.samples {
             let d = self
@@ -244,13 +243,7 @@ impl Capabilities {
                 size += components(d.kind) * width(s.format);
             }
         }
-        if size + bits.div_ceil(8) + 1
-            > if r.delivery == 1 {
-                MAX_PACKET
-            } else {
-                MAX_CONTROL
-            }
-        {
+        if size + bits.div_ceil(8) + 1 > MAX_MESSAGE {
             return Err("Tracking packet exceeds transport limit".into());
         }
         Ok(size + bits.div_ceil(8))
@@ -302,7 +295,10 @@ impl<'a> Reader<'a> {
         Ok(n)
     }
 }
-fn decode_client(body: &[u8]) -> Result<Message> {
+pub fn decode_client(body: &[u8]) -> Result<Message> {
+    if body.len() > MAX_MESSAGE {
+        return Err("Message size limit".into());
+    }
     let mut r = Reader { bytes: body, at: 0 };
     let message = match r.u8()? {
         1 => {
@@ -335,7 +331,7 @@ fn decode_client(body: &[u8]) -> Result<Message> {
     }
     Ok(message)
 }
-fn decode_subscription(body: &[u8], capabilities: &Capabilities) -> Result<Request> {
+pub(crate) fn decode_subscription(body: &[u8], capabilities: &Capabilities) -> Result<Request> {
     let mut r = Reader { bytes: body, at: 0 };
     let id = r.u32()?;
     let group = r.u32()?;
@@ -367,36 +363,6 @@ fn decode_subscription(body: &[u8], capabilities: &Capabilities) -> Result<Reque
         schedule,
     })
 }
-#[derive(Default)]
-pub struct ControlDecoder {
-    pending: Vec<u8>,
-}
-impl ControlDecoder {
-    pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Message>> {
-        if self.pending.len().saturating_add(bytes.len()) > MAX_CONTROL * 2 {
-            return Err("Control buffer limit".into());
-        }
-        self.pending.extend_from_slice(bytes);
-        let mut messages = Vec::new();
-        let mut at = 0;
-        while self.pending.len() - at >= 4 {
-            let n = u32::from_le_bytes(self.pending[at..at + 4].try_into().unwrap()) as usize;
-            if n == 0 || n > MAX_CONTROL {
-                return Err("Control record length limit".into());
-            }
-            if self.pending.len() - at < n + 4 {
-                break;
-            }
-            messages.push(decode_client(&self.pending[at + 4..at + 4 + n])?);
-            at += 4 + n;
-            if messages.len() > 1024 {
-                return Err("Too many control records".into());
-            }
-        }
-        self.pending.drain(..at);
-        Ok(messages)
-    }
-}
 fn u32_bytes(b: &mut Vec<u8>, n: u32) {
     b.extend(n.to_le_bytes());
 }
@@ -427,7 +393,7 @@ pub fn clock_response(id: u32, received: u64, sent: u64) -> Vec<u8> {
     b
 }
 pub fn encode(message: &Message) -> Vec<u8> {
-    let mut b = vec![0; 4];
+    let mut b = Vec::new();
     match message {
         Message::Offer(versions) => {
             b.push(1);
@@ -536,8 +502,6 @@ pub fn encode(message: &Message) -> Vec<u8> {
             string(&mut b, reason);
         }
     }
-    let length = (b.len() - 4) as u32;
-    b[..4].copy_from_slice(&length.to_le_bytes());
     b
 }
 
@@ -576,7 +540,7 @@ impl Subscription {
                 .is_none_or(|previous| previous != &body[20..])
     }
     pub fn published(&mut self, body: &[u8]) {
-        // Only selected encoded values and availability drive OnChange, including after an update.
+        // Only selected encoded values drive OnChange, including after an update.
         self.last_publication = Some(body[20..].to_vec());
     }
     fn update(&mut self, schedule: Schedule, now: u64) {
@@ -596,7 +560,7 @@ impl Session {
         Self {
             capabilities,
             negotiated: false,
-            packet_limit: MAX_PACKET,
+            packet_limit: MAX_MESSAGE,
             active: BTreeMap::new(),
         }
     }
@@ -631,7 +595,7 @@ impl Session {
                             self.capabilities.groups[request.group as usize],
                             now as u64,
                         )?;
-                        if request.delivery == 1 && size + 1 > self.packet_limit {
+                        if size + 1 > self.packet_limit {
                             return Err("Tracking packet exceeds negotiated transport limit".into());
                         }
                         if self.active.len() >= MAX_SUBSCRIPTIONS && !self.active.contains_key(&id)
@@ -777,50 +741,45 @@ pub fn tracking(
     r: &Request,
     timestamp: u64,
     predicted_for: Option<u64>,
-    values: &[Option<Value>],
-) -> Vec<u8> {
-    assert_eq!(r.samples.len(), values.len());
-    let encoded: Vec<_> = r
+    values: &[Value],
+) -> Result<Vec<u8>> {
+    if r.samples.len() != values.len() || timestamp == u64::MAX || predicted_for == Some(u64::MAX) {
+        return Err("Invalid publication values or time".into());
+    }
+    let encoded = r
         .samples
         .iter()
         .zip(values)
         .map(|(s, v)| {
-            v.as_ref()
-                .and_then(|v| encode_value(v, c.descriptors[s.descriptor as usize].kind, s.format))
+            let d = c
+                .descriptors
+                .get(s.descriptor as usize)
+                .ok_or("Unknown publication descriptor")?;
+            encode_value(v, d.kind, s.format)
+                .ok_or_else(|| format!("Invalid value for selected source {}", s.descriptor))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let mut b = Vec::new();
     u32_bytes(&mut b, r.id);
-    assert!(timestamp < u64::MAX && predicted_for != Some(u64::MAX));
     b.extend(timestamp.to_le_bytes());
     b.extend(predicted_for.unwrap_or(u64::MAX).to_le_bytes());
-    b.resize(20 + r.samples.len().div_ceil(8), 0);
     let booleans: Vec<_> = r
         .samples
         .iter()
         .zip(&encoded)
-        .filter_map(|(s, v)| {
-            if s.format == 1 {
-                v.as_ref().map(|v| v[0])
-            } else {
-                None
-            }
-        })
+        .filter(|(s, _)| s.format == 1)
+        .map(|(_, v)| v[0])
         .collect();
-    let bool_at = b.len();
-    b.resize(bool_at + booleans.len().div_ceil(8), 0);
+    b.resize(20 + booleans.len().div_ceil(8), 0);
     for (i, v) in booleans.iter().enumerate() {
-        b[bool_at + i / 8] |= v << (i % 8);
+        b[20 + i / 8] |= v << (i % 8);
     }
-    for (i, (s, value)) in r.samples.iter().zip(encoded).enumerate() {
-        if let Some(value) = value {
-            b[20 + i / 8] |= 1 << (i % 8);
-            if s.format != 1 {
-                b.extend(value);
-            }
+    for (s, value) in r.samples.iter().zip(encoded) {
+        if s.format != 1 {
+            b.extend(value);
         }
     }
-    b
+    Ok(b)
 }
 
 #[cfg(test)]
@@ -948,9 +907,9 @@ mod tests {
                     let r = fixture_request(&setup["value"]);
                     c.validate_request(&r).unwrap();
                     let wire = hex(record["hex"].as_str().unwrap());
-                    assert_eq!(decode_subscription(&wire[5..], &c).unwrap(), r);
-                    for end in 0..wire.len() - 5 {
-                        assert!(decode_subscription(&wire[5..5 + end], &c).is_err());
+                    assert_eq!(decode_subscription(&wire[1..], &c).unwrap(), r);
+                    for end in 0..wire.len() - 1 {
+                        assert!(decode_subscription(&wire[1..1 + end], &c).is_err());
                     }
                     Message::Subscribe(r)
                 }
@@ -980,12 +939,12 @@ mod tests {
                     | Message::UpdateSchedule { .. }
             ) {
                 assert_eq!(
-                    ControlDecoder::default().feed(&expected).unwrap(),
-                    [if matches!(message, Message::Subscribe(_)) {
-                        Message::SubscribeBody(expected[5..].to_vec())
+                    decode_client(&expected).unwrap(),
+                    if matches!(message, Message::Subscribe(_)) {
+                        Message::SubscribeBody(expected[1..].to_vec())
                     } else {
                         message
-                    }]
+                    }
                 );
             }
         }
@@ -1014,38 +973,33 @@ mod tests {
                     .unwrap()
                     .iter()
                     .zip(&r.samples)
-                    .map(|(v, s)| {
-                        if v.is_null() {
-                            return None;
-                        }
-                        Some(match s.format {
-                            1 => Value::Bit(v.as_bool().unwrap()),
-                            2..=5 => Value::Unsigned(v.as_u64().unwrap()),
-                            6..=9 => Value::Signed(v.as_i64().unwrap()),
-                            _ => Value::Numbers(if let Some(parts) = v.as_array() {
-                                parts.iter().map(|n| n.as_f64().unwrap()).collect()
-                            } else {
-                                vec![v.as_f64().unwrap()]
-                            }),
-                        })
+                    .map(|(v, s)| match s.format {
+                        1 => Value::Bit(v.as_bool().unwrap()),
+                        2..=5 => Value::Unsigned(v.as_u64().unwrap()),
+                        6..=9 => Value::Signed(v.as_i64().unwrap()),
+                        _ => Value::Numbers(if let Some(parts) = v.as_array() {
+                            parts.iter().map(|n| n.as_f64().unwrap()).collect()
+                        } else {
+                            vec![v.as_f64().unwrap()]
+                        }),
                     })
                     .collect();
                 assert_eq!(
-                    tracking(
-                        &c,
-                        &r,
-                        v["acquired_at"].as_str().unwrap().parse().unwrap(),
-                        v["predicted_for"].as_str().map(|n| n.parse().unwrap()),
-                        &values
-                    ),
+                    encode(&Message::Publication(
+                        tracking(
+                            &c,
+                            &r,
+                            v["acquired_at"].as_str().unwrap().parse().unwrap(),
+                            v["predicted_for"].as_str().map(|n| n.parse().unwrap()),
+                            &values
+                        )
+                        .unwrap()
+                    )),
                     expected,
                     "{} / {}",
                     publication["name"],
                     name
                 );
-            }
-            if let Some(wire) = publication["reliable_hex"].as_str() {
-                assert_eq!(encode(&Message::Publication(expected)), hex(wire));
             }
         }
         for datagram in f["datagrams"]
@@ -1066,14 +1020,14 @@ mod tests {
         }
     }
     #[test]
-    fn reliable_delivery_can_exceed_datagram_limits_and_initial_state_predates_acceptance() {
+    fn both_channels_obey_peer_limits_and_initial_state_predates_acceptance() {
         let mut c = capabilities();
         c.descriptors[0].kind = 10;
         c.descriptors[0].formats = vec![11];
         c.descriptors[0].spaces = vec![2];
         let mut s = Session::new(c);
         s.handle(Message::Offer(vec![1]), 0).unwrap();
-        s.packet_limit = 21;
+        s.packet_limit = 77;
         let r = Request {
             id: 1,
             group: 0,
@@ -1094,13 +1048,21 @@ mod tests {
             Message::Accepted { .. }
         ));
         assert_eq!(s.active[&1].timestamp(99, 100), Some(99));
-        let mut unreliable = r.clone();
-        unreliable.delivery = 1;
-        assert!(matches!(
-            s.handle(Message::Subscribe(unreliable), 101).unwrap()[0],
-            Message::Rejected { .. }
-        ));
-        assert_eq!(s.active[&1].request.delivery, 2);
+        s.packet_limit = 76;
+        for delivery in [1, 2] {
+            assert!(matches!(
+                s.handle(
+                    Message::Subscribe(Request {
+                        delivery,
+                        ..r.clone()
+                    }),
+                    101
+                )
+                .unwrap()[0],
+                Message::Rejected { .. }
+            ));
+            assert_eq!(s.active[&1].request.delivery, 2);
+        }
         let mut invalid = r;
         invalid.delivery = 0;
         assert!(matches!(
@@ -1167,7 +1129,7 @@ mod tests {
         s
     }
     #[test]
-    fn boolean_slots_filter_unavailable_samples_across_bitmap_bytes() {
+    fn fixed_boolean_slots_cross_bitmap_bytes_and_reject_incomplete_values() {
         let c = Capabilities {
             skeletons: vec![],
             groups: vec![60.],
@@ -1201,24 +1163,19 @@ mod tests {
                 })
                 .collect(),
         };
-        let mut values: Vec<_> = (0..9)
-            .map(|i| {
-                if i == 0 {
-                    None
-                } else {
-                    Some(Value::Bit(i % 2 == 0))
-                }
-            })
-            .collect();
+        let mut values: Vec<_> = (0..9).map(|i| Value::Bit(i % 2 == 0)).collect();
         assert_eq!(
-            &tracking(&c, &r, 0, None, &values)[20..],
-            &[0xfe, 0x01, 0xaa]
+            &tracking(&c, &r, 0, None, &values).unwrap()[20..],
+            &[0x55, 0x01]
         );
-        values[8] = None;
+        values[8] = Value::Bit(false);
         assert_eq!(
-            &tracking(&c, &r, 0, None, &values)[20..],
-            &[0xfe, 0x00, 0x2a]
+            &tracking(&c, &r, 0, None, &values).unwrap()[20..],
+            &[0x55, 0x00]
         );
+        assert!(tracking(&c, &r, 0, None, &values[..8]).is_err());
+        values[8] = Value::Unsigned(1);
+        assert!(tracking(&c, &r, 0, None, &values).is_err());
     }
     #[test]
     fn schedules_keep_phase_skip_missed_slots_and_allow_repeated_acquisitions() {
@@ -1326,24 +1283,18 @@ mod tests {
         );
     }
     #[test]
-    fn segmented_control() {
-        let bytes = [
-            encode(&Message::Offer(vec![1])),
-            encode(&Message::Subscribe(request())),
-        ]
-        .concat();
-        for split in 0..=bytes.len() {
-            let mut d = ControlDecoder::default();
-            let mut got = d.feed(&bytes[..split]).unwrap();
-            got.extend(d.feed(&bytes[split..]).unwrap());
-            assert_eq!(
-                got,
-                vec![
-                    Message::Offer(vec![1]),
-                    Message::SubscribeBody(encode(&Message::Subscribe(request()))[5..].to_vec())
-                ]
-            );
+    fn whole_control_messages_reject_splits_coalescing_and_oversize() {
+        let offer = encode(&Message::Offer(vec![1]));
+        assert_eq!(decode_client(&offer).unwrap(), Message::Offer(vec![1]));
+        for split in 0..offer.len() {
+            assert!(decode_client(&offer[..split]).is_err());
         }
+        assert!(decode_client(&[offer.clone(), offer].concat()).is_err());
+        assert!(decode_client(&vec![1; MAX_MESSAGE + 1]).is_err());
+        let subscribe = encode(&Message::Subscribe(request()));
+        let c = capabilities();
+        assert_eq!(decode_subscription(&subscribe[1..], &c).unwrap(), request());
+        assert!(decode_subscription(&[&subscribe[1..], &subscribe[1..]].concat(), &c).is_err());
     }
     #[test]
     fn all_formats_and_invalid_source_values() {
@@ -1450,7 +1401,7 @@ mod tests {
             encode(&Message::Offer(vec![0])),
             encode(&Message::Offer(vec![1, 1])),
         ] {
-            assert!(ControlDecoder::default().feed(&bytes).is_err());
+            assert!(decode_client(&bytes).is_err());
         }
         let mut s = session();
         for mutation in 0..8 {

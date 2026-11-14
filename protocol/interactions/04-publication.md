@@ -16,11 +16,17 @@ Id reuse has the [replacement ambiguity](05-replacement.md#unreliable-id-reuse);
 Publication timing follows the [selected schedule](08-scheduling.md).
 Independent decoding does not require receipt of an earlier publication.
 
-## Availability and quality
+## Values and quality
 
-An unavailable sample has no value payload.
-An available zero or false value is distinct from an unavailable sample.
-Availability describes the presence of a sample; pose component validity, tracking state and confidence are separate samples referenced by the descriptor.
+Every selected sample has a value in each publication. There is no per-publication sample absence.
+Presence does not imply a valid measurement: pose component validity, tracking state and confidence are separate samples referenced by the descriptor.
+Servers can define ordinary status samples and qualified placeholder values for inactive sources; descriptors and server policy must make their meaning clear so a placeholder is not mistaken for a measured zero or false.
+Clients select the quality/status samples they need; selection does not implicitly add them.
+The [operator policy](../bindings/operator.md#source-quality) gives one concrete mapping without extending the descriptor schema.
+
+A source or encoding failure that prevents a complete publication ends only the affected subscription through [Unsubscribed](../types/Unsubscribed.md), rather than emitting a partial publication.
+Ordinary inactive states with defined complete representations do not require termination.
+The [feedback overrides](../derivation.md#feedback-overrides) record the changed absence semantics.
 
 ## Counters
 
@@ -30,7 +36,6 @@ Device implementations should obtain input transitions from native APIs when ava
 
 For two observations of a `w`-bit edge counter, `(current - previous) mod 2^w` gives the change modulo that width.
 A `u8` transition from `254` to `1` represents three increments modulo `256`.
-An unavailable counter provides no new observation.
 Revision samples identify their target group through `revision_of`.
 
 Requirements: [PRO-0002](../../design/requirements/protocol/PRO-0002.md), [PRO-0006](../../design/requirements/protocol/PRO-0006.md), [PRO-0008](../../design/requirements/protocol/PRO-0008.md), [PRO-0010](../../design/requirements/protocol/PRO-0010.md), [PRO-0011](../../design/requirements/protocol/PRO-0011.md), [PRO-0013](../../design/requirements/protocol/PRO-0013.md), [PRO-0019](../../design/requirements/protocol/PRO-0019.md).

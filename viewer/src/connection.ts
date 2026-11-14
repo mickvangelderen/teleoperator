@@ -1,5 +1,5 @@
 import { Session } from "./session";
-import { preferredFormat, restGroup, periodic } from "./protocol";
+import { preferredFormat, restGroup, periodic, MAX_MESSAGE } from "./protocol";
 import type { Request } from "./protocol";
 import { profiler } from "./performance";
 import { recording, recordingId } from "./recording";
@@ -119,7 +119,8 @@ export class Connection {
           profiler.transfer("received", bytes.length, arrivedAt);
           recording.packet(this.recordingId, "received", name === "control" ? "reliable" : "unreliable", bytes, arrivedAt);
           if (name === "control") {
-            for (const packet of this.session.control(bytes, arrivedAt)) profiler.trackingArrival(packet.id, `${this.recordingId}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
+            const packet = this.session.control(bytes, arrivedAt);
+            if (packet) profiler.trackingArrival(packet.id, `${this.recordingId}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
             for (const [id, previous] of this.replacements) {
               if (this.session.pending.has(id)) continue;
               this.replacements.delete(id);
@@ -206,15 +207,12 @@ export class Connection {
     try {
       if (this.control.readyState !== "open" || this.control.bufferedAmount + bytes.length > 1_048_576) throw new Error("Control channel is not ready to send");
       const negotiated = this.pc.sctp?.maxMessageSize;
-      const limit = negotiated && Number.isFinite(negotiated) ? Math.min(16_384, Math.floor(negotiated)) : 16_384;
-      if (limit < 1) throw new Error("Invalid data channel message limit");
-      for (let offset = 0; offset < bytes.length; offset += limit) {
-        const chunk = bytes.subarray(offset, offset + limit);
-        this.control.send(chunk as Uint8Array<ArrayBuffer>);
-        const now = performance.now();
-        recording.packet(this.recordingId, "sent", "reliable", chunk, now);
-        profiler.transfer("sent", chunk.length, now);
-      }
+      const limit = negotiated && Number.isFinite(negotiated) ? Math.min(MAX_MESSAGE, Math.floor(negotiated)) : MAX_MESSAGE;
+      if (limit < 1 || bytes.length > limit) throw new Error("Message exceeds the data channel limit");
+      this.control.send(bytes as Uint8Array<ArrayBuffer>);
+      const now = performance.now();
+      recording.packet(this.recordingId, "sent", "reliable", bytes, now);
+      profiler.transfer("sent", bytes.length, now);
       return true;
     } catch (error) {
       this.fail(error instanceof Error ? error.message : "Control send failed");

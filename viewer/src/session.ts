@@ -1,4 +1,4 @@
-import { ControlDecoder, counterDelta, counterKind, decodeTracking, offer, subscribe, unsubscribe, updateSchedule, validateRequest, validateSchedule, publicationRate, NON_MAX, width } from "./protocol";
+import { decodeServer, MAX_MESSAGE, counterDelta, counterKind, decodeTracking, offer, subscribe, unsubscribe, updateSchedule, validateRequest, validateSchedule, publicationRate, NON_MAX, width } from "./protocol";
 import type { Capabilities, Packet, Request, Schedule, ServerMessage } from "./protocol";
 import { FreshnessBaseline, summarizeFreshness } from "./freshness";
 import type { StreamFreshness } from "./freshness";
@@ -18,7 +18,6 @@ export class Session {
   readonly revisions = new Map<number, { value: bigint; bits: number; timestamp: bigint; changedAt?: bigint }>();
   private nextGeneration = 1; // Local metric identity; never transmitted.
   private nextId = 1;
-  private readonly decoder = new ControlDecoder();
   detail = "Negotiating connection…";
   discarded = 0;
   clock?: { offset: bigint; delay: bigint; at: number };
@@ -28,7 +27,7 @@ export class Session {
   start() { return offer(); }
   retire() {
     this.phase = "closed"; this.capabilities = undefined;
-    this.active.clear(); this.pending.clear(); this.stopping.clear(); this.decoder.reset();
+    this.active.clear(); this.pending.clear(); this.stopping.clear();
     this.revisions.clear();
     this.clockRequests.clear(); this.clockObservations = []; this.clock = undefined;
   }
@@ -59,16 +58,15 @@ export class Session {
     return bytes;
   }
   control(bytes: Uint8Array, arrivedAt = performance.now()) {
-    const packets: Packet[] = [];
-    for (const message of this.decoder.feed(bytes)) {
-      if (message.tag === 9) {
-        if (this.phase !== "ready") throw new Error("Publication before capabilities");
-        const packet = this.tracking(message.body, arrivedAt, 2);
-        if (packet) packets.push(packet);
-      } else this.receive(message);
+    const message = decodeServer(bytes);
+    if (message.tag === 9) {
+      if (this.phase !== "ready") throw new Error("Publication before capabilities");
+      return this.tracking(message.body, arrivedAt, 2);
     }
-    return packets;
+    this.receive(message);
+    return null;
   }
+
   requestClock(now: number) {
     if (!["capabilities", "ready"].includes(this.phase) || this.nextClock > 0xffffffff) return undefined;
     const at = BigInt(Math.round(now * 1e6));
@@ -79,7 +77,7 @@ export class Session {
     this.clockRequests.set(id, at); return bytes;
   }
   unreliable(bytes: Uint8Array, arrivedAt: number): Packet | null {
-    if (!["capabilities", "ready"].includes(this.phase) || bytes.length > 16_384) { this.discarded++; return null; }
+    if (!["capabilities", "ready"].includes(this.phase) || bytes.length > MAX_MESSAGE) { this.discarded++; return null; }
     if (bytes[0] === 9) return this.tracking(bytes.subarray(1), arrivedAt);
     if (bytes[0] !== 11 || bytes.length !== 21) { this.discarded++; return null; }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), id = view.getUint32(1, true);
@@ -171,7 +169,7 @@ export class Session {
     packet.values.forEach((value, i) => {
       const s = active.request.samples[i];
       const descriptor = this.capabilities!.descriptors[s.descriptor];
-      if (value !== null && descriptor.kind === 11) {
+      if (descriptor.kind === 11) {
         const group = descriptor.revision_of!, previous = this.revisions.get(group);
         if (!previous || packet.timestamp >= previous.timestamp) {
           const current = BigInt(value as number | bigint), bits = 8 * width(s.format);
@@ -179,7 +177,7 @@ export class Session {
           this.revisions.set(group, { value: current, bits, timestamp: packet.timestamp, changedAt: changed ? packet.timestamp : previous?.changedAt });
         }
       }
-      if (value === null || !counterKind(this.capabilities!.descriptors[s.descriptor].kind)) return;
+      if (!counterKind(this.capabilities!.descriptors[s.descriptor].kind)) return;
       const current = BigInt(value as number | bigint), previous = active.counters.get(i);
       if (previous !== undefined) active.deltas.set(i, counterDelta(current, previous, s.format));
       active.counters.set(i, current);

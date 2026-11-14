@@ -31,7 +31,9 @@ If a source uses a fixed prediction horizon, publish its actual target time.
 
 ## OnChange
 
-Publish a complete selected snapshot when a selected encoded value or its availability changes from the last publication.
+Publish a complete selected snapshot when a selected encoded value changes from the last publication.
+This includes selected quality/status values; changes to unselected status do not trigger publication.
+Only meaningful bitmap bits participate in comparison.
 Timestamp changes alone do not trigger publication.
 No earlier publication is required to decode the result.
 
@@ -44,7 +46,7 @@ Use Reliable when guaranteed delivery of an unchanged final state is needed, or 
 The client sends [UpdateSchedule](../types/UpdateSchedule.md) to replace timing for an existing id.
 The server applies updates in reliable receive order without changing the selection or channel, or repeating the initial-publication step.
 Switching to Periodic follows the next slot in the new schedule.
-Switching to OnChange compares against the last published selected values and availability.
+Switching to OnChange compares against the last published selected values.
 Already submitted transport messages are not withdrawn by an update.
 There is no response message or cross-channel delivery boundary for this operation.
 

@@ -13,11 +13,14 @@ Responses identify requests by subscription id without an additional request ide
 The server checks that the group and selected descriptors exist, that the descriptors belong to the group, and that the formats and spaces are supported.
 It validates the channel and schedule, then decides whether it can serve the request.
 Servers can apply resource and admission limits, including a publication-rate cap; an acquisition group's advertised rate is not itself a protocol-wide publication limit.
-For unreliable delivery, the maximum publication body plus its one-byte tag must fit the transport's message limit.
+On either channel, the fixed publication body plus its one-byte tag must fit the transport's message limit and any smaller negotiated peer limit.
+Every selected sample must have a complete supported representation, including any server-defined inactive representation with explicit quality semantics.
+If an existing acquisition proves that the selected source or encoding contract cannot be fulfilled, the request is rejected before replacing an active subscription.
 
 The server sends [SubscriptionAccepted](../types/SubscriptionAccepted.md), binding the requested selection, channel and schedule to the id.
 It SHOULD immediately initiate publication of the current state without waiting for client acknowledgment.
 The initial acquisition may already exist when the request is accepted.
+If none exists, publication waits for an acquisition; acceptance does not manufacture one.
 Subsequent publications follow the [schedule](08-scheduling.md).
 
 ## Rejection
