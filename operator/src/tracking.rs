@@ -3,13 +3,19 @@ use crate::inputs::{self, Input};
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     },
     time::Instant,
 };
 use tokio::sync::watch;
 
 pub const RATE: f32 = 200.0;
+pub const PREDICTION_NS: i64 = 25_000_000;
+pub fn prediction_target(acquired_at: i64) -> i64 {
+    acquired_at
+        .checked_add(PREDICTION_NS)
+        .expect("Prediction time exhausted")
+}
 pub const SOURCES: [&str; 5] = ["head", "left/aim", "left/grip", "right/aim", "right/grip"];
 
 #[cfg(any(target_os = "android", test))]
@@ -48,13 +54,15 @@ pub struct Hub {
     started: Instant,
     pub source: &'static str,
     pub available: AtomicBool,
+    pub initialized: AtomicBool,
+    pub body_supported: AtomicBool,
     pub resumed_at: AtomicI64,
     pub skeleton: Mutex<Option<Arc<Skeleton>>>,
     pub body_fidelity: AtomicBool,
     pub body_calibration: AtomicBool,
     // Selected before tracking becomes available; immutable for this server session.
     pub local_floor: AtomicBool,
-    next_skeleton: AtomicU32,
+    next_skeleton: AtomicU64,
     pub reference_version: Mutex<u32>,
     pub latest: Mutex<Option<Sample>>,
     pub updates: watch::Sender<()>,
@@ -67,22 +75,22 @@ impl Hub {
             started: Instant::now(),
             source,
             available: AtomicBool::new(false),
+            initialized: AtomicBool::new(source == "none"),
+            body_supported: AtomicBool::new(false),
             resumed_at: AtomicI64::new(0),
             skeleton: Mutex::new(None),
             body_fidelity: AtomicBool::new(false),
             body_calibration: AtomicBool::new(false),
             local_floor: AtomicBool::new(false),
-            next_skeleton: AtomicU32::new(1),
+            next_skeleton: AtomicU64::new(1),
             reference_version: Mutex::new(1),
             latest: Mutex::new(None),
             updates: watch::channel(()).0,
             trace: Default::default(),
         })
     }
-    pub fn next_skeleton_version(&self) -> u32 {
-        self.next_skeleton
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
-            .expect("Skeleton version exhausted")
+    pub fn next_skeleton_version(&self) -> u64 {
+        self.next_skeleton.fetch_add(1, Ordering::SeqCst)
     }
     pub fn now(&self) -> i64 {
         self.started
@@ -111,7 +119,11 @@ impl Hub {
         acquired_at: i64,
         target_at: Option<i64>,
     ) {
-        *self.skeleton.lock().unwrap() = body.map(|b| b.skeleton.clone());
+        // Keep the advertised topology through temporary sample unavailability.
+        // Publication values still come from this acquisition's body below.
+        if let Some(body) = body {
+            *self.skeleton.lock().unwrap() = Some(body.skeleton.clone());
+        }
         let version = *self.reference_version.lock().unwrap();
         let mut latest = self.latest.lock().unwrap();
         let number = latest.as_ref().map_or(1, |s| {
@@ -138,6 +150,7 @@ impl Hub {
             crate::diagnostics::Event::Acquisition {
                 sample: number,
                 acquired_ms: acquired_at as f64 / 1e6,
+                target_ms: target_at.map(|t| t as f64 / 1e6),
                 body_available: body.is_some(),
             },
         );
@@ -146,6 +159,8 @@ impl Hub {
 }
 
 pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
+    hub.body_supported.store(true, Ordering::SeqCst);
+    hub.initialized.store(true, Ordering::SeqCst);
     hub.set_available(true);
     hub.body_fidelity.store(true, Ordering::SeqCst);
     hub.body_calibration.store(true, Ordering::SeqCst);
@@ -157,15 +172,17 @@ pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
             _ = shutdown.wait_for(|stopped| *stopped) => break,
             _ = interval.tick() => {
                 let at = hub.now();
-                let phase = (at as f64 / 1e9) as f32;
+                let target = prediction_target(at);
+                let phase = (target as f64 / 1e9) as f32;
                 let poses = std::array::from_fn(|i| Pose { position: [if i == 0 { 0.0 } else if i < 3 { -0.3 } else { 0.3 }, if i == 0 { 1.6 } else { 1.1 + phase.sin() * 0.1 }, if i == 0 { 0.0 } else { -0.4 }], orientation: [0.0, 0.0, 0.0, 1.0], flags: 15, active: (i > 0).then_some(true) });
+                let input_phase = (at as f64 / 1e9) as f32;
                 let inputs = inputs::definitions().iter().map(|d| Input { active: true, changed_at: None, value: match d.kind {
-                    inputs::InputType::Boolean => inputs::Value::Boolean { value: ((phase * 2.) as u32).is_multiple_of(2), presses: 0, releases: 0 },
-                    inputs::InputType::Scalar => inputs::Value::Scalar((phase.sin() + 1.) / 2.),
-                    inputs::InputType::Vector2 => inputs::Value::Vector2([phase.sin() * 0.5, phase.cos() * 0.5]),
+                    inputs::InputType::Boolean => inputs::Value::Boolean { value: ((input_phase * 2.) as u32).is_multiple_of(2), presses: 0, releases: 0 },
+                    inputs::InputType::Scalar => inputs::Value::Scalar((input_phase.sin() + 1.) / 2.),
+                    inputs::InputType::Vector2 => inputs::Value::Vector2([input_phase.sin() * 0.5, input_phase.cos() * 0.5]),
                 } }).collect::<Vec<_>>();
-                let body = Body { skeleton: skeleton.clone(), active: true, confidence: Some(1.), returned_at: Some(at), fidelity: Some(body::Fidelity::High), calibration: Some(body::CalibrationStatus::Valid), joints: skeleton.joints.iter().map(|j| { let mut pose = j.rest.clone(); pose.position[2] += phase.sin() * 0.1; pose }).collect() };
-                hub.acquire(&poses, &inputs, Some(&body), at, Some(at));
+                let body = Body { skeleton: skeleton.clone(), active: true, confidence: Some(1.), returned_at: Some(target), fidelity: Some(body::Fidelity::High), calibration: Some(body::CalibrationStatus::Valid), joints: skeleton.joints.iter().map(|j| { let mut pose = j.rest.clone(); pose.position[2] += phase.sin() * 0.1; pose }).collect() };
+                hub.acquire(&poses, &inputs, Some(&body), at, Some(target));
             }
         }
     }
@@ -175,6 +192,74 @@ pub async fn synthetic(hub: Arc<Hub>, mut shutdown: watch::Receiver<bool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn synthetic_poses_use_the_prediction_target_while_inputs_remain_observed() {
+        let hub = Hub::new("synthetic");
+        let mut updates = hub.updates.subscribe();
+        let (stop, shutdown) = watch::channel(false);
+        let task = tokio::spawn(synthetic(hub.clone(), shutdown));
+        let sample = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(sample) = hub.latest.lock().unwrap().clone() {
+                    break sample;
+                }
+                updates.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        stop.send(true).unwrap();
+        task.await.unwrap();
+        let target = sample.target_at.unwrap();
+        assert_eq!(target - sample.acquired_at, 25_000_000);
+        assert_eq!(sample.body.as_ref().unwrap().returned_at, Some(target));
+        let predicted = (target as f64 / 1e9) as f32;
+        assert!((sample.poses[1].position[1] - (1.1 + predicted.sin() * 0.1)).abs() < 1e-6);
+        let observed = (sample.acquired_at as f64 / 1e9) as f32;
+        let scalar = sample
+            .inputs
+            .iter()
+            .find_map(|input| match input.value {
+                inputs::Value::Scalar(v) => Some(v),
+                _ => None,
+            })
+            .unwrap();
+        assert!((scalar - (observed.sin() + 1.) / 2.).abs() < 1e-6);
+    }
+    #[test]
+    fn skeleton_revision_wraps_independently_of_subscriptions() {
+        let hub = Hub::new("test");
+        hub.next_skeleton.store(u64::MAX, Ordering::SeqCst);
+        assert_eq!(hub.next_skeleton_version(), u64::MAX);
+        assert_eq!(hub.next_skeleton_version(), 0);
+        assert_eq!(hub.next_skeleton_version(), 1);
+    }
+    #[test]
+    fn hub_accumulates_observed_edges_without_any_subscribers() {
+        let hub = Hub::new("test");
+        let poses = std::array::from_fn(|_| Pose::default());
+        for i in 0..12 {
+            let input = Input {
+                active: true,
+                changed_at: None,
+                value: inputs::Value::Boolean {
+                    value: i % 2 == 1,
+                    presses: 0,
+                    releases: 0,
+                },
+            };
+            hub.acquire(&poses, &[input], None, i, None);
+        }
+        let latest = hub.latest.lock().unwrap();
+        assert!(matches!(
+            latest.as_ref().unwrap().inputs[0].value,
+            inputs::Value::Boolean {
+                presses: 6,
+                releases: 5,
+                ..
+            }
+        ));
+    }
     #[test]
     fn deadlines_keep_their_phase_and_skip_missed_slots() {
         use std::time::Duration;

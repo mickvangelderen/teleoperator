@@ -1,43 +1,65 @@
+import { Session } from "./session";
+import { preferredFormat, restGroup } from "./protocol";
+import type { Request } from "./protocol";
 import { profiler } from "./performance";
 import { recording, recordingId } from "./recording";
+import type { Freshness } from "./freshness";
 
 export type State = {
-  status: "Disconnected" | "Connecting" | "Transport open" | "Error";
+  status: "Disconnected" | "Connecting" | "Connected" | "Error";
   detail: string;
   control: string;
   tracking: string;
   source: string;
+  predictionHorizonMs?: number;
+  session?: Session;
+  freshness: Freshness;
 };
 export const initialState = (): State => ({
   status: "Disconnected",
-  detail: "Protocol migration in progress; tracking is unavailable.",
+  detail: "Connect to inspect tracking capabilities and current samples.",
   control: "closed",
   tracking: "closed",
   source: "unknown",
+  freshness: { status: "Inactive", atMs: 0, streams: [] },
 });
 
 export class Connection {
   private readonly recordingId = recordingId();
   private recordedState = "";
   readonly state = initialState();
+  readonly session = new Session();
+  private offered = false;
+  private subscribed = false;
   private readonly pc = new RTCPeerConnection({ iceServers: [] });
   private readonly abort = new AbortController();
-  private readonly control = this.pc.createDataChannel("control", {
+  private readonly control = this.pc.createDataChannel("reliable", {
     ordered: true,
     protocol: "xrop",
   });
-  private readonly tracking = this.pc.createDataChannel("tracking", {
+  private readonly tracking = this.pc.createDataChannel("unreliable", {
     ordered: false,
     maxRetransmits: 0,
     protocol: "xrop",
   });
   private deadline?: ReturnType<typeof setTimeout>;
   private stopped = false;
-  constructor(private readonly update: (state: State) => void) {}
+  private clockTimer?: ReturnType<typeof setInterval>;
+  private freshnessTimer?: ReturnType<typeof setInterval>;
+  private recordedFreshness = "";
+  constructor(private readonly update: (state: State) => void) { this.state.session = this.session; }
 
   async connect() {
+    if (this.stopped || this.state.status !== "Disconnected") return;
+    profiler.reset();
     recording.add({ type: "connection", connection: this.recordingId, status: "connecting" });
-    void fetch("/api/health", { signal: this.abort.signal }).then(r => r.json()).then(data => { if (!this.stopped) this.state.source = typeof data.source === "string" ? data.source : "unknown"; }).catch(() => {});
+    void fetch("/api/health", { signal: this.abort.signal }).then(r => r.json()).then(data => {
+      if (this.stopped) return;
+      this.state.source = typeof data.source === "string" ? data.source : "unknown";
+      const horizon = data.prediction_horizon_ms;
+      this.state.predictionHorizonMs = typeof horizon === "number" && Number.isFinite(horizon) && horizon >= 0 && horizon <= 1000 ? horizon : undefined;
+      this.emit();
+    }).catch(() => {});
     this.state.status = "Connecting";
     this.state.detail = "Opening a WebRTC connection…";
     this.emit();
@@ -68,9 +90,11 @@ export class Connection {
         if (this.stopped) return;
         this.state[name] = "open";
         if (this.control.readyState === "open" && this.tracking.readyState === "open") {
-          clearTimeout(this.deadline);
-          this.state.status = "Transport open";
-          this.state.detail = "WebRTC channels open. Tracking is unavailable during protocol migration.";
+          if (!this.offered) {
+            this.offered = true;
+            if (!this.send(this.session.start())) return;
+            this.state.detail = this.session.detail;
+          }
         }
         this.emit();
       };
@@ -85,16 +109,42 @@ export class Connection {
         if (this.stopped) return;
         const started = profiler.begin();
         try {
-          if (!(event.data instanceof ArrayBuffer))
+          if (!(event.data instanceof ArrayBuffer)) {
+            if (name === "tracking") { this.session.discarded++; return; }
             throw new Error("Expected a binary protocol packet");
+          }
           const bytes = new Uint8Array(event.data);
           const arrivedAt = started ?? performance.now();
           profiler.transfer("received", bytes.length, arrivedAt);
-          recording.packet(this.recordingId, "received", name, bytes, arrivedAt);
-          throw new Error("Tracking protocol implementation removed (WIP).");
+          recording.packet(this.recordingId, "received", name === "control" ? "reliable" : "unreliable", bytes, arrivedAt);
+          if (name === "control") {
+            for (const packet of this.session.control(bytes, arrivedAt)) profiler.trackingArrival(packet.id, `${this.recordingId}:${packet.generation}`, bytes.length, arrivedAt);
+            this.state.detail = this.session.detail;
+            if (this.session.phase === "ready") {
+              clearTimeout(this.deadline);
+              this.state.status = "Connected";
+              if (!this.subscribed) {
+                this.subscribed = true;
+                this.probeClock();
+                this.clockTimer = setInterval(() => this.probeClock(), 1000);
+                this.freshnessTimer = setInterval(() => this.emit(), 16);
+                const c = this.session.capabilities!;
+                c.groups.forEach((max, group) => {
+                  const samples = c.descriptors.flatMap((d, descriptor) => d.group === group ? [{ descriptor, format: preferredFormat(d), space: d.spaces[0] ?? 0 }] : []);
+                  const rest = restGroup(c, group);
+                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, rate: Math.min(max, 60), samples });
+                });
+              }
+            }
+          } else {
+            const packet = this.session.unreliable(bytes, arrivedAt);
+            if (packet) profiler.trackingArrival(packet.id, `${this.recordingId}:${packet.generation}`, bytes.length, arrivedAt);
+          }
+          this.emit();
         } catch (error) {
           recording.add({ type: "receive-error", connection: this.recordingId, channel: name, error: String(error) });
-          this.fail(error instanceof Error ? error.message : "Invalid data channel message");
+          if (name === "control") this.fail(error instanceof Error ? error.message : "Invalid control message");
+          else { this.session.discarded++; this.emit(); }
         } finally { profiler.end("receive", started); }
       };
     }
@@ -146,13 +196,66 @@ export class Connection {
     }
   }
 
+  private send(bytes: Uint8Array): boolean {
+    try {
+      if (this.control.readyState !== "open" || this.control.bufferedAmount + bytes.length > 1_048_576) throw new Error("Control channel is not ready to send");
+      const negotiated = this.pc.sctp?.maxMessageSize;
+      const limit = negotiated && Number.isFinite(negotiated) ? Math.min(16_384, Math.floor(negotiated)) : 16_384;
+      if (limit < 1) throw new Error("Invalid data channel message limit");
+      for (let offset = 0; offset < bytes.length; offset += limit) {
+        const chunk = bytes.subarray(offset, offset + limit);
+        this.control.send(chunk as Uint8Array<ArrayBuffer>);
+        const now = performance.now();
+        recording.packet(this.recordingId, "sent", "reliable", chunk, now);
+        profiler.transfer("sent", chunk.length, now);
+      }
+      return true;
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : "Control send failed");
+      return false;
+    }
+  }
+  private probeClock() {
+    const limit = this.pc.sctp?.maxMessageSize;
+    if (this.stopped || this.tracking.readyState !== "open" || this.tracking.bufferedAmount > 0 || (limit && limit < 5)) return;
+    const now = performance.now(), bytes = this.session.requestClock(now);
+    if (!bytes) return;
+    try {
+      this.tracking.send(bytes);
+      recording.packet(this.recordingId, "sent", "unreliable", bytes, now);
+      profiler.transfer("sent", bytes.length, now);
+    } catch { /* Lost probes expire; channel callbacks handle connection failure. */ }
+  }
+  publish(request: Request) {
+    let bytes: Uint8Array;
+    try { bytes = this.session.request(request); }
+    catch (error) { this.state.detail = `Selection not sent: ${String(error)}. Choose a smaller or supported selection.`; this.emit(); return; }
+    if (this.send(bytes)) { this.state.detail = `Subscription ${request.id} requested…`; this.emit(); }
+  }
+  unsubscribe(id: number) {
+    let bytes: Uint8Array;
+    try { bytes = this.session.stop(id); }
+    catch (error) { this.state.detail = String(error); this.emit(); return; }
+    if (this.send(bytes)) { this.state.detail = `Stopping subscription ${id}…`; this.emit(); }
+  }
+
   private emit() {
+    this.refreshFreshness();
     const state = `${this.state.status}: ${this.state.detail}`;
     if (state !== this.recordedState) {
       recording.add({ type: "connection-state", connection: this.recordingId, status: this.state.status, detail: this.state.detail });
       this.recordedState = state;
     }
     if (!this.stopped) this.update(this.state);
+  }
+  private refreshFreshness() {
+    const freshness = this.session.freshness(performance.now());
+    this.state.freshness = freshness;
+    const key = `${freshness.status}:${freshness.worst?.id}:${freshness.worst?.generation}`;
+    if (key !== this.recordedFreshness) {
+      recording.add({ type: "freshness-state", connection: this.recordingId, ...freshness });
+      this.recordedFreshness = key;
+    }
   }
   private fail(message: string) {
     recording.add({ type: "connection-error", connection: this.recordingId, error: message });
@@ -167,7 +270,12 @@ export class Connection {
     this.stopped = true;
     this.abort.abort();
     clearTimeout(this.deadline);
+    clearInterval(this.clockTimer);
+    clearInterval(this.freshnessTimer);
     this.pc.close();
+    delete this.state.session;
+    this.session.retire();
+    this.refreshFreshness();
     this.state.status = "Disconnected";
     this.state.detail = "Disconnected. Reconnect to inspect the device.";
     this.state.control = "closed";

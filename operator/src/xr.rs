@@ -1,4 +1,4 @@
-use crate::tracking::{Hub, Pose, RATE, next_deadline};
+use crate::tracking::{Hub, Pose, RATE, next_deadline, prediction_target};
 use android_activity::AndroidApp;
 use openxr as xr;
 use std::{
@@ -135,6 +135,9 @@ pub fn run(
         .store(extensions.meta_body_tracking_fidelity, Ordering::SeqCst);
     hub.body_calibration
         .store(extensions.meta_body_tracking_calibration, Ordering::SeqCst);
+    hub.body_supported
+        .store(extensions.fb_body_tracking, Ordering::SeqCst);
+    hub.initialized.store(true, Ordering::SeqCst);
     hub.set_available(true);
     let result = std::thread::scope(|scope| {
         // Rendezvous commands are received only between complete acquisition ticks.
@@ -175,7 +178,8 @@ pub fn run(
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
-                    let acquired_at = hub.now();
+                    let mut acquired_at = hub.now();
+                    let mut target_at = None;
                     let mut body = hub
                         .skeleton
                         .lock()
@@ -198,6 +202,9 @@ pub fn run(
                         ..Default::default()
                     });
                     if running && let Ok(time) = instance.now() {
+                        acquired_at = hub.now();
+                        target_at = Some(prediction_target(acquired_at));
+                        let target_time = xr::Time::from_nanos(prediction_target(time.as_nanos()));
                         reference_changes.retain(|change| {
                             if change.as_nanos() <= time.as_nanos() {
                                 hub.reset_reference();
@@ -228,8 +235,10 @@ pub fn run(
                             }
                         }
                         if let Some(tracker) = &mut tracker
-                            && let Ok(sample) = tracker.sample(&base, time, hub)
+                            && let Ok(mut sample) = tracker.sample(&base, target_time, hub)
                         {
+                            // shortcut: assume the runtime returned the requested target until returned-time conversion is implemented.
+                            sample.returned_at = target_at;
                             body = Some(sample);
                         }
                         for (i, space) in spaces.iter().enumerate() {
@@ -243,7 +252,7 @@ pub fn run(
                                 );
                             }
                             if (i == 0 || poses[i].active == Some(true))
-                                && let Ok(location) = space.locate(&base, time)
+                                && let Ok(location) = space.locate(&base, target_time)
                             {
                                 let p = location.pose.position;
                                 let q = location.pose.orientation;
@@ -253,8 +262,7 @@ pub fn run(
                             }
                         }
                     }
-                    // XrTime has a runtime epoch; leave target_at absent until explicitly converted.
-                    hub.acquire(&poses, &inputs, body.as_ref(), acquired_at, None);
+                    hub.acquire(&poses, &inputs, body.as_ref(), acquired_at, target_at);
                     if running {
                         next = next_deadline(next, period, Instant::now());
                     }

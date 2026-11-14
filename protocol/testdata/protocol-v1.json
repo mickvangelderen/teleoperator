@@ -1,0 +1,1051 @@
+{
+  "control": [
+    {
+      "hex": "0700000001010000000100",
+      "message": {
+        "tag": 1,
+        "versions": [
+          1
+        ]
+      },
+      "name": "offer"
+    },
+    {
+      "hex": "03000000020100",
+      "message": {
+        "tag": 2,
+        "version": 1
+      },
+      "name": "selection"
+    },
+    {
+      "hex": "8a00000003010000000000484303000000090000002f706f73652fe5b7a60e0000004c65667420706f736520f09f969018000000506f736974696f6e20616e64206f7269656e746174696f6e0a010000000a000000000100000002010000003100000000000000000a010000000b0000000001000000020100000032000000000000000009010000000e00000000",
+      "message": {
+        "capabilities": {
+          "descriptors": [
+            {
+              "description": "Position and orientation",
+              "formats": [
+                10
+              ],
+              "group": 0,
+              "id": "/pose/左",
+              "kind": 10,
+              "name": "Left pose 🖐",
+              "spaces": [
+                2
+              ]
+            },
+            {
+              "description": "",
+              "formats": [
+                11
+              ],
+              "group": 0,
+              "id": "1",
+              "kind": 10,
+              "name": "",
+              "spaces": [
+                2
+              ]
+            },
+            {
+              "description": "",
+              "formats": [
+                14
+              ],
+              "group": 0,
+              "id": "2",
+              "kind": 9,
+              "name": "",
+              "spaces": []
+            }
+          ],
+          "groups": [
+            200.0
+          ]
+        },
+        "tag": 3
+      },
+      "name": "capabilities"
+    },
+    {
+      "hex": "230000000407000000000000000000704203000000000000000100010000000200020000000c00",
+      "message": {
+        "request": {
+          "group": 0,
+          "id": 7,
+          "rate": 60.0,
+          "samples": [
+            {
+              "descriptor": 0,
+              "format": 1,
+              "space": 0
+            },
+            {
+              "descriptor": 1,
+              "format": 2,
+              "space": 0
+            },
+            {
+              "descriptor": 2,
+              "format": 12,
+              "space": 0
+            }
+          ]
+        },
+        "tag": 4
+      },
+      "name": "request"
+    },
+    {
+      "hex": "09000000050700000002000000",
+      "message": {
+        "generation": 2,
+        "id": 7,
+        "tag": 5
+      },
+      "name": "acceptance"
+    },
+    {
+      "hex": "190000000607000000100000005261746520756e617661696c61626c65",
+      "message": {
+        "id": 7,
+        "reason": "Rate unavailable",
+        "tag": 6
+      },
+      "name": "rejection"
+    },
+    {
+      "hex": "09000000070700000002000000",
+      "message": {
+        "generation": 2,
+        "id": 7,
+        "tag": 7
+      },
+      "name": "unsubscribe"
+    },
+    {
+      "hex": "180000000807000000020000000b000000446576696365206c6f7374",
+      "message": {
+        "generation": 2,
+        "id": 7,
+        "reason": "Device lost",
+        "tag": 8
+      },
+      "name": "ended"
+    }
+  ],
+  "fixture_version": 1,
+  "formats": [
+    {
+      "decoded": "true",
+      "format": 1,
+      "hex": "01",
+      "name": "bit",
+      "value": "true"
+    },
+    {
+      "decoded": "255",
+      "format": 2,
+      "hex": "ff",
+      "name": "u8",
+      "value": "255"
+    },
+    {
+      "decoded": "65535",
+      "format": 3,
+      "hex": "ffff",
+      "name": "u16",
+      "value": "65535"
+    },
+    {
+      "decoded": "4294967295",
+      "format": 4,
+      "hex": "ffffffff",
+      "name": "u32",
+      "value": "4294967295"
+    },
+    {
+      "decoded": "18446744073709551615",
+      "format": 5,
+      "hex": "ffffffffffffffff",
+      "name": "u64",
+      "value": "18446744073709551615"
+    },
+    {
+      "decoded": "-128",
+      "format": 6,
+      "hex": "80",
+      "name": "i8",
+      "value": "-128"
+    },
+    {
+      "decoded": "-32768",
+      "format": 7,
+      "hex": "0080",
+      "name": "i16",
+      "value": "-32768"
+    },
+    {
+      "decoded": "-2147483648",
+      "format": 8,
+      "hex": "00000080",
+      "name": "i32",
+      "value": "-2147483648"
+    },
+    {
+      "decoded": "-9223372036854775808",
+      "format": 9,
+      "hex": "0000000000000080",
+      "name": "i64",
+      "value": "-9223372036854775808"
+    },
+    {
+      "decoded": "1.5",
+      "format": 10,
+      "hex": "0000c03f",
+      "name": "f32",
+      "value": "1.5"
+    },
+    {
+      "decoded": "-2.25",
+      "format": 11,
+      "hex": "00000000000002c0",
+      "name": "f64",
+      "value": "-2.25"
+    },
+    {
+      "decoded": "0.5019607843137255",
+      "format": 12,
+      "hex": "80",
+      "name": "unorm8",
+      "value": "0.5"
+    },
+    {
+      "decoded": "0.5000076295109483",
+      "format": 13,
+      "hex": "0080",
+      "name": "unorm16",
+      "value": "0.5"
+    },
+    {
+      "decoded": "-1",
+      "format": 14,
+      "hex": "81",
+      "name": "snorm8",
+      "value": "-1"
+    },
+    {
+      "decoded": "-1",
+      "format": 15,
+      "hex": "0180",
+      "name": "snorm16",
+      "value": "-1"
+    }
+  ],
+  "maintenance": "Fixed protocol expectations consumed by implementations. Changes to expected values or bytes must be justified against the protocol specification, independently of implementation output.",
+  "protocol_version": 1,
+  "provenance": "Initially drafted using the Rust encoder, then independently checked against the documented v1 field layouts and worked examples without importing either implementation. No implementation owns regeneration.",
+  "representation": {
+    "control": "Each entry is an independent control record, including its four-byte length; the array is not a session transcript.",
+    "formats": "Each entry is one generic scalar value encoded as payload only; bit occupies the low bit of one byte. value is encoder input, decoded is the expected result after quantization. Both are decimal strings (or true/false).",
+    "integers": "Tracking timestamps and any u64/i64 sample values use decimal strings to preserve all 64 bits.",
+    "tracking": "Each entry includes its capabilities, accepted request and expected decoded packet; hex has no length prefix."
+  },
+  "tracking": [
+    {
+      "capabilities": {
+        "descriptors": [
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "0",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              2
+            ],
+            "group": 0,
+            "id": "1",
+            "kind": 3,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              12
+            ],
+            "group": 0,
+            "id": "2",
+            "kind": 8,
+            "name": "",
+            "spaces": []
+          }
+        ],
+        "groups": [
+          200.0
+        ]
+      },
+      "hex": "070000000200000000ca9a3b000000000701fe80",
+      "name": "available",
+      "packet": {
+        "generation": 2,
+        "id": 7,
+        "timestamp": "1000000000",
+        "values": [
+          true,
+          254,
+          0.5019607843137255
+        ]
+      },
+      "request": {
+        "group": 0,
+        "id": 7,
+        "rate": 60.0,
+        "samples": [
+          {
+            "descriptor": 0,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 1,
+            "format": 2,
+            "space": 0
+          },
+          {
+            "descriptor": 2,
+            "format": 12,
+            "space": 0
+          }
+        ]
+      }
+    },
+    {
+      "capabilities": {
+        "descriptors": [
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "0",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              2
+            ],
+            "group": 0,
+            "id": "1",
+            "kind": 3,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              12
+            ],
+            "group": 0,
+            "id": "2",
+            "kind": 8,
+            "name": "",
+            "spaces": []
+          }
+        ],
+        "groups": [
+          200.0
+        ]
+      },
+      "hex": "070000000200000000f7cb3c00000000060100",
+      "name": "missing_boolean",
+      "packet": {
+        "generation": 2,
+        "id": 7,
+        "timestamp": "1020000000",
+        "values": [
+          null,
+          1,
+          0
+        ]
+      },
+      "request": {
+        "group": 0,
+        "id": 7,
+        "rate": 60.0,
+        "samples": [
+          {
+            "descriptor": 0,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 1,
+            "format": 2,
+            "space": 0
+          },
+          {
+            "descriptor": 2,
+            "format": 12,
+            "space": 0
+          }
+        ]
+      }
+    },
+    {
+      "capabilities": {
+        "descriptors": [
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "0",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              2
+            ],
+            "group": 0,
+            "id": "1",
+            "kind": 3,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              12
+            ],
+            "group": 0,
+            "id": "2",
+            "kind": 8,
+            "name": "",
+            "spaces": []
+          }
+        ],
+        "groups": [
+          200.0
+        ]
+      },
+      "hex": "070000000200000000f7cb3c0000000000",
+      "name": "all_missing",
+      "packet": {
+        "generation": 2,
+        "id": 7,
+        "timestamp": "1020000000",
+        "values": [
+          null,
+          null,
+          null
+        ]
+      },
+      "request": {
+        "group": 0,
+        "id": 7,
+        "rate": 60.0,
+        "samples": [
+          {
+            "descriptor": 0,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 1,
+            "format": 2,
+            "space": 0
+          },
+          {
+            "descriptor": 2,
+            "format": 12,
+            "space": 0
+          }
+        ]
+      }
+    },
+    {
+      "capabilities": {
+        "descriptors": [
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "0",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              2
+            ],
+            "group": 0,
+            "id": "1",
+            "kind": 3,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              12
+            ],
+            "group": 0,
+            "id": "2",
+            "kind": 8,
+            "name": "",
+            "spaces": []
+          }
+        ],
+        "groups": [
+          200.0
+        ]
+      },
+      "hex": "07000000020000000024fd3d0000000007000000",
+      "name": "false_and_zero",
+      "packet": {
+        "generation": 2,
+        "id": 7,
+        "timestamp": "1040000000",
+        "values": [
+          false,
+          0,
+          0
+        ]
+      },
+      "request": {
+        "group": 0,
+        "id": 7,
+        "rate": 60.0,
+        "samples": [
+          {
+            "descriptor": 0,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 1,
+            "format": 2,
+            "space": 0
+          },
+          {
+            "descriptor": 2,
+            "format": 12,
+            "space": 0
+          }
+        ]
+      }
+    },
+    {
+      "capabilities": {
+        "descriptors": [
+          {
+            "description": "Position and orientation",
+            "formats": [
+              10
+            ],
+            "group": 0,
+            "id": "/pose/左",
+            "kind": 10,
+            "name": "Left pose 🖐",
+            "spaces": [
+              2
+            ]
+          },
+          {
+            "description": "",
+            "formats": [
+              11
+            ],
+            "group": 0,
+            "id": "1",
+            "kind": 10,
+            "name": "",
+            "spaces": [
+              2
+            ]
+          },
+          {
+            "description": "",
+            "formats": [
+              14
+            ],
+            "group": 0,
+            "id": "2",
+            "kind": 9,
+            "name": "",
+            "spaces": []
+          }
+        ],
+        "groups": [
+          200.0
+        ]
+      },
+      "hex": "07000000020000000100000000002000070000803f000000c00000003f00000000000000009a99193fcdcc4c3f000000000000f03f00000000000000c0000000000000e03f00000000000000000000000000000000333333333333e33f9a9999999999e93f817f",
+      "name": "poses_and_thumbstick",
+      "packet": {
+        "generation": 2,
+        "id": 7,
+        "timestamp": "9007199254740993",
+        "values": [
+          [
+            1.0,
+            -2.0,
+            0.5,
+            0.0,
+            0.0,
+            0.6000000238418579,
+            0.800000011920929
+          ],
+          [
+            1.0,
+            -2.0,
+            0.5,
+            0.0,
+            0.0,
+            0.6,
+            0.8
+          ],
+          [
+            -1,
+            1
+          ]
+        ]
+      },
+      "request": {
+        "group": 0,
+        "id": 7,
+        "rate": 60.0,
+        "samples": [
+          {
+            "descriptor": 0,
+            "format": 10,
+            "space": 2
+          },
+          {
+            "descriptor": 1,
+            "format": 11,
+            "space": 2
+          },
+          {
+            "descriptor": 2,
+            "format": 14,
+            "space": 0
+          }
+        ]
+      }
+    },
+    {
+      "capabilities": {
+        "descriptors": [
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "0",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "1",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "2",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "3",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "4",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "5",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "6",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "7",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "8",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "9",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          }
+        ],
+        "groups": [
+          200.0
+        ]
+      },
+      "hex": "07000000020000000000000000000000ff035501",
+      "name": "boolean_byte_boundary",
+      "packet": {
+        "generation": 2,
+        "id": 7,
+        "timestamp": "0",
+        "values": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ]
+      },
+      "request": {
+        "group": 0,
+        "id": 7,
+        "rate": 60.0,
+        "samples": [
+          {
+            "descriptor": 0,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 1,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 2,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 3,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 4,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 5,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 6,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 7,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 8,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 9,
+            "format": 1,
+            "space": 0
+          }
+        ]
+      }
+    },
+    {
+      "capabilities": {
+        "descriptors": [
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "0",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "1",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "2",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "3",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "4",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "5",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "6",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "7",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "8",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          },
+          {
+            "description": "",
+            "formats": [
+              1
+            ],
+            "group": 0,
+            "id": "9",
+            "kind": 2,
+            "name": "",
+            "spaces": []
+          }
+        ],
+        "groups": [
+          200.0
+        ]
+      },
+      "hex": "07000000020000000100000000000000fe01aa",
+      "name": "filtered_booleans",
+      "packet": {
+        "generation": 2,
+        "id": 7,
+        "timestamp": "1",
+        "values": [
+          null,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          null
+        ]
+      },
+      "request": {
+        "group": 0,
+        "id": 7,
+        "rate": 60.0,
+        "samples": [
+          {
+            "descriptor": 0,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 1,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 2,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 3,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 4,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 5,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 6,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 7,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 8,
+            "format": 1,
+            "space": 0
+          },
+          {
+            "descriptor": 9,
+            "format": 1,
+            "space": 0
+          }
+        ]
+      }
+    }
+  ]
+}

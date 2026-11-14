@@ -9,11 +9,12 @@ pub struct Joint {
     pub id: u32,
     pub parent: i32,
     pub name: String,
+    // All rest poses share the skeleton's coordinate frame, as returned by OpenXR.
     pub rest: Pose,
 }
 #[derive(Clone, Debug)]
 pub struct Skeleton {
-    pub version: u32,
+    pub version: u64,
     pub reference_version: u32,
     pub joints: Vec<Joint>,
 }
@@ -41,7 +42,7 @@ pub struct Body {
 }
 impl Skeleton {
     pub fn valid(&self) -> bool {
-        if self.version == 0 || self.reference_version == 0 || self.joints.len() != JOINT_COUNT {
+        if self.reference_version == 0 || self.joints.len() != JOINT_COUNT {
             return false;
         }
         if self

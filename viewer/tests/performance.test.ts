@@ -2,6 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ByteRate, GpuTimer, MetricHistory, profiler, summarize } from "../src/performance";
 
+test("frame rate counts actual renders independently of animation callbacks and profiling, and expires during silence", context => {
+  let now = 100;
+  context.mock.method(performance, "now", () => now);
+  profiler.stop(); profiler.reset();
+  profiler.animationFrame(now);
+  assert.equal(profiler.frameRate(now), 0);
+  assert.equal(profiler.beginRender(), null, "The profiling panel is disabled");
+  now = 120; profiler.beginRender();
+  assert.equal(profiler.frameRate(now), 2);
+  assert.equal(profiler.frameRate(1100), 1);
+  assert.equal(profiler.frameRate(1120), 0);
+  now = 1200; profiler.beginRender(); profiler.reset();
+  assert.equal(profiler.frameRate(now), 0);
+});
+
 test("timing capture retains a bounded rolling window and its worst hiccup", () => {
   const history = new MetricHistory(4);
   history.add(0, 999);
@@ -98,16 +113,15 @@ test("transfer rate is an exact rolling second, expires during silence and survi
 test("arrival intervals are per stream, measured at reception and reset on a new stream", context => {
   context.mock.method(performance, "now", () => 1000);
   profiler.start();
-  profiler.trackingArrival("pose", "session:1:1", 100, 100);
-  profiler.trackingArrival("controller", "session:2:2", 200, 102);
-  profiler.trackingArrival("pose", "session:1:1", 100, 110);
-  profiler.trackingArrival("controller", "session:2:2", 200, 127);
-  profiler.trackingArrival("pose", "session:1:3", 100, 600);
-  profiler.trackingArrival("pose", "session:1:3", 100, 620);
+  profiler.trackingArrival(1, "session:1:1", 100, 100);
+  profiler.trackingArrival(2, "session:2:2", 200, 102);
+  profiler.trackingArrival(1, "session:1:1", 100, 110);
+  profiler.trackingArrival(2, "session:2:2", 200, 127);
+  profiler.trackingArrival(1, "session:1:3", 100, 600);
+  profiler.trackingArrival(1, "session:1:3", 100, 620);
   const snapshot = profiler.snapshot();
-  assert.deepEqual(snapshot.metrics.find(m => m.key === "poseArrival")!.samples, [{ at: 110, value: 10 }, { at: 620, value: 20 }]);
-  assert.deepEqual(snapshot.metrics.find(m => m.key === "controllerArrival")!.samples, [{ at: 127, value: 25 }]);
+  assert.deepEqual(snapshot.metrics.find(m => m.key === "trackingArrival")!.samples, [{ at: 110, value: 10 }, { at: 127, value: 25 }, { at: 620, value: 20 }]);
   profiler.sampleTransfer(1000);
-  assert.equal(profiler.snapshot().transfer.find(m => m.key === "pose")!.summary!.current, 0.4);
+  assert.equal(profiler.snapshot().transfer.find(m => m.key === "tracking")!.summary!.current, 0.8);
   profiler.stop();
 });

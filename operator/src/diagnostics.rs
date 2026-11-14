@@ -26,6 +26,7 @@ pub enum Event {
     Acquisition {
         sample: u64,
         acquired_ms: f64,
+        target_ms: Option<f64>,
         body_available: bool,
     },
     Packet {
@@ -250,6 +251,7 @@ mod tests {
             Event::Acquisition {
                 sample: 1,
                 acquired_ms: 4.,
+                target_ms: Some(29.),
                 body_available: true,
             },
         );
@@ -291,6 +293,7 @@ mod tests {
                 Event::Acquisition {
                     sample,
                     acquired_ms: 0.,
+                    target_ms: None,
                     body_available: true,
                 },
             );
@@ -302,6 +305,7 @@ mod tests {
             Event::Acquisition {
                 sample: 4,
                 acquired_ms: 0.,
+                target_ms: None,
                 body_available: true,
             },
         );

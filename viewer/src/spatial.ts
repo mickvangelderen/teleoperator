@@ -2,15 +2,17 @@ import {
   ACESFilmicToneMapping, AxesHelper, Box3, BufferGeometry, Color, Float32BufferAttribute,
   GridHelper, Group, HemisphereLight, Line, LineBasicMaterial, LineSegments,
   Mesh, MeshStandardMaterial, PerspectiveCamera, PMREMGenerator, Scene,
-  SphereGeometry, Vector3, WebGLRenderer, REVISION,
+  SphereGeometry, Vector3, WebGLRenderer, REVISION, Points, PointsMaterial,
 } from "three";
 import type { Material, Object3D } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
-import { BodyModel } from "./body-model";
-import type { PoseFrame, Skeleton } from "./body-model";
+import type { PoseFrame, JointHierarchy } from "./body-model";
 import { profiler } from "./performance";
+
+const trackingColors = { tracked: new Color(0x286b4c), untracked: new Color(0xc87520), unknown: new Color(0x78847d), late: new Color(0xc44235) };
+const jointColor = (tracked: boolean | undefined, late: boolean) => late ? trackingColors.late : tracked === false ? trackingColors.untracked : tracked === true ? trackingColors.tracked : trackingColors.unknown;
 
 export class SpatialView {
   private renderer = new WebGLRenderer({ antialias: true });
@@ -26,10 +28,13 @@ export class SpatialView {
   private view = "iso";
   private zoom = 1;
   private poses = new Map<string, { group: Group; shape: Group }>();
-  private body?: BodyModel;
-  private joints = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0x244e40, transparent: true, opacity: 0.75, depthTest: false }));
+  private bodyPoints = new Points(new BufferGeometry(), new PointsMaterial({ vertexColors: true, size: 0.018, sizeAttenuation: true }));
+  private bodyPositions = new Float32BufferAttribute(new Float32Array(70 * 3), 3);
+  private bodyColors = new Float32BufferAttribute(new Float32Array(70 * 3), 3);
+  private joints = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.75, depthTest: false }));
   private jointPositions = new Float32BufferAttribute(new Float32Array(84 * 6), 3);
-  private latest: Parameters<SpatialView["update"]> = [null, [], true, null, undefined, true];
+  private jointColors = new Float32BufferAttribute(new Float32Array(84 * 6), 3);
+  private latest: Parameters<SpatialView["update"]> = [null, [], false, null, undefined];
   private environment?: ReturnType<PMREMGenerator["fromEquirectangular"]>;
 
   constructor(private surface: HTMLElement, private status: (message: string) => void) {
@@ -38,7 +43,7 @@ export class SpatialView {
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.scene.background = new Color(0xf0f3ef);
     this.surface.append(this.renderer.domElement);
-    this.renderer.domElement.setAttribute("aria-label", "3D view of received headset, controller and body tracking. Drag to orbit; scroll to zoom.");
+    this.renderer.domElement.setAttribute("aria-label", "3D view of received headset, controller and body tracking. Joints: green tracked, orange untracked, grey unknown or rest poses. Red means live data is late. Drag to orbit; scroll to zoom.");
     this.renderer.domElement.setAttribute("role", "img");
     this.renderer.domElement.tabIndex = 0;
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -51,8 +56,14 @@ export class SpatialView {
     this.joints.frustumCulled = false;
     this.joints.visible = false;
     this.joints.geometry.setAttribute("position", this.jointPositions);
+    this.joints.geometry.setAttribute("color", this.jointColors);
     this.joints.geometry.setDrawRange(0, 0);
     this.scene.add(this.joints);
+    this.bodyPoints.frustumCulled = false;
+    this.bodyPoints.geometry.setAttribute("position", this.bodyPositions);
+    this.bodyPoints.geometry.setAttribute("color", this.bodyColors);
+    this.bodyPoints.geometry.setDrawRange(0, 0);
+    this.scene.add(this.bodyPoints);
     for (const name of ["head", "left/aim", "left/grip", "right/aim", "right/grip"]) {
       const color = name.startsWith("left") ? 0xb45f2d : name.startsWith("right") ? 0x476cac : 0x286b4c;
       const group = new Group(), shape = new Group();
@@ -89,12 +100,6 @@ export class SpatialView {
         else alignTouchPlusToGrip(scene);
         scene.traverse(object => { if (/batteryindicator/i.test(object.name)) object.visible = false; });
         this.poses.get(name)!.shape.add(scene);
-      }),
-      loader.loadAsync("/assets/meta/body.glb").then(({ scene }) => {
-        if (this.disposed) { dispose(scene); return; }
-        this.body = new BodyModel(scene);
-        scene.visible = false;
-        this.scene.add(scene);
       }),
       new HDRLoader().loadAsync("/assets/environment/studio_small_09_1k.hdr").then(hdr => {
         if (this.disposed) { hdr.dispose(); return; }
@@ -158,17 +163,24 @@ export class SpatialView {
 
   showJoints(show: boolean) { this.joints.visible = show; this.invalidate(); }
 
-  update(sample: PoseFrame | null, sources: string[], stale: boolean, body: PoseFrame | null = null, skeleton?: Skeleton, bodyStale = true) {
+  reframe() { this.framed = 0; this.invalidate(); }
+
+  update(sample: PoseFrame | null, sources: string[], late: boolean, body: PoseFrame | null = null, skeleton?: JointHierarchy) {
     const previous = this.latest;
-    if (sample === previous[0] && sources.length === previous[1].length && sources.every((source, i) => source === previous[1][i]) && stale === previous[2] && body === previous[3] && skeleton === previous[4] && bodyStale === previous[5]) return;
-    this.latest = [sample, sources, stale, body, skeleton, bodyStale];
+    if (sample === previous[0] && sources.length === previous[1].length && sources.every((source, i) => source === previous[1][i]) && late === previous[2] && body === previous[3] && skeleton === previous[4]) return;
+    this.latest = [sample, sources, late, body, skeleton];
     this.stateDirty = true;
     this.invalidate();
   }
 
   private applyState() {
-    const [sample, sources, stale, body = null, skeleton, bodyStale = true] = this.latest;
+    const [sample, sources, late, body = null, skeleton] = this.latest;
     let count = 0;
+    for (const name of sources) {
+      if (this.poses.has(name)) continue;
+      const group = new Group(), shape = new Group();
+      shape.add(new AxesHelper(0.07)); group.add(shape); this.scene.add(group); this.poses.set(name, { group, shape });
+    }
     for (const [name, object] of this.poses) {
       const pose = sample?.poses[sources.indexOf(name)];
       object.group.visible = !!pose && !!(pose.flags & 2) && pose.active !== false;
@@ -177,22 +189,46 @@ export class SpatialView {
       object.group.position.fromArray(pose.position);
       object.shape.visible = !!(pose.flags & 1);
       if (object.shape.visible) object.group.quaternion.fromArray(pose.orientation);
-      fade(object.group, stale ? 0.25 : pose.flags & 8 ? 1 : 0.45);
+      tintLate(object.group, late);
     }
     this.surface.dataset.poseCount = String(count);
-    this.body?.update(body, skeleton);
-    if (this.body) fade(this.body.root, bodyStale ? 0.25 : 1);
-    const lines: number[] = [];
+    // Connectivity and joint count come from the advertised skeleton.
+    const visible = body?.active ? body.poses.filter(p => p.flags & 2) : [];
+    const points = visible.flatMap(p => p.position);
+    if (points.length > this.bodyPositions.array.length) {
+      this.bodyPositions = new Float32BufferAttribute(new Float32Array(points.length), 3);
+      this.bodyColors = new Float32BufferAttribute(new Float32Array(points.length), 3);
+      this.bodyPoints.geometry.setAttribute("position", this.bodyPositions);
+      this.bodyPoints.geometry.setAttribute("color", this.bodyColors);
+    }
+    this.bodyPositions.array.set(points); this.bodyPositions.needsUpdate = true;
+    visible.forEach((pose, i) => jointColor(pose.tracked, late).toArray(this.bodyColors.array, i * 3));
+    this.bodyColors.needsUpdate = true;
+    this.bodyPoints.geometry.setDrawRange(0, points.length / 3);
+    const lines: number[] = [], colors: number[] = [];
     if (body?.active && skeleton) {
       const ids = new Map(skeleton.joints.map((j, i) => [j.id, i]));
       skeleton.joints.forEach((joint, i) => {
         const parent = ids.get(joint.parent);
-        if (parent !== undefined && (body.poses[i].flags & 2) && (body.poses[parent].flags & 2)) lines.push(...body.poses[i].position, ...body.poses[parent].position);
+        if (parent !== undefined && (body.poses[i].flags & 2) && (body.poses[parent].flags & 2)) {
+          lines.push(...body.poses[i].position, ...body.poses[parent].position);
+          const tracking = [body.poses[i].tracked, body.poses[parent].tracked];
+          const tracked = tracking.includes(false) ? false : tracking.every(t => t === true) ? true : undefined;
+          const color = jointColor(tracked, late);
+          color.toArray(colors, colors.length); color.toArray(colors, colors.length);
+        }
       });
     }
-    this.surface.dataset.bodyJoints = String(body?.active ? body.poses.filter(p => (p.flags & 2) !== 0).length : 0);
+    this.surface.dataset.bodyJoints = String(visible.length);
+    if (lines.length > this.jointPositions.array.length) {
+      this.jointPositions = new Float32BufferAttribute(new Float32Array(lines.length), 3);
+      this.jointColors = new Float32BufferAttribute(new Float32Array(lines.length), 3);
+      this.joints.geometry.setAttribute("position", this.jointPositions);
+      this.joints.geometry.setAttribute("color", this.jointColors);
+    }
     this.jointPositions.array.set(lines);
     this.jointPositions.needsUpdate = true;
+    this.jointColors.array.set(colors); this.jointColors.needsUpdate = true;
     this.joints.geometry.setDrawRange(0, lines.length / 3);
     const frameLevel = body?.active && body.poses.some(p => p.flags & 2) ? 2 : count ? 1 : 0;
     if (!sample && !body) this.framed = 0;
@@ -228,10 +264,16 @@ function materials(object: Object3D, visit: (material: Material) => void) {
     if (material) for (const item of Array.isArray(material) ? material : [material]) visit(item);
   });
 }
-function fade(object: Object3D, opacity: number) {
+const originalColors = new WeakMap<Material, { color: Color; vertexColors: boolean }>();
+function tintLate(object: Object3D, late: boolean) {
   materials(object, material => {
-    if (material.transparent !== (opacity < 1)) material.needsUpdate = true;
-    material.opacity = opacity; material.transparent = opacity < 1; material.depthWrite = opacity === 1;
+    const colored = material as MeshStandardMaterial;
+    if (!colored.color) return;
+    if (!originalColors.has(material)) originalColors.set(material, { color: colored.color.clone(), vertexColors: colored.vertexColors });
+    const original = originalColors.get(material)!;
+    colored.color.copy(late ? trackingColors.late : original.color);
+    const vertexColors = late ? false : original.vertexColors;
+    if (colored.vertexColors !== vertexColors) { colored.vertexColors = vertexColors; colored.needsUpdate = true; }
   });
 }
 function dispose(object: Object3D) {

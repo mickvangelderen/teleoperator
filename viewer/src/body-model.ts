@@ -2,8 +2,9 @@ import { Bone, Matrix4, Quaternion, SkinnedMesh, Vector3 } from "three";
 import type { Object3D } from "three";
 
 // Renderer inputs contain geometry and runtime validity, without wire metadata.
-export type Pose = { position: number[]; orientation: number[]; flags: number; active: boolean | null };
+export type Pose = { position: number[]; orientation: number[]; flags: number; active: boolean | null; tracked?: boolean };
 export type PoseFrame = { poses: Pose[]; active?: boolean };
+export type JointHierarchy = { joints: { id: number; parent: number }[] };
 export type Skeleton = { joints: { id: number; parent: number; rest: Pose }[] };
 
 // A joint's rest orientation relates the runtime's axes to the asset's bind axes.

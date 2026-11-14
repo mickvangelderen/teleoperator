@@ -4,9 +4,7 @@ import { setAttribute, setText } from "./dom";
 export const metrics = {
   frame: { label: "Animation frame", color: "#656565" },
   interval: { label: "Render interval", color: "#6276b0" },
-  poseArrival: { label: "Pose arrival interval", color: "#c04c36" },
-  controllerArrival: { label: "Input arrival interval", color: "#9671ab" },
-  bodyArrival: { label: "Body arrival interval", color: "#708b22" },
+  trackingArrival: { label: "Subscription arrival interval", color: "#c04c36" },
   ui: { label: "UI CPU", color: "#a34a71" },
   scene: { label: "Poses + body CPU", color: "#8b662a" },
   render: { label: "Three.js CPU", color: "#22775a" },
@@ -19,12 +17,9 @@ const windowMs = 10_000;
 export const transferMetrics = {
   received: { label: "Received total", color: "#387b99" },
   sent: { label: "Sent total", color: "#22775a" },
-  pose: { label: "Poses", color: "#c04c36" },
-  controller: { label: "Inputs", color: "#9671ab" },
-  body: { label: "Body", color: "#708b22" },
+  tracking: { label: "Accepted tracking packets", color: "#c04c36" },
 } as const;
 type TransferMetric = keyof typeof transferMetrics;
-type TrackingType = "pose" | "controller" | "body";
 const transferKeys = Object.keys(transferMetrics) as TransferMetric[];
 
 // Exact payload bytes in (now - 1000 ms, now], including partial startup windows.
@@ -138,10 +133,11 @@ class Profiler {
   private histories = Object.fromEntries(keys.map(key => [key, new MetricHistory()])) as Record<Metric, MetricHistory>;
   private transferHistories = Object.fromEntries(transferKeys.map(key => [key, new MetricHistory()])) as Record<TransferMetric, MetricHistory>;
   private rates = Object.fromEntries(transferKeys.map(key => [key, new ByteRate()])) as Record<TransferMetric, ByteRate>;
-  private arrivals = new Map<TrackingType, { stream: string; at: number }>();
+  private arrivals = new Map<number, { stream: string; at: number }>();
   private gpu?: GpuTimer;
   private previousRender: number | null = null;
   private previousFrame: number | null = null;
+  private renderedFrames = new ByteRate();
   private generation = 0;
   attach(gl: WebGL2RenderingContext, revision: string) {
     this.gpu?.cancel();
@@ -157,6 +153,7 @@ class Profiler {
     if (!recording.active) this.gpu?.cancel();
     this.previousRender = null;
     this.previousFrame = null;
+    this.renderedFrames = new ByteRate();
     this.arrivals.clear();
     for (const history of [...Object.values(this.histories), ...Object.values(this.transferHistories)]) history.clear();
   }
@@ -175,11 +172,11 @@ class Profiler {
     this.previousFrame = now;
   }
   transfer(direction: "received" | "sent", bytes: number, at: number) { this.rates[direction].add(at, bytes); }
-  trackingArrival(type: TrackingType, stream: string, bytes: number, at: number) {
-    this.rates[type].add(at, bytes);
-    const previous = this.arrivals.get(type);
-    if (previous?.stream === stream) this.sample(`${type}Arrival`, at, at - previous.at);
-    this.arrivals.set(type, { stream, at });
+  trackingArrival(id: number, stream: string, bytes: number, at: number) {
+    this.rates.tracking.add(at, bytes);
+    const previous = this.arrivals.get(id);
+    if (previous?.stream === stream) this.sample("trackingArrival", at, at - previous.at);
+    this.arrivals.set(id, { stream, at });
   }
   sampleTransfer(now = performance.now()) {
     for (const key of transferKeys) {
@@ -189,6 +186,7 @@ class Profiler {
     }
   }
   beginRender() {
+    this.renderedFrames.add(performance.now(), 1);
     const start = this.begin();
     if (start === null) return null;
     if (this.previousRender !== null) this.sample("interval", start, start - this.previousRender);
@@ -202,6 +200,7 @@ class Profiler {
       this.sample("gpu", token.start, ms, token.generation);
     });
   }
+  frameRate(now: number) { return this.renderedFrames.rate(now); }
   snapshot() {
     const end = performance.now();
     return {
@@ -227,19 +226,23 @@ export function mountPerformancePanel(container: HTMLElement) {
   container.innerHTML = `<div class="panel-header"><h2>Performance</h2><span class="tag" id="recording-status" role="status" hidden></span></div>
     <div id="profile-results">${panels.map(panel => `<div class="timing-layout"><canvas id="${panel.id}-chart" role="img" aria-label="${panel.label} in ${panel.unit} over the last ten seconds. Exact summaries are in the adjacent table."></canvas>
     <table class="timing-summary" aria-label="${panel.label} in ${panel.unit}"><thead><tr><th>${panel.unit} · ${panel.id === "transfer" ? "rolling 1 s" : "last 10 s"}</th><th>Latest</th><th>Median</th><th>P95</th><th>Max</th></tr></thead><tbody>${Object.entries(panel.definitions).map(([key, definition]) => `<tr id="${panel.id}-${key}"><th scope="row" style="color:${definition.color}">${definition.label}</th>${["current", "median", "p95", "max"].map(stat => `<td data-stat="${stat}">—</td>`).join("")}</tr>`).join("")}</tbody></table></div>`).join("")}</div>`;
+  const gpuLabel = container.querySelector<HTMLElement>("#timing-gpu th")!;
+  const elements = panels.map(panel => ({
+    canvas: container.querySelector<HTMLCanvasElement>(`#${panel.id}-chart`)!,
+    rows: Object.keys(panel.definitions).map(key => [...container.querySelectorAll<HTMLElement>(`#${panel.id}-${key} [data-stat]`)]),
+  }));
   const refresh = () => {
     const capture = profiler.snapshot();
-    const gpuLabel = container.querySelector<HTMLElement>("#timing-gpu th")!;
     setAttribute(gpuLabel, "title", capture.gpuStatus);
     setAttribute(gpuLabel, "aria-label", `GPU render: ${capture.gpuStatus}`);
-    for (const panel of panels) {
+    for (const [index, panel] of panels.entries()) {
       const series = panel.id === "timing" ? capture.metrics : capture.transfer;
-      for (const metric of series) {
-        container.querySelectorAll<HTMLElement>(`#${panel.id}-${metric.key} [data-stat]`).forEach(cell => {
+      for (const [row, metric] of series.entries()) {
+        elements[index].rows[row].forEach(cell => {
           setText(cell, metric.summary ? metric.summary[cell.dataset.stat as keyof typeof metric.summary].toFixed(2) : "—");
         });
       }
-      draw(container.querySelector<HTMLCanvasElement>(`#${panel.id}-chart`)!, series, capture.end, panel.unit);
+      draw(elements[index].canvas, series, capture.end, panel.unit);
     }
   };
   const draw = (canvas: HTMLCanvasElement, series: ReturnType<Profiler["snapshot"]>["metrics"] | ReturnType<Profiler["snapshot"]>["transfer"], end: number, unit: string) => {
@@ -271,24 +274,18 @@ export function mountPerformancePanel(container: HTMLElement) {
       if (metric.key === "gpu") for (const sample of metric.samples) ctx.fillRect(x(sample.at) - 1, y(sample.value) - 1, 3, 3);
     }
   };
-  let dirty = true;
   const visibility = () => {
     recording.add({ type: "visibility", state: document.visibilityState });
     profiler.reset();
-    dirty = true;
   };
   profiler.start();
   document.addEventListener("visibilitychange", visibility);
-  const timer = setInterval(() => {
-    profiler.sampleTransfer();
-    dirty = true;
-  }, 200);
   return {
     renderFrame() {
-      if (!dirty || !profiler.enabled || document.hidden) return;
-      dirty = false;
+      if (!profiler.enabled || document.hidden) return;
+      profiler.sampleTransfer();
       refresh();
     },
-    dispose() { clearInterval(timer); document.removeEventListener("visibilitychange", visibility); profiler.stop(); },
+    dispose() { document.removeEventListener("visibilitychange", visibility); profiler.stop(); },
   };
 }

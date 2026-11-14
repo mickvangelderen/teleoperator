@@ -181,9 +181,9 @@ impl Input {
             *releases = *old_releases;
             if self.active && previous.active && value != old {
                 if *value {
-                    *presses = presses.checked_add(1).expect("Press counter exhausted");
+                    *presses = presses.wrapping_add(1);
                 } else {
-                    *releases = releases.checked_add(1).expect("Release counter exhausted");
+                    *releases = releases.wrapping_add(1);
                 }
             }
         }
@@ -192,6 +192,56 @@ impl Input {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_width_counters_wrap_and_inactive_samples_retain_counts() {
+        let old = Input {
+            active: true,
+            changed_at: None,
+            value: Value::Boolean {
+                value: false,
+                presses: u64::MAX,
+                releases: u64::MAX,
+            },
+        };
+        let mut current = Input {
+            active: true,
+            changed_at: None,
+            value: Value::Boolean {
+                value: true,
+                presses: 0,
+                releases: 0,
+            },
+        };
+        current.count_from(&old);
+        assert!(matches!(
+            current.value,
+            Value::Boolean {
+                presses: 0,
+                releases: u64::MAX,
+                ..
+            }
+        ));
+        let mut released = old.clone();
+        released.count_from(&current);
+        assert!(matches!(
+            released.value,
+            Value::Boolean {
+                presses: 0,
+                releases: 0,
+                ..
+            }
+        ));
+        let mut inactive = Input::inactive(InputType::Boolean);
+        inactive.count_from(&old);
+        assert!(matches!(
+            inactive.value,
+            Value::Boolean {
+                presses: u64::MAX,
+                releases: u64::MAX,
+                ..
+            }
+        ));
+    }
     #[test]
     fn transitions_count_during_acquisition_and_reactivation_only_rebaselines() {
         let mut previous = Input::inactive(InputType::Boolean);
