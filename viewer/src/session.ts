@@ -24,6 +24,18 @@ export class Session {
   private nextClock = 0;
   private readonly clockRequests = new Map<number, bigint>();
   private clockObservations: { offset: bigint; delay: bigint; at: number }[] = [];
+  checkpoint() {
+    return {
+      phase: this.phase, capabilities: this.capabilities,
+      active: [...this.active.values()].map(sub => ({
+        request: sub.request, generation: sub.generation, packet: sub.packet,
+        arrivedAt: sub.arrivedAt, acquiredAtArrival: sub.acquiredAtArrival,
+        counters: [...sub.counters],
+      })),
+      pending: [...this.pending.values()], stopping: [...this.stopping], revisions: [...this.revisions],
+      clock: this.clock, clockRequests: [...this.clockRequests], clockObservations: this.clockObservations,
+    };
+  }
   start() { return offer(); }
   retire() {
     this.phase = "closed"; this.capabilities = undefined;

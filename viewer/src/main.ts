@@ -103,8 +103,9 @@ const ageChart = mountSparkline(element("age-metric"), "age-chart", "Estimated a
 let metricSession: Session | undefined;
 if (import.meta.env.DEV) {
   recording.start({ type: "session", endpoint: __OPERATOR_TARGET__, viewerVersion: "0.1.0" }, (message, failed) => {
-    recordingStatus = { message, failed, label: failed ? "Recording incomplete" : recording.active ? "Recording" : "Saved" };
-  });
+    recordingStatus = { message, failed, label: failed ? "Recording incomplete" : recording.active ? "Recording · rolling history" : "Saved" };
+  }, () => ({ connections: connection ? [connection.checkpoint()] : [], renderToPhotonMs,
+    continuousRendering: element<HTMLInputElement>("continuous-render").checked }));
 }
 void import("./spatial").then(({ SpatialView }) => {
   spatial = new SpatialView(element("poses"), setGraphicsStatus);

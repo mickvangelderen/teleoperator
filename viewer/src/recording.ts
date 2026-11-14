@@ -1,3 +1,5 @@
+import { stringifyRecording } from "./recording-format";
+
 export type RecordingEvent = { type: string; [key: string]: unknown };
 export type WorkerRecord = { event: RecordingEvent & { sequence: number; atMs: number }; cost: number; bytes?: ArrayBuffer };
 
@@ -17,32 +19,45 @@ class Recorder {
   private status: (message: string, failed: boolean) => void = () => {};
   private id = "";
   private failed = false;
+  private file = "";
+  private pruned = 0;
   private drain?: (error?: Error) => void;
 
-  start(metadata: RecordingEvent, status: (message: string, failed: boolean) => void) {
+  start(metadata: RecordingEvent, status: (message: string, failed: boolean) => void, checkpoint: () => object = () => ({ connections: [] })) {
     this.status = status;
     this.id = recordingId();
     this.sequence = this.pending = 0;
+    this.failed = false;
+    this.pruned = 0;
+    this.file = `${this.id}.000000.jsonl`;
     try {
       this.worker = new Worker(new URL("./recording.worker.ts", import.meta.url), { type: "module" });
       this.worker.onmessage = ({ data }) => {
         if (data.error) this.fail(data.error);
+        else if (data.checkpoint) {
+          try { if (this.active) this.add({ type: "checkpoint", version: 1, state: checkpoint() }); }
+          catch { this.fail("Could not capture recording checkpoint"); }
+        }
+        else if (data.heartbeat) this.add({ type: "heartbeat" });
         else {
           this.pending -= data.cost;
-          if (this.active) status(`Recording · ${this.id}.jsonl · ${(data.bytes / 1024 ** 2).toFixed(1)} MiB saved`, false);
+          this.file = data.file;
+          this.pruned = data.pruned;
+          if (this.active) status(`Recording · ${this.file} · ${(data.bytes / 1024 ** 2).toFixed(1)} MiB saved${this.retention()}`, false);
           if (!this.pending) this.drain?.();
         }
       };
       this.worker.onerror = () => this.fail("Recording worker failed");
       this.active = true;
       this.worker.postMessage({ id: this.id });
-      status(`Starting recording · ${this.id}.jsonl`, false);
+      status(`Starting recording · ${this.file} · rolling 2 GiB history`, false);
       this.add({ ...metadata, type: "session", version: 1, timeOrigin: performance.timeOrigin, userAgent: navigator.userAgent });
+      this.add({ type: "checkpoint", version: 1, state: checkpoint() });
     } catch { this.fail("Could not start the recording worker"); }
   }
   add(event: RecordingEvent, bytes?: Uint8Array, atMs = performance.now()) {
     if (!this.active || !this.worker) return;
-    const cost = bytes ? bytes.byteLength * 2 + 1024 : JSON.stringify(event).length * 2 + 256;
+    const cost = bytes ? bytes.byteLength * 2 + 1024 : stringifyRecording(event).length * 2 + 256;
     if (this.pending + cost > 4 * 1024 ** 2) {
       this.worker.postMessage({ event: { type: "recording-error", sequence: this.sequence++, atMs, reason: "4 MiB queue exceeded; subsequent records were not captured" }, cost: 0 });
       this.fail("Recording queue exceeded 4 MiB; capture is incomplete");
@@ -62,6 +77,7 @@ class Recorder {
     this.status(`Recording incomplete · ${reason}`, true);
     this.drain?.(new Error(reason));
   }
+  private retention() { return ` · rolling 2 GiB history${this.pruned ? ` · ${this.pruned} older chunks removed` : ""}`; }
   async flush() {
     if (this.failed) throw new Error("Recording has failed");
     if (!this.pending) return;
@@ -77,7 +93,7 @@ class Recorder {
     this.active = false;
     try {
       await this.flush();
-      this.status(`Recording saved · ${this.id}.jsonl`, false);
+      this.status(`Recording saved · ${this.file}${this.retention()}`, false);
     } catch (error) { this.fail(error instanceof Error ? error.message : "Recording flush failed"); }
     finally { this.worker?.terminate(); }
   }

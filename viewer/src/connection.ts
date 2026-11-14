@@ -50,6 +50,11 @@ export class Connection {
   private recordedFreshness = "";
   constructor(private readonly update: (state: State) => void) { this.state.session = this.session; }
 
+  checkpoint() {
+    const { session: _session, ...state } = this.state;
+    return { connection: this.recordingId, ...state, session: this.session.checkpoint() };
+  }
+
   async connect() {
     if (this.stopped || this.state.status !== "Disconnected") return;
     profiler.resetConnectionMetrics();
