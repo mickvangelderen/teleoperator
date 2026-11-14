@@ -1,24 +1,23 @@
 // Uses the same browser timing APIs as OpenArm Teleop, with independent Viewer instrumentation.
 import { recording } from "./recording";
-import { setAttribute, setText } from "./dom";
 import { RollingRate } from "./statistics";
 export const metrics = {
-  frame: { label: "Animation frame", color: "#656565" },
-  interval: { label: "Render interval", color: "#6276b0" },
-  trackingArrival: { label: "Subscription arrival interval", color: "#c04c36" },
-  ui: { label: "UI CPU", color: "#a34a71" },
-  scene: { label: "Poses + body CPU", color: "#8b662a" },
-  render: { label: "Three.js CPU", color: "#22775a" },
-  receive: { label: "Message CPU", color: "#387b99" },
-  gpu: { label: "GPU render", color: "#aa681f" },
+  frame: { label: "Animation frame", color: "var(--series-frame)" },
+  interval: { label: "Render interval", color: "var(--series-interval)" },
+  trackingArrival: { label: "Subscription arrival interval", color: "var(--series-tracking)" },
+  ui: { label: "UI CPU", color: "var(--series-ui)" },
+  scene: { label: "Poses + body CPU", color: "var(--series-scene)" },
+  render: { label: "Three.js CPU", color: "var(--series-render)" },
+  receive: { label: "Message CPU", color: "var(--series-receive)" },
+  gpu: { label: "GPU render", color: "var(--series-gpu)" },
 } as const;
 export type Metric = keyof typeof metrics;
 const keys = Object.keys(metrics) as Metric[];
 const windowMs = 10_000;
 export const transferMetrics = {
-  received: { label: "Received total", color: "#387b99" },
-  sent: { label: "Sent total", color: "#22775a" },
-  tracking: { label: "Accepted tracking packets", color: "#c04c36" },
+  received: { label: "Received total", color: "var(--series-receive)" },
+  sent: { label: "Sent total", color: "var(--series-render)" },
+  tracking: { label: "Accepted tracking packets", color: "var(--series-tracking)" },
 } as const;
 type TransferMetric = keyof typeof transferMetrics;
 const transferKeys = Object.keys(transferMetrics) as TransferMetric[];
@@ -203,75 +202,3 @@ class Profiler {
   }
 }
 export const profiler = new Profiler();
-
-export function mountPerformancePanel(container: HTMLElement) {
-  const panels = [
-    { id: "timing", unit: "ms", label: "Viewer timings", definitions: metrics },
-    { id: "transfer", unit: "kB/s", label: "Payload transfer · rolling 1 s", definitions: transferMetrics },
-  ];
-  container.innerHTML = `<div class="panel-header"><h2>Performance</h2><span class="tag" id="recording-status" role="status" hidden></span></div>
-    <div id="profile-results">${panels.map(panel => `<div class="timing-layout"><canvas id="${panel.id}-chart" role="img" aria-label="${panel.label} in ${panel.unit} over the last ten seconds. Exact summaries are in the adjacent table."></canvas>
-    <table class="timing-summary" aria-label="${panel.label} in ${panel.unit}"><thead><tr><th>${panel.unit} · ${panel.id === "transfer" ? "rolling 1 s" : "last 10 s"}</th><th>Latest</th><th>Median</th><th>P95</th><th>Max</th></tr></thead><tbody>${Object.entries(panel.definitions).map(([key, definition]) => `<tr id="${panel.id}-${key}"><th scope="row" style="color:${definition.color}">${definition.label}</th>${["current", "median", "p95", "max"].map(stat => `<td data-stat="${stat}">—</td>`).join("")}</tr>`).join("")}</tbody></table></div>`).join("")}</div>`;
-  const gpuLabel = container.querySelector<HTMLElement>("#timing-gpu th")!;
-  const elements = panels.map(panel => ({
-    canvas: container.querySelector<HTMLCanvasElement>(`#${panel.id}-chart`)!,
-    rows: Object.keys(panel.definitions).map(key => [...container.querySelectorAll<HTMLElement>(`#${panel.id}-${key} [data-stat]`)]),
-  }));
-  const refresh = () => {
-    const capture = profiler.snapshot();
-    setAttribute(gpuLabel, "title", capture.gpuStatus);
-    setAttribute(gpuLabel, "aria-label", `GPU render: ${capture.gpuStatus}`);
-    for (const [index, panel] of panels.entries()) {
-      const series = panel.id === "timing" ? capture.metrics : capture.transfer;
-      for (const [row, metric] of series.entries()) {
-        elements[index].rows[row].forEach(cell => {
-          setText(cell, metric.summary ? metric.summary[cell.dataset.stat as keyof typeof metric.summary].toFixed(2) : "—");
-        });
-      }
-      draw(elements[index].canvas, series, capture.end, panel.unit);
-    }
-  };
-  const draw = (canvas: HTMLCanvasElement, series: ReturnType<Profiler["snapshot"]>["metrics"] | ReturnType<Profiler["snapshot"]>["transfer"], end: number, unit: string) => {
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const width = canvas.clientWidth, height = canvas.clientHeight, ratio = Math.min(devicePixelRatio, 2);
-    if (!width || !height) return;
-    if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
-      canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
-    }
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0); ctx.clearRect(0, 0, width, height);
-    const left = 40, right = width - 10, top = 16, bottom = height - 22;
-    const max = Math.ceil(Math.max(unit === "ms" ? 40 : 10, ...series.map(m => m.summary?.max ?? 0)) / 10) * 10;
-    const x = (at: number) => left + (at - end + windowMs) / windowMs * (right - left);
-    const y = (ms: number) => bottom - ms / max * (bottom - top);
-    ctx.font = "10px system-ui"; ctx.lineWidth = 1;
-    for (const ms of [0, max / 2, max]) {
-      ctx.strokeStyle = "#dce4de"; ctx.fillStyle = "#53675b";
-      ctx.beginPath(); ctx.moveTo(left, y(ms)); ctx.lineTo(right, y(ms)); ctx.stroke(); ctx.fillText(String(ms), 2, y(ms) + 3);
-    }
-    ctx.fillText(unit, 2, 10); ctx.fillText("−10 s", left, height - 3); ctx.fillText("now", right - 22, height - 3);
-    for (const metric of series) {
-      ctx.strokeStyle = ctx.fillStyle = metric.color;
-      ctx.beginPath();
-      metric.samples.forEach((sample, i) => {
-        if (i) ctx.lineTo(x(sample.at), y(sample.value)); else ctx.moveTo(x(sample.at), y(sample.value));
-      });
-      ctx.stroke();
-      if (metric.key === "gpu") for (const sample of metric.samples) ctx.fillRect(x(sample.at) - 1, y(sample.value) - 1, 3, 3);
-    }
-  };
-  const visibility = () => {
-    recording.add({ type: "visibility", state: document.visibilityState });
-    profiler.reset();
-  };
-  profiler.start();
-  document.addEventListener("visibilitychange", visibility);
-  return {
-    renderFrame() {
-      if (!profiler.enabled || document.hidden) return;
-      profiler.sampleTransfer();
-      refresh();
-    },
-    dispose() { document.removeEventListener("visibilitychange", visibility); profiler.stop(); },
-  };
-}

@@ -1,0 +1,3 @@
+publication-group { display: block; min-width: 0; }
+.publication-controls input { width: 76px; }
+.subscription-status { margin: var(--space-2) 0; }

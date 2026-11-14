@@ -1,18 +1,10 @@
+import "./sparkline.css";
 import { setAttribute } from "./dom";
+import { ViewerTooltip } from "./ui/tooltip";
 
-export const groupColor = (group: number) => ["#237b72", "#aa6427", "#7861b3", "#367eae", "#ac527a", "#687d30"][group % 6];
-export const neutralColor = "#66717b";
-
-export class SparklineHistory {
-  readonly samples: { at: number; value?: number }[] = [];
-  add(now: number, value?: number, peak = false) {
-    const at = Math.floor(now / 100) * 100, last = this.samples.at(-1);
-    if (value !== undefined && !Number.isFinite(value)) value = undefined;
-    if (last?.at === at) last.value = peak && value !== undefined ? Math.max(last.value ?? value, value) : value;
-    else this.samples.push({ at, value });
-    while (this.samples.length && this.samples[0].at < now - 10_000) this.samples.shift();
-  }
-}
+import { SparklineHistory } from "./sparkline-history";
+import { groupColor, referenceDash } from "./ui/graph-style";
+export { groupColor, neutralColor } from "./ui/graph-style";
 
 type Series = { key: string; value?: number; color: string; dashed?: boolean; peak?: boolean; className?: string };
 
@@ -22,12 +14,11 @@ export function mountSparkline(container: HTMLElement, id: string, description: 
   svg.id = id; svg.classList.add("metric-chart");
   svg.setAttribute("viewBox", "0 0 100 48"); svg.setAttribute("preserveAspectRatio", "none");
   svg.setAttribute("role", "img"); svg.setAttribute("aria-label", `${description} Last 10 s.`);
-  const plot = document.createElement("div"); plot.className = "metric-plot"; plot.title = "";
-  const tooltip = document.createElement("div"); tooltip.className = "metric-tooltip";
-  tooltip.id = `${id}-tooltip`; tooltip.setAttribute("role", "tooltip");
-  tooltip.textContent = `${description}\nLast 10 s.`;
-  svg.setAttribute("tabindex", "0"); svg.setAttribute("aria-describedby", tooltip.id);
-  plot.append(svg, tooltip); container.append(plot);
+  const plot = new ViewerTooltip(); plot.classList.add("metric-plot");
+  svg.setAttribute("tabindex", "0");
+  plot.configure(svg, `${description}\nLast 10 s.`, `${id}-tooltip`);
+  const tooltip = plot.content;
+  container.append(plot);
   const lines = new Map<string, { path: SVGPathElement; history: SparklineHistory }>();
   let lastDraw = -Infinity;
   return {
@@ -42,7 +33,7 @@ export function mountSparkline(container: HTMLElement, id: string, description: 
         if (!line) {
           const path = document.createElementNS(svg.namespaceURI, "path") as SVGPathElement;
           path.setAttribute("stroke", item.color);
-          if (item.dashed) path.setAttribute("stroke-dasharray", "4 3");
+          if (item.dashed) path.setAttribute("stroke-dasharray", referenceDash.join(" "));
           if (item.className) path.setAttribute("class", item.className);
           svg.append(path);
           line = { path, history: new SparklineHistory() }; lines.set(item.key, line);

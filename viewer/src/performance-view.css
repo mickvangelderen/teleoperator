@@ -1,0 +1,3 @@
+#recording-status.recording-failed { color: var(--error); font-weight: 600; }
+.timing-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 1fr); gap: var(--space-6); padding: var(--space-5) var(--space-6); }
+@media (max-width: 850px) { .timing-layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-3); padding: var(--space-4); } }

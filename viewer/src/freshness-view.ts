@@ -1,12 +1,12 @@
+import "./freshness-view.css";
 import { setAttribute, setText } from "./dom";
 import type { Freshness } from "./freshness";
 import { groupColor, mountGroupLegend, mountSparkline } from "./sparkline";
+import type { MetricDisplay } from "./ui/metric-display";
+import { formatMeasurement } from "./ui/format";
 import { TwoSecondMedian } from "./statistics";
 
-export function mountFreshnessIndicator(container: HTMLElement) {
-  container.innerHTML = `<label>FRESHNESS</label>
-    <div class="metric-value"><strong id="freshness-age">—</strong></div>`;
-  const age = container.querySelector<HTMLElement>("#freshness-age")!;
+export function mountFreshnessIndicator(container: MetricDisplay) {
   const chart = mountSparkline(container, "freshness-chart", "Solid: sample age. Dashed: late threshold.");
   const threshold = document.createElement("strong"); threshold.id = "freshness-threshold";
   chart.tooltip.prepend(threshold);
@@ -19,8 +19,8 @@ export function mountFreshnessIndicator(container: HTMLElement) {
       setAttribute(container, "data-status", freshness.status);
       const displayedAge = ageMedian.update(worst?.ageMs, now);
       const displayedThreshold = thresholdMedian.update(worst?.thresholdMs, now);
-      setText(age, displayedAge === undefined ? "—" : `${displayedAge.toFixed(1)} ms`);
-      setText(threshold, displayedThreshold === undefined ? "Late above —" : `Late above ${displayedThreshold.toFixed(1)} ms`);
+      container.update(displayedAge);
+      setText(threshold, `Late above ${formatMeasurement(displayedThreshold, "ms", 1)}`);
       groups(streams);
       chart.update(streams.flatMap(s => [
         { key: `${s.id}:${s.generation}:threshold`, value: s.thresholdMs, color: groupColor(s.group), dashed: true, className: "freshness-threshold-line" },

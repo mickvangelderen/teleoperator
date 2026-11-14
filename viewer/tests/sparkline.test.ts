@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SparklineHistory } from "../src/sparkline";
+import { SparklineHistory } from "../src/sparkline-history";
 
 test("mini graphs retain brief age peaks, missing data and signed values in a bounded ten-second window", () => {
   const age = new SparklineHistory();

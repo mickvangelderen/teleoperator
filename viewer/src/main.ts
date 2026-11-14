@@ -1,11 +1,16 @@
 import { Connection, initialState } from "./connection";
-import { spatialFrames, stale, valueText } from "./tracking-view";
-import { kindNames, formatNames, spaceNames, preferredFormat, periodic, publicationRate, referenceFields, restGroup } from "./protocol";
+import { spatialFrames, stale } from "./tracking-view";
+import { spaceNames, publicationRate } from "./protocol";
 import type { Session } from "./session";
 import type { State } from "./connection";
 import "./style.css";
 import type { SpatialView } from "./spatial";
-import { profiler, mountPerformancePanel } from "./performance";
+import { profiler } from "./performance";
+import { mountPerformancePanel } from "./performance-view";
+import { panelHeader } from "./ui/panel";
+import { MetricDisplay } from "./ui/metric-display";
+import { PublicationGroup } from "./ui/publication-group";
+import type { Request } from "./protocol";
 import { recording } from "./recording";
 import { setAttribute, setText } from "./dom";
 import { TwoSecondMedian } from "./statistics";
@@ -32,22 +37,21 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <main>
     <section class="page-heading">
       <div><div class="eyebrow">OPERATOR / CONNECTION</div><h1>A window into your device.</h1><p>Inspect live poses, body joints and inputs. Choose exactly what the device publishes.</p></div>
-      <div class="connection-box"><div><label>DEVICE ENDPOINT</label><span id="target" class="mono"></span><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span></div><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></div>
+      <div class="connection-box"><div><span class="section-label">DEVICE ENDPOINT</span><span id="target" class="mono"></span><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span></div><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></div>
     </section>
-    <div id="error" class="error" role="alert" hidden></div>
+    <div id="error" class="status-message" data-tone="error" role="alert" hidden></div>
     <section class="metrics" aria-label="Viewer metrics">
-      <div class="metric" id="freshness"></div>
-      <div class="metric" id="arrival-metric"><label>ARRIVAL RATE</label><div class="metric-value"><strong id="arrival-rate">—</strong></div></div>
-      <div class="metric" id="latency-metric"><label>NETWORK LATENCY</label><div class="metric-value"><strong id="estimated-latency">—</strong></div></div>
-      <div class="metric" id="age-metric"><label>SAMPLE AGE AT PHOTON</label><div class="metric-value"><strong id="sample-age">—</strong></div></div>
-      <div class="metric" id="frame-metric"><label>FRAME RATE</label><div class="metric-value"><strong id="frame-rate">—</strong></div></div>
+      <viewer-metric id="freshness" label="FRESHNESS" value-id="freshness-age" unit="ms" precision="1"></viewer-metric>
+      <viewer-metric id="arrival-metric" label="ARRIVAL RATE" value-id="arrival-rate" unit="Hz" precision="1"></viewer-metric>
+      <viewer-metric id="latency-metric" label="NETWORK LATENCY" value-id="estimated-latency" unit="ms" precision="2"></viewer-metric>
+      <viewer-metric id="age-metric" label="SAMPLE AGE AT PHOTON" value-id="sample-age" unit="ms" precision="2"></viewer-metric>
+      <viewer-metric id="frame-metric" label="FRAME RATE" value-id="frame-rate" unit="fps" precision="0"></viewer-metric>
     </section>
     <section class="panel workspace">
-      <div class="panel-header"><h2><span class="panel-symbol">⌘</span> Tracking workspace</h2></div>
       <div class="viewport"><div id="poses"></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Ready to connect</h3><p id="workspace-note">Connect to inspect the device’s tracking data.</p></div></div>
-      <div class="view-controls"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="20" required aria-label="Render-to-photon latency in milliseconds"> ms</label><span id="prediction-horizon">Prediction horizon: not reported</span><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" role="status">Loading 3D view…</span></div>
+      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="20" required aria-label="Render-to-photon latency in milliseconds"> ms</label><span id="prediction-horizon">Prediction horizon: not reported</span><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div>
     </section>
-    <section class="panel subscriptions-panel"><div class="panel-header"><h2>Samples & publication</h2><span id="sample-summary" class="tag">No capabilities</span></div><p id="publication-status" class="publication-status" role="status"></p><div id="subscriptions" class="subscriptions"><p>Connect to discover selectable samples.</p></div></section>
+    <section class="panel subscriptions-panel"><span id="sample-summary" class="tag">No capabilities</span><p id="publication-status" class="publication-status status-message" role="status"></p><div id="subscriptions" class="subscriptions"><p>Connect to discover selectable samples.</p></div></section>
     <section class="panel performance-panel" id="performance" aria-label="Performance profiling"></section>
     <footer><span><span class="footer-mark">×</span> XR Operator <span class="footer-separator">/</span> Viewer</span><span id="footer-status">No device connected</span></footer>
   </main>`;
@@ -57,6 +61,8 @@ const element = <T extends HTMLElement = HTMLElement>(id: string) =>
 const text = (id: string, value: string) => {
   setText(element(id), value);
 };
+document.querySelector(".workspace")!.prepend(panelHeader("Tracking workspace"));
+document.querySelector(".subscriptions-panel")!.prepend(panelHeader("Samples & publication", element("sample-summary")));
 text("target", __OPERATOR_TARGET__);
 let connection: Connection | null = null;
 let current = initialState();
@@ -64,7 +70,8 @@ let spatial: SpatialView | undefined;
 let spatialKey = "";
 let trackingView = spatialFrames(undefined, 0);
 let mountedSession: Session | undefined;
-const sampleRows = new Map<number, { value: HTMLElement; check: HTMLInputElement; format: HTMLSelectElement; space: HTMLSelectElement; row: HTMLElement }>();
+const publicationGroups: PublicationGroup[] = [];
+let publicationError: string | undefined;
 let graphicsStatus = "Loading 3D view…";
 let recordingStatus: { message: string; label: string; failed: boolean } | undefined;
 const setGraphicsStatus = (message: string) => { graphicsStatus = message; };
@@ -94,7 +101,7 @@ const animate = (frameTime: number) => {
 };
 let frame = requestAnimationFrame(animate);
 const performancePanel = mountPerformancePanel(element("performance"));
-const freshnessIndicator = mountFreshnessIndicator(element("freshness"));
+const freshnessIndicator = mountFreshnessIndicator(element<MetricDisplay>("freshness"));
 const arrivalChart = mountSparkline(element("arrival-metric"), "arrival-chart", "Arrivals per second.\nSolid: actual. Dashed: requested.");
 const arrivalGroups = mountGroupLegend(arrivalChart.tooltip);
 const latencyChart = mountSparkline(element("latency-metric"), "latency-chart", "Estimated one-way latency.");
@@ -138,14 +145,16 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   element("connect").classList.toggle("secondary", live || busy);
   setAttribute(element("error"), "hidden", state.status !== "Error" ? "" : null);
   text("error", state.detail);
-  text("publication-status", state.detail);
   text("footer-status", live ? "Connected" : "No device connected");
   const session = state.session;
   if (mountedSession && mountedSession !== session) {
-    mountedSession = undefined; sampleRows.clear();
+    mountedSession = undefined; publicationGroups.length = 0;
+    publicationError = undefined;
     element("subscriptions").replaceChildren(document.createTextNode("Connect to discover selectable samples."));
     text("sample-summary", "No capabilities");
   }
+  text("publication-status", publicationError ?? state.detail);
+  setAttribute(element("publication-status"), "data-tone", publicationError ? "error" : null);
   if (session?.capabilities && mountedSession !== session) mountCapabilities(session);
   const subscriptions = [...session?.active.values() ?? []];
   const received = subscriptions.filter(s => s.arrivedAt !== undefined);
@@ -155,7 +164,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     actual: s.arrivals.filter(at => at > now - 1000 && at <= now).length,
   }));
   const displayedRate = arrivalRateMedian.update(subscriptions.length ? rates.reduce((sum, s) => sum + s.actual, 0) : undefined, now);
-  text("arrival-rate", displayedRate === undefined ? "—" : `${displayedRate.toFixed(1)} Hz`);
+  element<MetricDisplay>("arrival-metric").update(displayedRate);
   arrivalGroups(rates);
   arrivalChart.update(rates.flatMap(s => [
     ...s.requested === undefined ? [] : [{ key: `${s.key}:requested`, value: s.requested, color: groupColor(s.group), dashed: true, className: "arrival-requested-line" }],
@@ -165,99 +174,56 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     .reduce<bigint | undefined>((latest, s) => latest === undefined || (s.packet!.predictedFor ?? s.packet!.timestamp) > latest ? (s.packet!.predictedFor ?? s.packet!.timestamp) : latest, undefined);
   const sampleAge = sampleTime === undefined ? undefined : session?.sampleAge(sampleTime, now, renderToPhotonMs);
   const age = sampleAgeMedian.update(sampleAge, now);
-  text("sample-age", age === undefined ? "—" : `${age.toFixed(2)} ms`);
+  element<MetricDisplay>("age-metric").update(age);
   const latency = session?.latestNetworkLatency(now);
   const displayedLatency = latencyMedian.update(latency, now);
-  text("estimated-latency", displayedLatency === undefined ? "—" : `${displayedLatency.toFixed(2)} ms`);
+  element<MetricDisplay>("latency-metric").update(displayedLatency);
   latencyChart.update([{ key: "probe", value: latency, color: neutralColor, peak: true }], now);
   const fps = spatial?.frameRate(now);
   const displayedFps = frameRateMedian.update(fps, now);
-  text("frame-rate", displayedFps === undefined ? "—" : `${displayedFps.toFixed(0)} fps`);
+  element<MetricDisplay>("frame-metric").update(displayedFps);
   frameChart.update([{ key: "frames", value: fps, color: neutralColor }], now);
   ageChart.update([{ key: "age", value: sampleAge, color: neutralColor }], now);
   text("prediction-horizon", state.predictionHorizonMs === undefined ? "Prediction horizon: not reported" : `Prediction horizon: ${state.predictionHorizonMs} ms`);
   const values = view.values;
   const visiblePoses = view.poses.poses.length + (view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0);
   const visibleJoints = view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0;
-  for (const [index, nodes] of sampleRows) {
-    const current = values.get(index), d = session!.capabilities!.descriptors[index];
-    let label = !current ? "Not subscribed" : current.stale ? "Stale · awaiting current data" : valueText(current.value);
-    const delta = current?.subscription.deltas.get(current.selection);
-    if (delta !== undefined && current?.value !== null && !current?.stale) label += ` · +${delta} ${d.kind === 11 ? "revisions" : "edges"}`;
-    if (current && !current.stale && [2,5].includes(d.kind)) for (const field of referenceFields(d.kind)) {
-      const counter = d[field] == null ? undefined : values.get(d[field]!);
-      const edges = counter?.subscription.deltas.get(counter.selection);
-      if (counter && !counter.stale && counter.value !== null && edges !== undefined) label += ` · ${kindNames[session!.capabilities!.descriptors[d[field]!].kind]} +${edges}`;
-    }
-    setText(nodes.value, label);
-    setAttribute(nodes.row, "data-available", String(!!current && !current.stale && current.value !== null));
-
-  }
   setAttribute(element("empty-state"), "hidden", visiblePoses && !view.mixedSpaces ? "" : null);
   text("workspace-title", view.mixedSpaces ? "Mixed reference spaces" : live ? "No current poses" : "Ready to connect");
   text("workspace-note", view.mixedSpaces ? "Choose the same reference space for pose samples to display them together. Numerical values remain available below." : live ? "Select pose samples and start publication. Select the associated validity samples to display pose components. Inactive and stale poses are hidden." : "Connect to inspect the device’s tracking data.");
   text("body-quality", `${visibleJoints} current body joints · ${view.mixedSpaces ? "mixed spaces; overlay hidden" : view.space ? view.space < 0 ? "skeleton rest frame" : spaceNames[view.space] : "no current frame"} · ${view.outdated.size ? "rest revision pending" : view.rest ? "advertised rest poses" : `${view.trackedJoints} reported tracked${view.confidence === undefined ? "" : ` · confidence ${(100 * view.confidence).toFixed(0)}%`}`}`);
-  for (let group = 0; group < (session?.capabilities?.groups.length ?? 0); group++) {
-    const active = [...session!.active.values()].find(s => s.request.group === group), pending = [...session!.pending.values()].some(r => r.group === group);
-    element<HTMLButtonElement>(`publish-${group}`).disabled = pending;
-    element<HTMLButtonElement>(`stop-${group}`).disabled = !active || pending;
-    text(`publish-${group}`, pending ? "Pending…" : active ? "Apply replacement" : "Start publication");
-    text(`subscription-${group}`, active ? `Subscription ${active.request.id} · ${active.request.samples.length} samples · ${active.request.schedule.kind === "onChange" ? "on change" : `${publicationRate(active.request).toFixed(1)} Hz target`} · ${active.request.delivery === 2 ? "reliable" : "unreliable"} · ${active.packets} packets` : pending ? "Waiting for control response" : "No active publication");
-  }
+  publicationGroups.forEach((component, group) => {
+    const active = subscriptions.find(s => s.request.group === group);
+    const pending = [...session?.pending.values() ?? []].some(r => r.group === group);
+    component.update(active, pending, values);
+  });
 }
 
 function mountCapabilities(session: Session) {
   sampleAgeMedian.reset();
-  mountedSession = session; sampleRows.clear();
-  const c = session.capabilities!, container = element("subscriptions"); container.replaceChildren();
-  text("sample-summary", `${c.descriptors.length} samples · ${c.groups.length} acquisition groups`);
-  c.groups.forEach((max, group) => {
-    const section = document.createElement("section"); section.className = "subscription-group";
-    section.style.setProperty("--group-color", groupColor(group));
-    const delivery = restGroup(c, group) ? 2 : 1;
-    section.innerHTML = `<div class="publication-controls"><strong class="group-label">Group ${group}</strong><label class="rate-control">Rate <input id="rate-${group}" type="number" min="0.1" max="${max}" step="any" value="${Math.min(max,60)}" aria-label="Group ${group} publication rate"> Hz (max ${max})</label><label>Schedule <select id="schedule-${group}"><option value="periodic" ${restGroup(c, group) ? "" : "selected"}>Periodic</option><option value="onChange" ${restGroup(c, group) ? "selected" : ""}>On change</option></select></label><label class="phase-control">Phase <input id="phase-${group}" type="number" min="0" step="any" value="0"> ms</label><label class="delay-control">Consumption delay <input id="delay-${group}" type="number" min="0" step="any" value="0"> ms</label><label>Delivery <select id="delivery-${group}" aria-label="Group ${group} delivery"><option value="1" ${delivery === 1 ? "selected" : ""}>Unreliable</option><option value="2" ${delivery === 2 ? "selected" : ""}>Reliable</option></select></label><button id="publish-${group}">Apply replacement</button><button id="stop-${group}">Stop publication</button><button class="select-all">Select all</button><button class="select-none">Clear selection</button></div><p id="subscription-${group}" class="subscription-status"></p><div class="sample-table-wrap"><table class="sample-table"><thead><tr><th>Select</th><th>Sample</th><th>Kind</th><th>Format</th><th>Space</th><th>Current value</th></tr></thead><tbody></tbody></table></div>`;
-    const scheduleSelect = section.querySelector<HTMLSelectElement>(`#schedule-${group}`)!;
-    const updateCadence = () => {
-      const onChange = scheduleSelect.value === "onChange";
-      section.querySelector<HTMLElement>(".rate-control")!.hidden = onChange;
-      section.querySelector<HTMLElement>(".phase-control")!.hidden = onChange;
-      section.querySelector<HTMLElement>(".delay-control")!.hidden = onChange;
-    };
-    scheduleSelect.onchange = updateCadence; updateCadence();
-    const tbody = section.querySelector("tbody")!;
-    c.descriptors.forEach((d, index) => {
-      if (d.group !== group) return;
-      const row = document.createElement("tr"); row.dataset.descriptor = d.id;
-      const check = document.createElement("input"); check.type = "checkbox"; check.checked = true; check.setAttribute("aria-label", `Select ${d.name || d.id}`);
-      const name = document.createElement("span"); name.textContent = d.name || d.id; name.title = `${d.id}\n${d.description}`;
-      const references = referenceFields(d.kind).flatMap(field => d[field] == null ? [] : [`${kindNames[c.descriptors[d[field]!].kind]}: ${c.descriptors[d[field]!].name || c.descriptors[d[field]!].id}`]);
-      if (d.revision_of !== undefined) references.push(`Versions group ${d.revision_of}`);
-      name.title += references.length ? `\n${references.join("\n")}` : "";
-      const kind = document.createElement("span"); kind.textContent = kindNames[d.kind];
-      const format = document.createElement("select"); format.setAttribute("aria-label", `Format for ${d.name || d.id}`);
-      for (const f of d.formats) format.add(new Option(formatNames[f], String(f)));
-      format.value = String(preferredFormat(d));
-      const space = document.createElement("select"); space.setAttribute("aria-label", `Space for ${d.name || d.id}`);
-      for (const s of d.spaces.length ? d.spaces : [0]) space.add(new Option(spaceNames[s], String(s)));
-      space.disabled = d.kind !== 10;
-      const value = document.createElement("span"); value.textContent = "Awaiting publication"; value.className = "sample-value";
-      for (const item of [check, name, kind, format, space, value]) { const cell = document.createElement("td"); cell.append(item); row.append(cell); }
-      tbody.append(row); sampleRows.set(index, { row, check, format, space, value });
-    });
-    section.querySelector<HTMLButtonElement>(".select-all")!.onclick = () => { for (const [index, row] of sampleRows) if (c.descriptors[index].group === group) row.check.checked = true; };
-    section.querySelector<HTMLButtonElement>(".select-none")!.onclick = () => { for (const [index, row] of sampleRows) if (c.descriptors[index].group === group) row.check.checked = false; };
-    container.append(section);
-    element(`publish-${group}`).onclick = () => {
-      const samples = [...sampleRows].filter(([index, row]) => c.descriptors[index].group === group && row.check.checked).map(([descriptor, row]) => ({ descriptor, format: Number(row.format.value), space: Number(row.space.value) }));
-      try {
-        const duration = (id: string) => { const value = Number(element<HTMLInputElement>(id).value) * 1e6; if (!Number.isSafeInteger(Math.round(value)) || value < 0) throw new Error("Invalid duration"); return BigInt(Math.round(value)); };
-        const schedule = scheduleSelect.value === "onChange" ? { kind: "onChange" as const } : periodic(Number(element<HTMLInputElement>(`rate-${group}`).value), duration(`phase-${group}`), duration(`delay-${group}`));
-        connection?.publish({ id: group + 1, group, delivery: Number(element<HTMLSelectElement>(`delivery-${group}`).value), schedule, samples });
-      } catch (error) { text("publication-status", `Selection rejected: ${String(error)}`); }
-    };
-    element(`stop-${group}`).onclick = () => { const sub = [...session.active.values()].find(s => s.request.group === group); if (sub) connection?.unsubscribe(sub.request.id); };
+  mountedSession = session;
+  publicationGroups.length = 0;
+  const capabilities = session.capabilities!, container = element("subscriptions");
+  container.replaceChildren();
+  text("sample-summary", `${capabilities.descriptors.length} samples · ${capabilities.groups.length} acquisition groups`);
+  capabilities.groups.forEach((_, group) => {
+    const component = new PublicationGroup();
+    component.configure(capabilities, group);
+    publicationGroups.push(component);
+    container.append(component);
   });
 }
+
+element("subscriptions").addEventListener("publication-request", event => {
+  publicationError = undefined;
+  try { connection?.publish((event as CustomEvent<Request>).detail); }
+  catch (error) { publicationError = `Selection rejected: ${String(error)}`; }
+});
+element("subscriptions").addEventListener("publication-stop", event => {
+  publicationError = undefined;
+  connection?.unsubscribe((event as CustomEvent<number>).detail);
+});
+element("subscriptions").addEventListener("publication-error", event => { publicationError = (event as CustomEvent<string>).detail; });
 
 element("connect").onclick = () => {
   if (
