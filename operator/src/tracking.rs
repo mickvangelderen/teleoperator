@@ -33,7 +33,7 @@ impl Group {
 
 #[derive(Clone)]
 pub(crate) struct PublicationSample {
-    pub sample: Sample,
+    pub sample: Arc<Sample>,
     generation: u64,
     finished: bool,
     // Requested consumption deadline, independent of the runtime's represented time.
@@ -139,7 +139,8 @@ impl SubscriptionSamples {
         self.hub.wake_sampler();
     }
     pub fn latest(&self) -> Option<Sample> {
-        self.delivery_after(None).map(|delivery| delivery.sample)
+        self.delivery_after(None)
+            .map(|delivery| (*delivery.sample).clone())
     }
     pub(crate) fn delivery_after(&self, sent: Option<u64>) -> Option<PublicationSample> {
         let now = self.hub.now() as u64;
@@ -371,7 +372,7 @@ pub struct Hub {
     pub local_floor: AtomicBool,
     next_skeleton: AtomicU64,
     pub reference_version: Mutex<u32>,
-    latest: Mutex<BTreeMap<Group, Sample>>,
+    latest: Mutex<BTreeMap<Group, Arc<Sample>>>,
     next_sample: AtomicU64,
     observed_inputs: Mutex<Vec<Input>>,
     pub updates: watch::Sender<()>,
@@ -529,7 +530,7 @@ impl Hub {
             })
             .collect()
     }
-    pub(crate) fn complete(&self, acquisition: Acquisition, sample: Sample) {
+    pub(crate) fn complete(&self, acquisition: Acquisition, sample: Arc<Sample>) {
         self.complete_at(acquisition, sample, self.now());
     }
     pub(crate) fn missed(&self, acquisition: &Acquisition, now: i64) {
@@ -543,7 +544,7 @@ impl Hub {
             }
         }
     }
-    fn complete_at(&self, mut acquisition: Acquisition, sample: Sample, now: i64) {
+    fn complete_at(&self, mut acquisition: Acquisition, sample: Arc<Sample>, now: i64) {
         // Learn the elapsed work even when the result can no longer be used.
         if acquisition.expired(sample.acquired_at.max(now)) {
             self.missed(&acquisition, sample.acquired_at.max(now));
@@ -611,7 +612,11 @@ impl Hub {
         inputs
     }
     pub fn latest(&self, group: Group) -> Option<Sample> {
-        self.latest.lock().unwrap().get(&group).cloned()
+        self.latest
+            .lock()
+            .unwrap()
+            .get(&group)
+            .map(|sample| (**sample).clone())
     }
     pub fn acquire(
         &self,
@@ -621,7 +626,7 @@ impl Hub {
         body: Option<&Body>,
         acquired_at: i64,
         target_at: Option<i64>,
-    ) -> Sample {
+    ) -> Arc<Sample> {
         // Keep the advertised topology through temporary sample unavailability.
         // Publication values still come from this acquisition's body below.
         if let Some(body) = body {
@@ -646,7 +651,7 @@ impl Hub {
         } else {
             inputs.to_vec()
         };
-        let sample = Sample {
+        let sample = Arc::new(Sample {
             number,
             acquired_at,
             target_at,
@@ -654,7 +659,7 @@ impl Hub {
             poses: poses.to_vec(),
             inputs,
             body: body.cloned(),
-        };
+        });
         self.latest.lock().unwrap().insert(group, sample.clone());
         sample
     }

@@ -369,7 +369,13 @@ impl Catalog {
         skeleton
             .as_ref()
             .filter(|s| self.valid_skeleton(s))
-            .is_some_and(|s| self.parents != s.joints.iter().map(|j| j.parent).collect::<Vec<_>>())
+            .is_some_and(|s| {
+                !self
+                    .parents
+                    .iter()
+                    .copied()
+                    .eq(s.joints.iter().map(|j| j.parent))
+            })
     }
     fn quality(&mut self, index: usize, body: bool, joint: usize) {
         let first = self.sources.len() as u32;

@@ -8,6 +8,10 @@ publish = false
 name = "xr_operator"
 crate-type = ["cdylib", "rlib"]
 
+[profile.dev]
+# Device development builds must exercise the real-time path with optimizations.
+opt-level = 2
+
 [dependencies]
 async-trait = "0.1"
 axum = "0.8"
