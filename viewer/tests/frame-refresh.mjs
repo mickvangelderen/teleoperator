@@ -110,7 +110,7 @@ export async function checkMetricMedians(page) {
       input.value = "-1"; input.dispatchEvent(new Event("input", { bubbles: true }));
       await wait(100);
       const invalid = latestArguments;
-      return { baseline, spike, graphSpikes, sustained, missing, ahead, defaults, changed, invalid, usedOldFrameTime };
+      return { baseline, spike, graphSpikes, sustained, missing, ahead, defaults, changed, invalid, usedOldFrameTime, liveGroups: subscriptions.size };
     } finally {
       window.requestAnimationFrame = requestFrame; Session.prototype.sampleAge = sampleAge;
       Session.prototype.freshness = freshness; Session.prototype.latestNetworkLatency = latency;
@@ -120,7 +120,7 @@ export async function checkMetricMedians(page) {
       input.value = "20"; input.dispatchEvent(new Event("input", { bubbles: true }));
     }
   });
-  const expected = value => ({ "sample-age": `${value}.00 ms`, "freshness-age": `${value}.0 ms`, "estimated-latency": `${value}.00 ms`, "arrival-rate": `${value}.0 Hz`, "frame-rate": `${value} fps`, "freshness-threshold": `Late above ${value + 20}.0 ms` });
+  const expected = value => ({ "sample-age": `${value}.00 ms`, "freshness-age": `${value}.0 ms`, "estimated-latency": `${value}.00 ms`, "arrival-rate": `${value * result.liveGroups}.0 Hz`, "frame-rate": `${value} fps`, "freshness-threshold": `Late above ${value + 20}.0 ms` });
   assert.deepEqual(result.baseline, expected(50));
   assert.deepEqual(result.spike, expected(50), "Every displayed metric rejects a brief spike");
   for (const graph of result.graphSpikes) assert.equal(graph.changed, true, `${graph.selector} must still show the raw spike`);

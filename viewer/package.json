@@ -16,14 +16,14 @@
     "build:body": "node tools/build-body-model.mjs"
   },
   "dependencies": {
-    "three": "0.186.1"
+    "three": "0.187.0"
   },
   "devDependencies": {
-    "@types/node": "24.10.1",
-    "@types/three": "0.186.0",
-    "playwright-core": "1.64.1",
+    "@types/node": "26.6.6",
+    "@types/three": "0.187.0",
+    "playwright-core": "1.65.1",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vite": "8.3.5"
+    "vite": "8.3.8"
   }
 }

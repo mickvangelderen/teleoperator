@@ -14,6 +14,7 @@ pub struct Joint {
 }
 #[derive(Clone, Debug)]
 pub struct Skeleton {
+    pub acquired_at: i64,
     pub version: u64,
     pub reference_version: u32,
     pub joints: Vec<Joint>,
@@ -175,6 +176,7 @@ pub fn synthetic_skeleton() -> Arc<Skeleton> {
         }
     }
     Arc::new(Skeleton {
+        acquired_at: 0,
         version: 1,
         reference_version: 1,
         joints,

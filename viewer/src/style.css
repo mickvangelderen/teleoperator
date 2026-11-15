@@ -38,7 +38,11 @@ h1 { font-size: 29px; font-weight: 530; letter-spacing: -1.1px; margin: 0 0 var(
 .empty-state h3 { font-size: 16px; letter-spacing: -0.3px; font-weight: 550; margin: 0 0 var(--space-2); }
 .empty-state p { font-size: var(--text-sm); }
 .view-controls { padding: var(--space-3) var(--space-5); font-size: var(--text-sm); color: var(--text-muted); }
-#graphics-status { flex-basis: 100%; }
+.view-status { flex: 0 0 100%; min-width: 0; display: grid; grid-template-columns: 26ch minmax(0, 1fr); gap: var(--space-2) var(--space-3); line-height: 1.6; }
+.view-status > span { min-width: 0; }
+#prediction-lead, #body-quality { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#prediction-lead { font-variant-numeric: tabular-nums; }
+#graphics-status { grid-column: 1 / -1; }
 #render-to-photon { width: 76px; }
 .performance-panel, .subscriptions-panel { margin-top: var(--space-6); }
 .subscriptions { padding: var(--space-5); }
@@ -62,6 +66,7 @@ footer > span:last-child { font-family: var(--mono); letter-spacing: .6px; }
   .connection-box { gap: var(--space-3); }
 }
 @media (max-width: 800px) {
+  .view-status { grid-template-columns: minmax(0, 1fr); }
   .header-note { display: none; }
   .topbar { height: 65px; padding: 0 var(--space-5); }
   main { padding: var(--space-6) var(--space-5) 0; }

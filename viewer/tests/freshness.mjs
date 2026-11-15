@@ -9,7 +9,7 @@ export async function checkFreshness(page, output) {
   assert.equal(await page.locator(".metric").count(), 5);
   assert.equal(await page.locator(".metric-chart").count(), 5);
   assert.equal(await page.locator(".metrics #status").count(), 0);
-  assert.equal(await page.locator(".arrival-requested-line").count(), 1, "On-change groups have no requested cadence line");
+  assert.equal(await page.locator(".arrival-requested-line").count(), 3, "On-change groups have no requested cadence line");
   assert.equal(await page.locator(".metric").last().getAttribute("id"), "frame-metric");
   assert.doesNotMatch(await page.locator(".metrics").innerText(), /median|rolling|one-way|Late above|Requested|\bFresh\b/);
   assert.equal(await page.locator("#freshness-status, #freshness .status-dot, #requested-rate").count(), 0);
@@ -20,16 +20,16 @@ export async function checkFreshness(page, output) {
   await page.locator("#arrival-chart").hover();
   assert.equal(await page.locator("#arrival-chart-tooltip").isVisible(), true);
   assert.match(await page.locator("#arrival-chart-tooltip").textContent(), /Solid.*Dashed/);
-  assert.equal(await page.locator("#arrival-chart-tooltip .group-label").count(), 2);
+  assert.equal(await page.locator("#arrival-chart-tooltip .group-label").count(), 4);
   await page.mouse.move(0, 0);
   assert.equal(await page.locator("#arrival-chart-tooltip").isVisible(), false);
   const colors = await page.evaluate(() => ({
     controls: [...document.querySelectorAll(".subscription-group")].map(e => e.style.getPropertyValue("--group-color")),
     arrival: [...document.querySelectorAll(".arrival-actual-line")].map(e => e.getAttribute("stroke")),
-    freshness: document.querySelector(".freshness-age-line").getAttribute("stroke"),
+    freshness: [...document.querySelectorAll(".freshness-age-line")].map(e => e.getAttribute("stroke")),
   }));
   assert.deepEqual(colors.arrival, colors.controls);
-  assert.equal(colors.freshness, colors.controls[0]);
+  assert.deepEqual(colors.freshness, colors.controls.slice(0, 3));
   assert.notEqual(colors.controls[0], colors.controls[1]);
   for (const card of await page.locator(".metric").all()) {
     const graph = await card.locator("svg").boundingBox(), value = await card.locator(".metric-value").boundingBox();
@@ -38,8 +38,13 @@ export async function checkFreshness(page, output) {
   await page.locator(".metrics").screenshot({ path: output + "freshness-healthy.png" });
   await page.evaluate(async () => {
     const { Session } = await import("/src/session.ts");
-    const original = Session.prototype.tracking, freshness = Session.prototype.freshness;
-    window.restoreFreshnessTraffic = () => { Session.prototype.tracking = original; Session.prototype.freshness = freshness; delete window.testFreshness; };
+    const original = Session.prototype.tracking, freshness = Session.prototype.freshness, changeSchedule = Session.prototype.changeSchedule;
+    window.restoreFreshnessTraffic = () => { Session.prototype.tracking = original; Session.prototype.freshness = freshness; Session.prototype.changeSchedule = changeSchedule; delete window.testFreshness; };
+    // Isolate delivery silence from cadence changes, which deliberately reset the baseline.
+    Session.prototype.changeSchedule = function (id, schedule) {
+      const current = this.active.get(id)?.request.schedule;
+      return changeSchedule.call(this, id, current?.kind === "periodic" && schedule.kind === "periodic" ? { ...schedule, interval: current.interval } : schedule);
+    };
     Session.prototype.freshness = function (...args) { return window.testFreshness = freshness.apply(this, args); };
     Session.prototype.tracking = () => null;
   });
@@ -59,12 +64,12 @@ export async function checkFreshness(page, output) {
     assert.ok(scene.points.length > 0 && scene.points.every(color => color === "c44235"), "Late freshness makes the live skeleton red");
     assert.ok(scene.models.length > 0 && scene.models.every(color => color === "c44235"), "Late freshness also makes headset and controllers red");
     await page.locator("#poses").screenshot({ path: output + "tracking-late.png" });
-    const frozen = await page.evaluate(() => window.testFreshness.worst.thresholdMs);
+    const frozen = await page.evaluate(() => window.testFreshness.streams.map(s => ({ id: s.id, threshold: s.thresholdMs })));
     await page.waitForFunction(() => parseFloat(document.querySelector("#freshness-age").textContent) > 400);
     assert.equal(await page.locator("#status").textContent(), "Connected");
-    assert.equal(await page.evaluate(() => window.testFreshness.worst.thresholdMs), frozen, "Silence must not relax the underlying freshness threshold");
-    assert.notEqual(await page.locator(".freshness-age-line").getAttribute("d"), await page.locator(".freshness-threshold-line").getAttribute("d"));
-    assert.equal(await page.locator(".freshness-age-line").getAttribute("stroke"), colors.freshness, "Lateness does not change group identity");
+    assert.deepEqual(await page.evaluate(() => window.testFreshness.streams.map(s => ({ id: s.id, threshold: s.thresholdMs }))), frozen, "Silence must not relax the underlying freshness threshold");
+    assert.notEqual(await page.locator(".freshness-age-line").first().getAttribute("d"), await page.locator(".freshness-threshold-line").first().getAttribute("d"));
+    assert.deepEqual(await page.locator(".freshness-age-line").evaluateAll(lines => lines.map(e => e.getAttribute("stroke"))), colors.freshness, "Lateness does not change group identity");
     await page.waitForFunction(() => parseFloat(document.querySelector("#arrival-rate").textContent) === 0);
     assert.ok(parseFloat(await page.locator("#frame-rate").textContent()) > 0, "Rendering continues during a delivery pause");
     assert.match(await page.locator("#estimated-latency").textContent(), /ms$/, "Clock probes continue independently of publication delivery");

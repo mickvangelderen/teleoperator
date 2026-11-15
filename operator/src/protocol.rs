@@ -510,7 +510,6 @@ pub fn encode(message: &Message) -> Vec<u8> {
 #[derive(Clone, Debug)]
 pub struct Subscription {
     pub request: Request,
-    pub next_due: Option<u64>,
     last_publication: Option<Vec<u8>>,
 }
 impl Subscription {
@@ -519,20 +518,6 @@ impl Subscription {
             return None;
         }
         u64::try_from(acquired).ok().filter(|t| *t < u64::MAX)
-    }
-    pub fn due(&self, now: u64) -> bool {
-        self.last_publication.is_none() || self.next_due.is_none_or(|t| now >= t)
-    }
-    pub fn advance(&mut self, now: u64) -> Result<()> {
-        if matches!(self.request.schedule, Schedule::Periodic { .. }) {
-            self.next_due = now
-                .checked_add(1)
-                .and_then(|t| self.request.schedule.next_at(t));
-            if self.next_due.is_none() {
-                return Err("Publication schedule exhausted".into());
-            }
-        }
-        Ok(())
     }
     pub fn should_publish(&self, body: &[u8]) -> bool {
         !matches!(self.request.schedule, Schedule::OnChange)
@@ -545,8 +530,7 @@ impl Subscription {
         // Only selected encoded values drive OnChange, including after an update.
         self.last_publication = Some(body[20..].to_vec());
     }
-    fn update(&mut self, schedule: Schedule, now: u64) {
-        self.next_due = schedule.next_at(now);
+    fn update(&mut self, schedule: Schedule) {
         self.request.schedule = schedule;
     }
 }
@@ -616,7 +600,6 @@ impl Session {
                 self.active.insert(
                     id,
                     Subscription {
-                        next_due: request.schedule.next_at(now as u64),
                         request,
                         last_publication: None,
                     },
@@ -640,7 +623,7 @@ impl Session {
                     now as u64,
                 )?;
                 if let Some(sub) = self.active.get_mut(&id) {
-                    sub.update(schedule, now as u64);
+                    sub.update(schedule);
                 }
                 Ok(vec![])
             }
@@ -687,11 +670,10 @@ pub fn valid_numbers(kind: u8, format: u8, values: &[f64]) -> bool {
         _ => false,
     }
 }
-fn encode_value(value: &Value, kind: u8, format: u8) -> Option<Vec<u8>> {
+fn encode_value_into(value: &Value, kind: u8, format: u8, b: &mut Vec<u8>) -> Option<()> {
     if !compatible(kind, format) {
         return None;
     }
-    let mut b = Vec::new();
     match (value, format) {
         (Value::Bit(v), 1) => b.push(u8::from(*v)),
         (Value::Unsigned(v), 2..=5) => {
@@ -709,14 +691,22 @@ fn encode_value(value: &Value, kind: u8, format: u8) -> Option<Vec<u8>> {
             b.extend(&v.to_le_bytes()[..width(format)]);
         }
         (Value::Numbers(values), 10..=15) => {
-            let converted: Vec<_> = values
-                .iter()
-                .map(|v| if format == 10 { (*v as f32) as f64 } else { *v })
-                .collect();
-            if !valid_numbers(kind, format, values) || !valid_numbers(kind, format, &converted) {
+            if !valid_numbers(kind, format, values) {
                 return None;
             }
-            for v in converted {
+            let mut converted = [0.; 7];
+            for (out, value) in converted.iter_mut().zip(values) {
+                *out = if format == 10 {
+                    (*value as f32) as f64
+                } else {
+                    *value
+                };
+            }
+            let converted = &converted[..values.len()];
+            if !valid_numbers(kind, format, converted) {
+                return None;
+            }
+            for &v in converted {
                 match format {
                     10 => b.extend((v as f32).to_le_bytes()),
                     11 => b.extend(v.to_le_bytes()),
@@ -736,7 +726,7 @@ fn encode_value(value: &Value, kind: u8, format: u8) -> Option<Vec<u8>> {
         }
         _ => return None,
     }
-    Some(b)
+    Some(())
 }
 pub fn tracking(
     c: &Capabilities,
@@ -745,48 +735,60 @@ pub fn tracking(
     predicted_for: Option<u64>,
     values: &[Value],
 ) -> Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    tracking_into(c, r, timestamp, predicted_for, values, &mut buffer)?;
+    Ok(buffer)
+}
+
+pub(crate) fn tracking_into(
+    c: &Capabilities,
+    r: &Request,
+    timestamp: u64,
+    predicted_for: Option<u64>,
+    values: &[Value],
+    buffer: &mut Vec<u8>,
+) -> Result<()> {
     if r.samples.len() != values.len() || timestamp == u64::MAX || predicted_for == Some(u64::MAX) {
         return Err("Invalid publication values or time".into());
     }
-    let encoded = r
-        .samples
-        .iter()
-        .zip(values)
-        .map(|(s, v)| {
-            let d = c
-                .descriptors
-                .get(s.descriptor as usize)
-                .ok_or("Unknown publication descriptor")?;
-            encode_value(v, d.kind, s.format)
-                .ok_or_else(|| format!("Invalid value for selected source {}", s.descriptor))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let mut b = Vec::new();
-    u32_bytes(&mut b, r.id);
-    b.extend(timestamp.to_le_bytes());
-    b.extend(predicted_for.unwrap_or(u64::MAX).to_le_bytes());
-    let booleans: Vec<_> = r
-        .samples
-        .iter()
-        .zip(&encoded)
-        .filter(|(s, _)| s.format == 1)
-        .map(|(_, v)| v[0])
-        .collect();
-    b.resize(20 + booleans.len().div_ceil(8), 0);
-    for (i, v) in booleans.iter().enumerate() {
-        b[20 + i / 8] |= v << (i % 8);
-    }
-    for (s, value) in r.samples.iter().zip(encoded) {
-        if s.format != 1 {
-            b.extend(value);
+    buffer.clear();
+    u32_bytes(buffer, r.id);
+    buffer.extend(timestamp.to_le_bytes());
+    buffer.extend(predicted_for.unwrap_or(u64::MAX).to_le_bytes());
+    let bits = r.samples.iter().filter(|s| s.format == 1).count();
+    buffer.resize(20 + bits.div_ceil(8), 0);
+    let mut bit = 0;
+    for (selection, value) in r.samples.iter().zip(values) {
+        let descriptor = c
+            .descriptors
+            .get(selection.descriptor as usize)
+            .ok_or("Unknown publication descriptor")?;
+        if selection.format == 1 {
+            let Value::Bit(value) = value else {
+                return Err("Invalid boolean publication value".into());
+            };
+            if !compatible(descriptor.kind, 1) {
+                return Err("Invalid boolean format".into());
+            }
+            buffer[20 + bit / 8] |= u8::from(*value) << (bit % 8);
+            bit += 1;
+        } else {
+            encode_value_into(value, descriptor.kind, selection.format, buffer).ok_or_else(
+                || format!("Invalid value for selected source {}", selection.descriptor),
+            )?;
         }
     }
-    Ok(b)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn encode_value(value: &Value, kind: u8, format: u8) -> Option<Vec<u8>> {
+        let mut buffer = Vec::new();
+        encode_value_into(value, kind, format, &mut buffer)?;
+        Some(buffer)
+    }
     fn fixture_capabilities(v: &serde_json::Value) -> Capabilities {
         let index = |v: &serde_json::Value, field: &str| v[field].as_u64().map(|n| n as u32);
         Capabilities {
@@ -1180,7 +1182,7 @@ mod tests {
         assert!(tracking(&c, &r, 0, None, &values).is_err());
     }
     #[test]
-    fn schedules_keep_phase_skip_missed_slots_and_allow_repeated_acquisitions() {
+    fn schedule_updates_preserve_selection_and_on_change_baseline() {
         let mut s = session();
         let schedule = Schedule::Periodic {
             interval: 10_000_000,
@@ -1198,28 +1200,8 @@ mod tests {
         )
         .unwrap();
         let sub = s.active.get_mut(&7).unwrap();
-        assert!(
-            sub.due(2_000_000),
-            "Initial state is immediate before the first scheduled slot"
-        );
         assert_eq!(sub.timestamp(1, 2_000_000), Some(1));
         sub.published(&[0; 20]);
-        assert!(!sub.due(2_999_999));
-        assert!(sub.due(3_000_000));
-        sub.advance(3_000_000).unwrap();
-        assert_eq!(sub.next_due, Some(13_000_000));
-        assert_eq!(
-            sub.timestamp(3_000_001, 3_000_002),
-            Some(3_000_001),
-            "An acquisition between scheduling and copying the sample remains publishable"
-        );
-        assert_eq!(
-            sub.timestamp(1, 13_000_000),
-            Some(1),
-            "Periodic can repeat an acquisition"
-        );
-        sub.advance(95_000_000).unwrap();
-        assert_eq!(sub.next_due, Some(103_000_000));
         let selection = sub.request.samples.clone();
         s.handle(
             Message::UpdateSchedule {
@@ -1237,7 +1219,10 @@ mod tests {
         );
         s.handle(Message::UpdateSchedule { id: 7, schedule }, 100_000_000)
             .unwrap();
-        assert_eq!(s.active[&7].next_due, Some(103_000_000));
+        assert_eq!(
+            s.active[&7].request.schedule.next_at(100_000_000),
+            Some(103_000_000)
+        );
         for interval in [0, 1, u64::MAX] {
             assert!(
                 s.handle(

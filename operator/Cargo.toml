@@ -9,14 +9,25 @@ name = "xr_operator"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+async-trait = "0.1"
 axum = "0.8"
 bytes = "1"
 log = "0.4"
+rtc = "0.21.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "signal"] }
-tower-http = { version = "0.6", features = ["timeout"] }
-webrtc = "=0.17.2"
+tower-http = { version = "0.7", features = ["timeout"] }
+webrtc = "0.21.1"
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+libc = "0.2"
+
+[patch.crates-io]
+# The published rtc 0.21.1 ignores remote DCEP reliability settings. Keep this
+# upstream fix until a release includes it; our channel negotiation test fails without it.
+# https://github.com/webrtc-rs/rtc/pull/280
+rtc = { git = "https://github.com/webrtc-rs/rtc", rev = "70901c3df6ad92dcb87d97af3d1e2fa8a2e2ae38" }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6.1", features = ["native-activity"] }

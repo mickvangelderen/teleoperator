@@ -2,7 +2,7 @@
 use crate::{
     body, inputs,
     protocol::{Capabilities, Descriptor, Joint, Value},
-    tracking::{Hub, Pose, RATE, Sample},
+    tracking::{Group, Hub, Pose, RATE, Sample},
 };
 use std::sync::{Arc, atomic::Ordering};
 
@@ -84,6 +84,18 @@ impl Catalog {
         sample: &Sample,
         timestamp: u64,
     ) -> crate::protocol::Result<Vec<u8>> {
+        let mut buffer = Vec::new();
+        self.publication_into(request, sample, timestamp, &mut Vec::new(), &mut buffer)?;
+        Ok(buffer)
+    }
+    pub(crate) fn publication_into(
+        &self,
+        request: &crate::protocol::Request,
+        sample: &Sample,
+        timestamp: u64,
+        values: &mut Vec<Value>,
+        buffer: &mut Vec<u8>,
+    ) -> crate::protocol::Result<()> {
         if request.samples.iter().any(|s| {
             matches!(
                 self.sources.get(s.descriptor as usize),
@@ -104,24 +116,22 @@ impl Catalog {
         }) {
             return Err("Selected body source has an invalid or unvalidated skeleton".into());
         }
-        let values = request
-            .samples
-            .iter()
-            .map(|s| {
-                self.value(s.descriptor, sample).ok_or_else(|| {
-                    format!(
-                        "Selected source {} is missing from the acquisition",
-                        s.descriptor
-                    )
-                })
-            })
-            .collect::<crate::protocol::Result<Vec<_>>>()?;
-        crate::protocol::tracking(
+        values.clear();
+        for selection in &request.samples {
+            values.push(self.value(selection.descriptor, sample).ok_or_else(|| {
+                format!(
+                    "Selected source {} is missing from the acquisition",
+                    selection.descriptor
+                )
+            })?);
+        }
+        crate::protocol::tracking_into(
             &self.capabilities,
             request,
             timestamp,
             self.predicted_for(request, sample),
-            &values,
+            values,
+            buffer,
         )
     }
     pub fn snapshot(hub: &Hub) -> Self {
@@ -148,7 +158,7 @@ impl Catalog {
         if !contract.0 || hub.source == "none" {
             return result;
         }
-        result.capabilities.groups.push(RATE);
+        result.capabilities.groups.extend([RATE, RATE]);
         let space = if contract.1 { 4 } else { 2 };
         for (i, (id, name)) in [
             ("/user/head/input/pose", "Head"),
@@ -250,7 +260,7 @@ impl Catalog {
                 .description = "Whether the input value is usable.".into();
         }
         if let Some(skeleton) = skeleton.filter(|_| contract.2) {
-            result.capabilities.groups.push(RATE);
+            result.capabilities.groups.extend([RATE, RATE]);
             let confidence = result.sources.len() as u32;
             result.add(
                 "/body/FB/confidence".into(),
@@ -293,7 +303,7 @@ impl Catalog {
                 .descriptors
                 .last_mut()
                 .unwrap()
-                .revision_of = Some(1);
+                .revision_of = Some(Group::Rest as u32);
             let mut joints = Vec::new();
             for (i, joint) in skeleton.joints.iter().enumerate() {
                 let pose_sample = result.sources.len() as u32;
@@ -317,7 +327,7 @@ impl Catalog {
                     vec![5],
                     Source::Rest(i),
                 );
-                result.capabilities.descriptors.last_mut().unwrap().group = 1;
+                result.capabilities.descriptors.last_mut().unwrap().group = Group::Rest as u32;
                 joints.push(Joint {
                     parent: if joint.parent < 0 {
                         i as u32
@@ -337,8 +347,8 @@ impl Catalog {
                 Source::Revision,
             );
             let d = result.capabilities.descriptors.last_mut().unwrap();
-            d.group = 1;
-            d.revision_of = Some(1);
+            d.group = Group::Rest as u32;
+            d.revision_of = Some(Group::Rest as u32);
             result.capabilities.skeletons.push(joints);
         }
         result.capabilities.validate().expect("Device capabilities");
@@ -410,7 +420,12 @@ impl Catalog {
             kind,
             formats,
             spaces,
-            group: 0,
+            group: match source {
+                Source::Pose(_) | Source::PoseFlag(..) => Group::Poses,
+                Source::Input(..) => Group::Inputs,
+                Source::Rest(_) => Group::Rest,
+                _ => Group::Body,
+            } as u32,
             ..Descriptor::default()
         });
         self.sources.push(source);
@@ -628,6 +643,7 @@ mod tests {
         skeleton.joints[2].rest.position = [f32::MAX, 0., 0.];
         assert!(skeleton.valid());
         h.acquire(
+            Group::Poses,
             &std::array::from_fn(|_| Pose::default()),
             &input_samples(),
             Some(&body),
@@ -635,14 +651,17 @@ mod tests {
             None,
         );
         let c = Catalog::snapshot(&h);
-        let sample = h.latest.lock().unwrap().clone().unwrap();
+        let sample = h.latest(Group::Poses).unwrap();
         let root = c.capabilities.skeletons[0][0].rest_pose_sample;
         let child = c.capabilities.skeletons[0][2].rest_pose_sample;
         assert!(
             matches!(c.value(root,&sample),Some(Value::Numbers(v)) if v==[0.,0.,0.,0.,0.,0.,1.])
         );
         assert!(c.value(child, &sample).is_none());
-        assert!(c.publication(&request_for(&c, 1), &sample, 100).is_err());
+        assert!(
+            c.publication(&request_for(&c, Group::Rest as u32), &sample, 100)
+                .is_err()
+        );
         c.publication(&request_for(&c, 0), &sample, 100).unwrap();
     }
     #[test]
@@ -652,6 +671,7 @@ mod tests {
         h.body_supported.store(true, Ordering::SeqCst);
         let body = body::Body::inactive(body::synthetic_skeleton());
         h.acquire(
+            Group::Poses,
             &std::array::from_fn(|_| Pose::default()),
             &input_samples(),
             Some(&body),
@@ -659,11 +679,16 @@ mod tests {
             None,
         );
         let mut c = Catalog::snapshot(&h);
-        let mut sample = h.latest.lock().unwrap().clone().unwrap();
-        let original = c.publication(&request_for(&c, 1), &sample, 100).unwrap();
+        let mut sample = h.latest(Group::Poses).unwrap();
+        let original = c
+            .publication(&request_for(&c, Group::Rest as u32), &sample, 100)
+            .unwrap();
         Arc::make_mut(&mut sample.body.as_mut().unwrap().skeleton).joints[1].parent = 1;
         c.refresh_skeleton(&h, &sample);
-        assert!(c.publication(&request_for(&c, 1), &sample, 100).is_err());
+        assert!(
+            c.publication(&request_for(&c, Group::Rest as u32), &sample, 100)
+                .is_err()
+        );
         let head = Request {
             samples: vec![Selection {
                 descriptor: 0,
@@ -677,7 +702,8 @@ mod tests {
         c.refresh_skeleton(&h, &sample);
         assert_eq!(
             original,
-            c.publication(&request_for(&c, 1), &sample, 100).unwrap()
+            c.publication(&request_for(&c, Group::Rest as u32), &sample, 100)
+                .unwrap()
         );
     }
     #[test]
@@ -712,7 +738,7 @@ mod tests {
                 .count(),
             inputs::definitions().len()
         );
-        for group in [0, 1] {
+        for group in 0..4 {
             c.capabilities
                 .validate_request(&request_for(&c, group))
                 .unwrap();
@@ -740,10 +766,10 @@ mod tests {
             presses: 123,
             releases: 122,
         };
-        h.acquire(&poses, &inputs, None, 100, Some(125));
+        h.acquire(Group::Poses, &poses, &inputs, None, 100, Some(125));
         let c = Catalog::snapshot(&h);
         let request = request_for(&c, 0);
-        let mut first = h.latest.lock().unwrap().clone().unwrap();
+        let mut first = h.latest(Group::Poses).unwrap();
         first.inputs[action].value = inputs::Value::Boolean {
             value: true,
             presses: 123,
@@ -818,7 +844,7 @@ mod tests {
         }
         c.publication(&request, &sample, 100).unwrap();
         // Activity itself triggers OnChange only when selected; counters are real, not synthetic releases.
-        let mut only_value = request.clone();
+        let mut only_value = request_for(&c, Group::Inputs as u32);
         only_value.samples.retain(|s| s.descriptor == button);
         sample.inputs[action].value = inputs::Value::Boolean {
             value: false,
@@ -849,9 +875,9 @@ mod tests {
         let inputs = input_samples();
         let mut body = body::Body::inactive(body::synthetic_skeleton());
         body.active = true;
-        h.acquire(&poses, &inputs, Some(&body), 100, Some(125));
+        h.acquire(Group::Poses, &poses, &inputs, Some(&body), 100, Some(125));
         let mut c = Catalog::snapshot(&h);
-        let old = h.latest.lock().unwrap().clone().unwrap();
+        let old = h.latest(Group::Poses).unwrap();
         let confidence = source_index(&c, "/body/FB/confidence");
         let valid = source_index(&c, "/body/FB/confidence/valid");
         let mut sample = old.clone();
@@ -871,21 +897,21 @@ mod tests {
         sample.body.as_mut().unwrap().active = false;
         assert!(matches!(c.value(valid, &sample), Some(Value::Bit(false))));
         assert_eq!(c.predicted_for(&request_for(&c, 0), &sample), None);
-        let rest = request_for(&c, 1);
+        let rest = request_for(&c, Group::Rest as u32);
         let old_bytes = c.publication(&rest, &old, 100).unwrap();
         let skeleton = Arc::make_mut(&mut body.skeleton);
         skeleton.version += 1;
         skeleton.joints[1].rest.position[0] += 0.1;
-        h.acquire(&poses, &inputs, Some(&body), 101, Some(126));
+        h.acquire(Group::Poses, &poses, &inputs, Some(&body), 101, Some(126));
         // A newer hub definition must not mix with the older copied body's live values/revision.
         c.refresh_skeleton(&h, &old);
         assert_eq!(old_bytes, c.publication(&rest, &old, 100).unwrap());
-        let latest = h.latest.lock().unwrap().clone().unwrap();
+        let latest = h.latest(Group::Poses).unwrap();
         c.refresh_skeleton(&h, &latest);
         let latest_bytes = c.publication(&rest, &latest, 100).unwrap();
         assert_ne!(old_bytes, latest_bytes);
-        h.acquire(&poses, &inputs, None, 102, None);
-        let absent = h.latest.lock().unwrap().clone().unwrap();
+        h.acquire(Group::Poses, &poses, &inputs, None, 102, None);
+        let absent = h.latest(Group::Poses).unwrap();
         c.refresh_skeleton(&h, &absent);
         assert_eq!(latest_bytes, c.publication(&rest, &absent, 100).unwrap());
         c.publication(&request_for(&c, 0), &absent, 102).unwrap();
@@ -919,9 +945,9 @@ mod tests {
             flags: 3,
             active: Some(true),
         });
-        hub.acquire(&poses, &[], None, 100, Some(25_000_100));
+        hub.acquire(Group::Poses, &poses, &[], None, 100, Some(25_000_100));
         let catalog = Catalog::snapshot(&hub);
-        let sample = hub.latest.lock().unwrap().clone().unwrap();
+        let sample = hub.latest(Group::Poses).unwrap();
         let mut request = Request {
             id: 1,
             group: 0,
@@ -979,6 +1005,7 @@ mod tests {
         body.active = true;
         body.joints = skeleton.joints.iter().map(|j| j.rest.clone()).collect();
         h.acquire(
+            Group::Poses,
             &std::array::from_fn(|_| Pose::default()),
             &[],
             Some(&body),
@@ -986,7 +1013,7 @@ mod tests {
             None,
         );
         let c = Catalog::snapshot(&h);
-        let sample = h.latest.lock().unwrap().clone().unwrap();
+        let sample = h.latest(Group::Poses).unwrap();
         let joints = &c.capabilities.skeletons[0];
         let s = std::f64::consts::FRAC_1_SQRT_2;
         for (joint, expected) in joints.iter().zip([
@@ -1023,13 +1050,13 @@ mod tests {
         h.body_supported.store(true, Ordering::SeqCst);
         let poses = std::array::from_fn(|_| Pose::default());
         let mut body = body::Body::inactive(body::synthetic_skeleton());
-        h.acquire(&poses, &[], Some(&body), 0, None);
+        h.acquire(Group::Poses, &poses, &[], Some(&body), 0, None);
         let mut c = Catalog::snapshot(&h);
         let mut session = Session::new(c.capabilities.clone());
         session.handle(Message::Offer(vec![1]), 0).unwrap();
         let request = Request {
             id: 1,
-            group: 1,
+            group: Group::Rest as u32,
             delivery: 2,
             schedule: Schedule::OnChange,
             // Unselected native revisions must not trigger an OnChange publication.
@@ -1038,7 +1065,7 @@ mod tests {
                 .descriptors
                 .iter()
                 .enumerate()
-                .filter(|(_, d)| d.group == 1 && d.kind == 10)
+                .filter(|(_, d)| d.group == Group::Rest as u32 && d.kind == 10)
                 .map(|(i, d)| Selection {
                     descriptor: i as u32,
                     format: d.formats[0],
@@ -1054,9 +1081,9 @@ mod tests {
             Schedule::OnChange
         ));
         let mut publish = |session: &mut Session, body: Option<&body::Body>, now| {
-            h.acquire(&poses, &[], body, now, None);
+            h.acquire(Group::Poses, &poses, &[], body, now, None);
             assert!(!c.changed(&h), "Body activity does not change the catalog");
-            let sample = h.latest.lock().unwrap().clone().unwrap();
+            let sample = h.latest(Group::Poses).unwrap();
             let sub = session.active.get_mut(&1).unwrap();
             let Some(timestamp) = sub.timestamp(now, now) else {
                 return false;
@@ -1149,7 +1176,9 @@ mod tests {
             c.capabilities
                 .descriptors
                 .iter()
-                .filter(|d| d.kind == 10 && d.group == 0 && d.id.starts_with("/body/"))
+                .filter(|d| d.kind == 10
+                    && d.group == Group::Body as u32
+                    && d.id.starts_with("/body/"))
                 .count(),
             70
         );
@@ -1172,8 +1201,8 @@ mod tests {
                     flags: 3,
                     active: None,
                 });
-                h.acquire(&poses, &[], None, h.now(), None);
-                let sample = h.latest.lock().unwrap().clone().unwrap();
+                h.acquire(Group::Poses, &poses, &[], None, h.now(), None);
+                let sample = h.latest(Group::Poses).unwrap();
                 let Some(Value::Numbers(pose)) = c.value(0, &sample) else {
                     panic!("Head pose must remain available after recentering")
                 };

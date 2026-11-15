@@ -1,10 +1,13 @@
 pub mod body;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod deadline;
 #[cfg(target_os = "android")]
 mod egl;
 pub mod inputs;
 pub mod protocol;
 pub mod publication;
 pub mod server;
+mod timing;
 pub mod tracking;
 #[cfg(target_os = "android")]
 mod xr;

@@ -172,6 +172,7 @@ impl Tracker {
             || self.changed != locations.skeleton_changed_count
         {
             let mut joints = vec![sys::BodySkeletonJointFB::default(); JOINT_COUNT];
+            let acquired_at = hub.now();
             let result = unsafe {
                 (api.get_body_skeleton)(
                     self.handle,
@@ -187,6 +188,7 @@ impl Tracker {
                 return Err(result);
             }
             let skeleton = Skeleton {
+                acquired_at,
                 version: hub.next_skeleton_version(),
                 reference_version,
                 joints: joints
@@ -214,7 +216,7 @@ impl Tracker {
             skeleton: self.skeleton.as_ref().unwrap().clone(),
             active,
             confidence,
-            returned_at: None,
+            returned_at: Some(locations.time.as_nanos()),
             fidelity: if self.fidelity {
                 match fidelity.fidelity {
                     sys::BodyTrackingFidelityMETA::HIGH => Some(Fidelity::High),

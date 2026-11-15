@@ -4,6 +4,7 @@ import type { Request } from "./protocol";
 import { profiler } from "./performance";
 import type { Freshness } from "./freshness";
 import type { Recorder } from "./recording";
+import { PublicationTiming, scheduleNeedsUpdate, SCHEDULE_UPDATE_INTERVAL_MS } from "./publication-timing";
 
 export type State = {
   status: "Disconnected" | "Connecting" | "Connected" | "Error";
@@ -11,7 +12,6 @@ export type State = {
   control: string;
   tracking: string;
   source: string;
-  predictionHorizonMs?: number;
   session?: Session;
   freshness: Freshness;
 };
@@ -31,6 +31,11 @@ export class Connection {
   readonly session = new Session();
   private offered = false;
   private readonly replacements = new Map<number, number>();
+  private readonly automatic = new Set<number>();
+  private readonly scheduleUpdates = new Map<number, number>();
+  private readonly timing = new PublicationTiming();
+  private renderToPhotonMs = 20;
+  private visible = true;
   private subscribed = false;
   private readonly pc = new RTCPeerConnection({ iceServers: [] });
   private readonly abort = new AbortController();
@@ -55,8 +60,6 @@ export class Connection {
     void fetch("/api/health", { signal: this.abort.signal }).then(r => r.json()).then(data => {
       if (this.stopped) return;
       this.state.source = typeof data.source === "string" ? data.source : "unknown";
-      const horizon = data.prediction_horizon_ms;
-      this.state.predictionHorizonMs = typeof horizon === "number" && Number.isFinite(horizon) && horizon >= 0 && horizon <= 1000 ? horizon : undefined;
       this.emit();
     }).catch(() => {});
     this.state.status = "Connecting";
@@ -107,22 +110,27 @@ export class Connection {
       channel.onmessage = (event) => {
         if (this.stopped) return;
         const started = profiler.begin();
+        const arrivedAt = started ?? performance.now();
+        let receivedPublication = false;
         try {
           if (!(event.data instanceof ArrayBuffer)) {
             if (name === "tracking") { this.session.discarded++; return; }
             throw new Error("Expected a binary protocol packet");
           }
           const bytes = new Uint8Array(event.data);
-          const arrivedAt = started ?? performance.now();
           this.recording?.packet("received", name === "control" ? "reliable" : "unreliable", bytes, arrivedAt);
           profiler.transfer("received", bytes.length, arrivedAt);
           if (name === "control") {
             const packet = this.session.control(bytes, arrivedAt);
+            receivedPublication = packet !== null;
             if (packet) profiler.trackingArrival(packet.id, `${this.id}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
             for (const [id, previous] of this.replacements) {
               if (this.session.pending.has(id)) continue;
               this.replacements.delete(id);
               if (this.session.active.has(id) && this.session.active.has(previous)) this.send(this.session.stop(previous));
+            }
+            for (const id of this.automatic) if (!this.session.active.has(id) && !this.session.pending.has(id)) {
+              this.automatic.delete(id); this.scheduleUpdates.delete(id);
             }
             this.state.detail = this.session.detail;
             if (this.session.phase === "ready") {
@@ -137,19 +145,23 @@ export class Connection {
                 c.groups.forEach((max, group) => {
                   const samples = c.descriptors.flatMap((d, descriptor) => d.group === group ? [{ descriptor, format: preferredFormat(d), space: d.spaces[0] ?? 0 }] : []);
                   const rest = restGroup(c, group);
-                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, schedule: rest ? { kind: "onChange" } : periodic(Math.min(max, 60)), samples });
+                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, schedule: rest ? { kind: "onChange" } : periodic(Math.min(max, 60)), samples }, true);
                 });
               }
             }
           } else {
             const packet = this.session.unreliable(bytes, arrivedAt);
+            receivedPublication = packet !== null;
             if (packet) profiler.trackingArrival(packet.id, `${this.id}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
           }
           this.emit();
         } catch (error) {
           if (name === "control") this.fail(error instanceof Error ? error.message : "Invalid control message");
           else { this.session.discarded++; this.emit(); }
-        } finally { profiler.end("receive", started); }
+        } finally {
+          if (receivedPublication) this.timing.received(performance.now() - arrivedAt, performance.now());
+          profiler.end("receive", started);
+        }
       };
     }
     try {
@@ -225,22 +237,53 @@ export class Connection {
       profiler.transfer("sent", bytes.length, now);
     } catch { /* Lost probes expire; channel callbacks handle connection failure. */ }
   }
-  publish(request: Request) {
+  isAutomatic(id: number) { return this.automatic.has(id); }
+
+  // Called at the point the viewer consumes the latest samples for a frame.
+  frame(frameTime: number, now: number, renderToPhotonMs: number) {
+    if (this.stopped || !this.visible) return;
+    this.renderToPhotonMs = renderToPhotonMs;
+    this.timing.frame(frameTime, now);
+    if (this.session.phase !== "ready") return;
+    for (const sub of this.session.active.values()) {
+      const { id, group, schedule } = sub.request;
+      if (!this.automatic.has(id) || schedule.kind !== "periodic" || this.session.stopping.has(id)
+        || [...this.session.pending.values()].some(p => p.group === group)
+        || now - (this.scheduleUpdates.get(id) ?? -Infinity) < SCHEDULE_UPDATE_INTERVAL_MS) continue;
+      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clock, this.session.networkLatency(now), this.session.capabilities!.groups[group]);
+      if (!next || !scheduleNeedsUpdate(schedule, next)) continue;
+      if (!this.send(this.session.changeSchedule(id, next))) return;
+      this.scheduleUpdates.set(id, now);
+    }
+  }
+
+  visibilityChanged(now: number, visible: boolean) {
+    this.visible = visible;
+    this.timing.reset(now);
+    if (visible && this.session.phase === "ready") this.probeClock();
+  }
+
+  publish(request: Request, automaticTiming = false) {
     let bytes: Uint8Array;
     try {
       const previous = [...this.session.active.values()].find(s => s.request.group === request.group);
       if ([...this.session.pending.values()].some(r => r.group === request.group)) throw new Error("A publication request is already pending");
+      if (automaticTiming && request.schedule.kind === "periodic") request = { ...request, schedule:
+        this.timing.schedule(request.schedule, performance.now(), this.renderToPhotonMs, this.session.clock, this.session.networkLatency(performance.now()), this.session.capabilities?.groups[request.group]) ?? request.schedule };
       const oldSchedule = previous?.request.schedule, schedule = request.schedule;
       const scheduleChanged = oldSchedule?.kind !== schedule.kind || (schedule.kind === "periodic" && oldSchedule?.kind === "periodic"
         && (oldSchedule.interval !== schedule.interval || oldSchedule.phase !== schedule.phase || oldSchedule.consumptionDelay !== schedule.consumptionDelay));
-      if (previous && previous.request.delivery === request.delivery && JSON.stringify(previous.request.samples) === JSON.stringify(request.samples)
-          && scheduleChanged) {
+      if (previous && previous.request.delivery === request.delivery && JSON.stringify(previous.request.samples) === JSON.stringify(request.samples) && scheduleChanged) {
         bytes = this.session.changeSchedule(previous.request.id, request.schedule);
-        if (this.send(bytes)) { this.state.detail = `Subscription ${previous.request.id} schedule updated`; this.emit(); }
+        if (!this.send(bytes)) return;
+        if (automaticTiming) this.automatic.add(previous.request.id); else this.automatic.delete(previous.request.id);
+        this.scheduleUpdates.delete(previous.request.id);
+        this.state.detail = `Subscription ${previous.request.id} schedule updated`; this.emit();
         return;
       }
       request = { ...request, id: this.session.allocateId() };
       bytes = this.session.request(request);
+      if (automaticTiming) this.automatic.add(request.id);
       if (previous) this.replacements.set(request.id, previous.request.id);
     }
     catch (error) { this.state.detail = `Selection not sent: ${String(error)}. Choose a smaller or supported selection.`; this.emit(); return; }
@@ -250,7 +293,7 @@ export class Connection {
     let bytes: Uint8Array;
     try { bytes = this.session.stop(id); }
     catch (error) { this.state.detail = String(error); this.emit(); return; }
-    if (this.send(bytes)) { this.state.detail = `Stopping subscription ${id}…`; this.emit(); }
+    if (this.send(bytes)) { this.automatic.delete(id); this.scheduleUpdates.delete(id); this.state.detail = `Stopping subscription ${id}…`; this.emit(); }
   }
 
   private emit() {
@@ -275,6 +318,7 @@ export class Connection {
     clearInterval(this.clockTimer);
     clearInterval(this.freshnessTimer);
     this.pc.close();
+    this.automatic.clear(); this.scheduleUpdates.clear(); this.replacements.clear();
     delete this.state.session;
     this.session.retire();
     this.refreshFreshness();

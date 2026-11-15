@@ -48,9 +48,13 @@ try {
 
   // Group selection is local; presentation updates preserve focus and draft values.
   await page.locator("publication-group").first().getByRole("button", { name: "Clear selection" }).click();
-  assert.equal(await page.locator("publication-group").first().locator('input[type="checkbox"]:checked').count(), 0);
-  assert.equal(await page.locator("publication-group").nth(1).locator('input[type="checkbox"]:checked').count(), 2);
+  assert.equal(await page.locator("publication-group").first().locator('[data-descriptor] input[type="checkbox"]:checked').count(), 0);
+  assert.equal(await page.locator("publication-group").nth(1).locator('[data-descriptor] input[type="checkbox"]:checked').count(), 2);
   await page.locator("publication-group").first().getByRole("button", { name: "Select all" }).click();
+  assert.equal(await page.locator("#automatic-0").isChecked(), true);
+  assert.equal(await page.locator("#rate-0").getAttribute("readonly"), "");
+  assert.equal(await page.locator("#phase-0").getAttribute("readonly"), "");
+  await page.locator("#automatic-0").uncheck();
   await page.locator("#rate-0").fill("42");
   await page.locator("publication-group").first().locator('select[aria-label="Format for Pose"]').selectOption("11");
   await page.locator("#rate-0").focus();

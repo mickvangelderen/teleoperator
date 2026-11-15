@@ -1,11 +1,11 @@
-use crate::tracking::{Hub, Pose, RATE, next_deadline, prediction_target};
+use crate::tracking::{Acquisition, ClockMapping, Group, Hub, Pose, RATE};
 use android_activity::AndroidApp;
 use openxr as xr;
 use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError},
+        mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
     },
     time::{Duration, Instant},
 };
@@ -137,134 +137,223 @@ pub fn run(
         .store(extensions.meta_body_tracking_calibration, Ordering::SeqCst);
     hub.body_supported
         .store(extensions.fb_body_tracking, Ordering::SeqCst);
+    let deadline = crate::deadline::Deadline::new(hub.clock_origin)?;
+    let wake = deadline.event();
+    hub.attach_sampler(Some(wake.clone()));
     hub.initialized.store(true, Ordering::SeqCst);
     hub.set_available(true);
     let result = std::thread::scope(|scope| {
-        // Rendezvous commands are received only between complete acquisition ticks.
-        let (acquire, commands) = mpsc::sync_channel(0);
+        // Publish commands before signalling, and acknowledge only after applying them.
+        let (acquire, commands) = mpsc::channel::<(Command, mpsc::Sender<()>)>();
+        let command = |value: Command| -> Result<(), Box<dyn std::error::Error>> {
+            let (ack, received) = mpsc::channel();
+            acquire.send((value, ack))?;
+            wake.notify()?;
+            received.recv()?;
+            Ok(())
+        };
         let sampler = std::thread::Builder::new()
             .name("xr-acquisition".into())
-            .spawn_scoped(scope, || {
+            .spawn_scoped(scope, || -> std::io::Result<()> {
                 let commands = commands;
-                let period = Duration::from_secs_f32(1.0 / RATE);
-                let mut next = Instant::now();
+                let period = (1e9 / RATE as f64) as u64;
+                let mut next = hub.now() as u64;
                 let mut tracker = None;
                 let mut retry_body = Instant::now();
+                let mut refresh_tracking = Instant::now();
                 let mut running = false;
                 let mut has_run = false;
                 let mut reference_changes = Vec::<xr::Time>::new();
                 loop {
-                    let command = if running {
-                        commands.recv_timeout(next.saturating_duration_since(Instant::now()))
-                    } else {
-                        commands.recv().map_err(RecvTimeoutError::from)
-                    };
-                    match command {
-                        Ok(Command::Start) => {
-                            if has_run {
-                                hub.reset_reference();
-                                hub.resumed_at.store(hub.now(), Ordering::SeqCst);
+                    loop {
+                        let (value, ack) = match commands.try_recv() {
+                            Ok(command) => command,
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => return Ok(()),
+                        };
+                        match value {
+                            Command::Start => {
+                                if has_run {
+                                    hub.reset_reference();
+                                    hub.resumed_at.store(hub.now(), Ordering::SeqCst);
+                                }
+                                has_run = true;
+                                running = true;
+                                next = hub.now() as u64;
                             }
-                            has_run = true;
-                            running = true;
-                            next = Instant::now();
+                            Command::ReferenceChange(time) => {
+                                reference_changes.push(time);
+                            }
+                            Command::Pause => running = false,
+                        }
+                        let _ = ack.send(());
+                    }
+                    let observe = hub.now() as u64 >= next;
+                    let mut acquisitions = hub.acquisitions(hub.now() as u64, observe);
+                    // Discover topology and permission changes even without body subscriptions.
+                    if Instant::now() >= refresh_tracking {
+                        if !acquisitions.iter().any(|a| a.group == Group::Body) {
+                            acquisitions.push(Acquisition::background(Group::Body));
+                        }
+                        refresh_tracking = Instant::now() + Duration::from_secs(1);
+                    }
+                    for mut acquisition in acquisitions {
+                        if !acquisition.wanted(hub) {
                             continue;
                         }
-                        Ok(Command::ReferenceChange(time)) => {
-                            reference_changes.push(time);
+                        if acquisition.expired(hub.now()) {
+                            hub.missed(&acquisition, hub.now());
                             continue;
                         }
-                        Ok(Command::Pause) => running = false,
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
-                    let mut acquired_at = hub.now();
-                    let mut target_at = None;
-                    let mut body = hub
-                        .skeleton
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .map(|s| crate::body::Body::inactive(s.clone()));
-                    if !body_permission.load(Ordering::SeqCst) {
-                        // Pause publishes without XR calls, including tracker destruction.
-                        if running {
-                            tracker = None;
-                        }
-                        body = None;
-                    }
-                    let mut inputs = input_definitions
-                        .iter()
-                        .map(|d| crate::inputs::Input::inactive(d.kind))
-                        .collect::<Vec<_>>();
-                    let mut poses: [Pose; 5] = std::array::from_fn(|i| Pose {
-                        active: (i > 0).then_some(false),
-                        ..Default::default()
-                    });
-                    if running && let Ok(time) = instance.now() {
-                        acquired_at = hub.now();
-                        target_at = Some(prediction_target(acquired_at));
-                        let target_time = xr::Time::from_nanos(prediction_target(time.as_nanos()));
-                        reference_changes.retain(|change| {
-                            if change.as_nanos() <= time.as_nanos() {
-                                hub.reset_reference();
-                                false
-                            } else {
-                                true
-                            }
+                        acquisition.start(hub.now() as u64);
+                        let mut acquired_at = hub.now();
+                        let mut represented_at = None;
+                        let mut body = None;
+                        let mut inputs = Vec::new();
+                        let mut poses: [Pose; 5] = std::array::from_fn(|i| Pose {
+                            active: (i > 0).then_some(false),
+                            ..Default::default()
                         });
-                        let synced = session
-                            .sync_actions(&[xr::ActiveActionSet::new(&actions)])
-                            .is_ok();
-                        for (input, action) in inputs.iter_mut().zip(&input_actions) {
-                            *input = action.sample(&session, synced);
-                        }
-                        if extensions.fb_body_tracking
-                            && body_permission.load(Ordering::SeqCst)
-                            && tracker.is_none()
-                            && Instant::now() >= retry_body
-                        {
-                            retry_body = Instant::now() + Duration::from_secs(1);
-                            match crate::xr_body::Tracker::new(
-                                &session,
-                                extensions.meta_body_tracking_fidelity,
-                                extensions.meta_body_tracking_calibration,
-                            ) {
-                                Ok(created) => tracker = Some(created),
-                                Err(error) => log::warn!("Body tracker unavailable: {error}"),
+                        if acquisition.group == Group::Rest {
+                            let Some(skeleton) = hub.skeleton.lock().unwrap().clone() else {
+                                continue;
+                            };
+                            acquired_at = skeleton.acquired_at;
+                            body = Some(crate::body::Body::inactive(skeleton));
+                        } else if acquisition.group == Group::Inputs {
+                            let synced = running
+                                && session
+                                    .sync_actions(&[xr::ActiveActionSet::new(&actions)])
+                                    .is_ok();
+                            inputs = input_actions
+                                .iter()
+                                .zip(input_definitions)
+                                .map(|(action, definition)| {
+                                    if running {
+                                        action.sample(&session, synced)
+                                    } else {
+                                        crate::inputs::Input::inactive(definition.kind)
+                                    }
+                                })
+                                .collect();
+                        } else {
+                            if acquisition.group == Group::Body {
+                                body = hub
+                                    .skeleton
+                                    .lock()
+                                    .unwrap()
+                                    .clone()
+                                    .map(crate::body::Body::inactive);
+                                if !body_permission.load(Ordering::SeqCst) {
+                                    if running {
+                                        tracker = None;
+                                    }
+                                    body = None;
+                                } else if running
+                                    && extensions.fb_body_tracking
+                                    && tracker.is_none()
+                                    && Instant::now() >= retry_body
+                                {
+                                    retry_body = Instant::now() + Duration::from_secs(1);
+                                    match crate::xr_body::Tracker::new(
+                                        &session,
+                                        extensions.meta_body_tracking_fidelity,
+                                        extensions.meta_body_tracking_calibration,
+                                    ) {
+                                        Ok(created) => tracker = Some(created),
+                                        Err(error) => {
+                                            log::warn!("Body tracker unavailable: {error}")
+                                        }
+                                    }
+                                }
+                            }
+                            let before_time = hub.now();
+                            if running && let Ok(time) = instance.now() {
+                                acquired_at = hub.now();
+                                if acquisition.expired(acquired_at) {
+                                    hub.missed(&acquisition, acquired_at);
+                                    continue;
+                                }
+                                let clock = ClockMapping {
+                                    server_at: before_time + (acquired_at - before_time) / 2,
+                                    runtime_at: time.as_nanos(),
+                                };
+                                let requested = acquisition.target_at.unwrap_or(acquired_at);
+                                let Some(runtime_target) = clock.to_runtime(requested) else {
+                                    continue;
+                                };
+                                let target_time = xr::Time::from_nanos(runtime_target);
+                                reference_changes.retain(|change| {
+                                    if change.as_nanos() <= time.as_nanos() {
+                                        hub.reset_reference();
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                });
+                                if acquisition.group == Group::Body {
+                                    if body_permission.load(Ordering::SeqCst)
+                                        && let Some(tracker) = &mut tracker
+                                        && let Ok(mut sample) =
+                                            tracker.sample(&base, target_time, hub)
+                                    {
+                                        sample.returned_at = sample
+                                            .returned_at
+                                            .filter(|t| *t > 0)
+                                            .and_then(|t| clock.to_server(t));
+                                        if sample.returned_at.is_none() {
+                                            sample.active = false;
+                                        }
+                                        body = Some(sample);
+                                    }
+                                } else {
+                                    represented_at = Some(requested);
+                                    let synced = session
+                                        .sync_actions(&[xr::ActiveActionSet::new(&actions)])
+                                        .is_ok();
+                                    for (i, space) in spaces.iter().enumerate() {
+                                        if i > 0 {
+                                            let action = if i % 2 == 1 { &aim } else { &grip };
+                                            poses[i].active = Some(
+                                                synced
+                                                    && action
+                                                        .is_active(&session, hands[(i - 1) / 2])
+                                                        .unwrap_or(false),
+                                            );
+                                        }
+                                        if (i == 0 || poses[i].active == Some(true))
+                                            && let Ok(location) = space.locate(&base, target_time)
+                                        {
+                                            let p = location.pose.position;
+                                            let q = location.pose.orientation;
+                                            poses[i].position = [p.x, p.y, p.z];
+                                            poses[i].orientation = [q.x, q.y, q.z, q.w];
+                                            poses[i].flags =
+                                                location.location_flags.into_raw() as u16;
+                                        }
+                                    }
+                                }
                             }
                         }
-                        if let Some(tracker) = &mut tracker
-                            && let Ok(mut sample) = tracker.sample(&base, target_time, hub)
-                        {
-                            // shortcut: assume the runtime returned the requested target until returned-time conversion is implemented.
-                            sample.returned_at = target_at;
-                            body = Some(sample);
-                        }
-                        for (i, space) in spaces.iter().enumerate() {
-                            if i > 0 {
-                                let action = if i % 2 == 1 { &aim } else { &grip };
-                                poses[i].active = Some(
-                                    synced
-                                        && action
-                                            .is_active(&session, hands[(i - 1) / 2])
-                                            .unwrap_or(false),
-                                );
-                            }
-                            if (i == 0 || poses[i].active == Some(true))
-                                && let Ok(location) = space.locate(&base, target_time)
-                            {
-                                let p = location.pose.position;
-                                let q = location.pose.orientation;
-                                poses[i].position = [p.x, p.y, p.z];
-                                poses[i].orientation = [q.x, q.y, q.z, q.w];
-                                poses[i].flags = location.location_flags.into_raw() as u16;
-                            }
-                        }
+                        let sample = hub.acquire(
+                            acquisition.group,
+                            &poses,
+                            &inputs,
+                            body.as_ref(),
+                            acquired_at,
+                            represented_at,
+                        );
+                        hub.complete(acquisition, sample);
                     }
-                    hub.acquire(&poses, &inputs, body.as_ref(), acquired_at, target_at);
-                    if running {
-                        next = next_deadline(next, period, Instant::now());
+                    let now = hub.now() as u64;
+                    if observe {
+                        next += (now.saturating_sub(next) / period + 1) * period;
+                    }
+                    let due = hub.next_acquisition().map_or(next, |due| next.min(due));
+                    // Work that is already due needs no sleep. Its lateness belongs
+                    // to acquisition-thread work, not to kernel wakeup latency.
+                    if due > hub.now() as u64 && deadline.wait(Some(due))? {
+                        hub.record_wakeup(due, hub.now() as u64);
                     }
                 }
             })?;
@@ -296,12 +385,12 @@ pub fn run(
                             match event.state() {
                                 xr::SessionState::READY => {
                                     session.begin(xr::ViewConfigurationType::PRIMARY_STEREO)?;
-                                    acquire.send(Command::Start)?;
+                                    command(Command::Start)?;
                                     running = true;
                                 }
                                 xr::SessionState::STOPPING => {
                                     running = false;
-                                    acquire.send(Command::Pause)?;
+                                    command(Command::Pause)?;
                                     session.end()?;
                                 }
                                 xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
@@ -313,7 +402,7 @@ pub fn run(
                         xr::Event::ReferenceSpaceChangePending(event)
                             if event.reference_space_type() == base_type =>
                         {
-                            acquire.send(Command::ReferenceChange(event.change_time()))?;
+                            command(Command::ReferenceChange(event.change_time()))?;
                         }
                         xr::Event::InstanceLossPending(_) => return Ok(()),
                         _ => {}
@@ -353,11 +442,16 @@ pub fn run(
             }
         })();
         drop(acquire);
+        wake.notify()?;
         let joined = sampler
             .join()
-            .map_err(|_| "OpenXR acquisition thread panicked".into());
+            .map_err(|_| -> Box<dyn std::error::Error> {
+                "OpenXR acquisition thread panicked".into()
+            })
+            .and_then(|result| result.map_err(Into::into));
         result.and(joined)
     });
+    hub.attach_sampler(None);
     hub.set_available(false);
     result
 }

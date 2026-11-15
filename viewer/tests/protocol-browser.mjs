@@ -47,13 +47,13 @@ export async function checkProtocol(page) {
       const counts=[];
       for(const delivery of [1,2])for(const kind of ["periodic","onChange"]){
         const id=session.allocateId();
-        const request={id,group,delivery,schedule:kind==="periodic"?periodic(50,7_000_000n):{kind},samples};
+        const request={id,group,delivery,schedule:kind==="periodic"?periodic(50,7_000_000n,25_000_000n):{kind},samples};
         send(session.request(request));
         await wait(()=>session.active.has(id)&&(delivery===1?wirePublications.get(id)?.count>0:session.active.get(id).packets>0),"initial snapshot");
         await new Promise(resolve=>setTimeout(resolve,130));
         const sub=session.active.get(id), wire=wirePublications.get(id);
         const packet=delivery===1?decodeTracking(wire.body,c,request):sub.packet;
-        counts.push({delivery,kind,packets:delivery===1?wire.count:sub.packets,prediction:packet.predictedFor});
+        counts.push({delivery,kind,packets:delivery===1?wire.count:sub.packets,prediction:packet.predictedFor,acquisition:String(packet.timestamp)});
         if(kind==="onChange"){
           const before=sub.packets;
           send(session.changeSchedule(id,periodic(50,9_000_000n,25_000_000n)));
@@ -68,9 +68,35 @@ export async function checkProtocol(page) {
         send(session.stop(id));await wait(()=>!session.stopping.has(id),"unsubscribe");
       }
       const head=c.descriptors.findIndex(d=>d.id==="/user/head/input/pose"), id=session.allocateId();
-      const request={id,group:c.descriptors[head].group,delivery:1,schedule:periodic(50),samples:[{descriptor:head,format:10,space:c.descriptors[head].spaces[0]}]};
+      const request={id,group:c.descriptors[head].group,delivery:1,schedule:periodic(50, 7_000_000n, 35_000_000n),samples:[{descriptor:head,format:10,space:c.descriptors[head].spaces[0]}]};
       send(session.request(request));await wait(()=>session.active.get(id)?.packets>0,"predicted pose");
-      const prediction=String(session.active.get(id).packet.predictedFor-session.active.get(id).packet.timestamp);
+      const targets = [];
+      for (const schedule of [request.schedule, periodic(50, 11_000_000n, 65_000_000n)]) {
+        send(session.changeSchedule(id, schedule));
+        const sub = session.active.get(id), before = sub.packets;
+        await wait(() => sub.packets >= before + 3, "updated prediction target");
+        targets.push({ grid: String((sub.packet.predictedFor - schedule.consumptionDelay - schedule.phase) % schedule.interval), delay: String(schedule.consumptionDelay) });
+      }
+      // Acquiring before P can make a zero-delay target future. Such publications
+      // are allowed; predicting into the past is not. Expiry at submission is
+      // checked with a deterministic server clock in the Rust tests.
+      send(session.changeSchedule(id, periodic(50, 3_000_000n, 0n)));
+      for (let i = 0; i < 30; i++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        const packet = session.active.get(id).packet;
+        if (packet && packet.predictedFor <= packet.timestamp) throw new Error("Prediction did not follow acquisition");
+      }
+      // Fresh subscriptions must bootstrap their preparation estimate even when
+      // the initial zero/small-delay attempts expire before they can be sent.
+      for (const delay of [0n, 300_000n]) {
+        const coldId = session.allocateId();
+        send(session.request({...request, id: coldId, schedule: periodic(50, 3_000_000n, delay)}));
+        await wait(() => session.active.get(coldId)?.packets >= 3, `cold delay ${delay} publishes`);
+        const packet = session.active.get(coldId).packet;
+        if (packet.predictedFor <= packet.timestamp) throw new Error("Cold prediction did not follow acquisition");
+        send(session.stop(coldId));
+        await wait(() => !session.stopping.has(coldId), "cold unsubscribe");
+      }
       const invalid=session.request({...request,schedule:periodic(50)});invalid.fill(0,invalid.length-24,invalid.length-16);
       send(invalid);await wait(()=>!session.pending.has(id),"rejected replacement");
       if(!session.active.has(id)||!session.detail.includes("rejected"))throw new Error("Rejected replacement retired old state");
@@ -79,7 +105,7 @@ export async function checkProtocol(page) {
       const probe=session.requestClock(performance.now());unreliable.send(probe);
       await wait(()=>!!session.clock,"clock response");
       send(session.stop(id));await wait(()=>!session.stopping.has(id),"final unsubscribe");
-      return {counts,prediction,clock:!!session.clock,capabilityMessages,errors};
+      return {counts,targets,clock:!!session.clock,capabilityMessages,errors};
     }finally{pc.close();session.retire();}
   });
   for(const item of results.counts){
@@ -87,10 +113,12 @@ export async function checkProtocol(page) {
     if(item.kind==="onChange")assert.equal(item.packets,1);
     else assert.ok(item.packets>=3,JSON.stringify(item));
   }
+  assert.equal(new Set(results.counts.map(item => item.acquisition)).size, 1, "Repeated rest publications retain the skeleton acquisition timestamp");
+  assert.ok(BigInt(results.counts[0].acquisition) > 0n, "Synthetic rest records its acquisition after server startup");
   assert.equal(results.capabilityMessages.length,1,"Full capabilities arrive as one WebRTC message");
   assert.ok(results.capabilityMessages[0]>16_384 && results.capabilityMessages[0]<=1_048_576);
   console.log(`Full catalog WebRTC message: ${results.capabilityMessages[0]} bytes`);
-  assert.equal(results.prediction,"25000000","Wire time reflects the actual synthetic target");
+  for (const target of results.targets) assert.equal(target.grid, "0", `Actual synthetic target follows requested phase + delay ${target.delay}`);
   assert.equal(results.clock,true);
   assert.deepEqual(results.errors,[]);
 }

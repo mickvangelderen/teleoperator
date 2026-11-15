@@ -48,10 +48,12 @@ export async function checkMultipleViewers(browser, url) {
     await first.locator("#performance").scrollIntoViewIfNeeded();
     assert.ok((await sampleWork(first)).charts > 0, "Visible graphs draw the retained history");
 
+    await first.locator("#automatic-0").uncheck();
     await first.locator("#rate-0").fill("30");
     await first.locator("#publish-0").click();
     await first.waitForFunction(() => document.querySelector("#subscription-0").textContent.includes("30.0 Hz target"));
-    assert.match(await second.locator("#subscription-0").textContent(), /60\.0 Hz target/, "Publication settings remain per viewer");
+    const secondRate = Number((await second.locator("#subscription-0").textContent()).match(/([\d.]+) Hz target/)[1]);
+    assert.ok(secondRate > 55 && secondRate < 65, "The other viewer keeps its measured display cadence when the first switches to 30 Hz");
     const packets = Number((await second.locator("#subscription-0").textContent()).match(/(\d+) packets/)[1]);
     await first.locator("#connect").click();
     await second.waitForFunction(previous => Number(document.querySelector("#subscription-0").textContent.match(/(\d+) packets/)?.[1]) >= previous + 30, packets);

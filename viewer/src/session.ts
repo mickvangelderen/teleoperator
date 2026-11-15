@@ -53,8 +53,9 @@ export class Session {
     if (!sub || this.pending.has(id) || this.stopping.has(id)) throw new Error("No accepted subscription available to update");
     validateSchedule(schedule, this.capabilities!.groups[sub.request.group]);
     const bytes = updateSchedule(id, schedule);
+    const previous = sub.request.schedule;
     sub.request.schedule = { ...schedule };
-    sub.freshness = new FreshnessBaseline();
+    if (previous.kind !== schedule.kind || (previous.kind === "periodic" && schedule.kind === "periodic" && previous.interval !== schedule.interval)) sub.freshness = new FreshnessBaseline();
     return bytes;
   }
   control(bytes: Uint8Array, arrivedAt = performance.now()) {
@@ -88,7 +89,8 @@ export class Session {
     if (delay < 0n) { this.discarded++; return null; }
     this.clockObservations = this.clockObservations.filter(o => arrivedAt - o.at <= 30_000).slice(-7);
     this.clockObservations.push({ offset: ((t2 - t1) + (t3 - t4)) / 2n, delay, at: arrivedAt });
-    this.clock = this.clockObservations.reduce((best, o) => o.delay < best.delay ? o : best);
+    // Prefer low-delay probes, but age out their offsets promptly so clock drift is followed.
+    this.clock = this.clockObservations.filter(o => arrivedAt - o.at < 2000).reduce((best, o) => o.delay <= best.delay ? o : best);
     return null;
   }
   sampleAge(timestamp: bigint, now: number, renderToPhotonMs = 0) {

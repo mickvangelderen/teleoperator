@@ -142,3 +142,160 @@ test("freshness observers change during silence without disconnecting", async co
     assert.equal(updates.length, count, "Closing cancels freshness polling");
   } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
 });
+
+function timingFrames(c: Connection, start: number, photon = 20, count = 13, cadence = 1000 / 60) {
+  let now = start;
+  for (let i = 0; i < count; i++) { now = start + i * cadence; c.frame(now, now, photon); }
+  return now;
+}
+const updates = () => Peer.latest.control.sent.filter(b => b[0] === 12);
+const decodeSchedule = (bytes: Uint8Array) => {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  assert.equal(bytes[5], 1);
+  return { id: v.getUint32(1, true), interval: v.getBigUint64(6, true), phase: v.getBigUint64(14, true), delay: v.getBigUint64(22, true) };
+};
+
+test("automatic updates encode display refresh rate and its changes without exceeding device limits", context => {
+  const original = globalThis.RTCPeerConnection;
+  Object.assign(globalThis, { RTCPeerConnection: Peer });
+  context.mock.method(performance, "now", () => 1000);
+  try {
+    for (const maxRate of [200, 90]) {
+      const c = connection({ ...caps(), groups: [maxRate] });
+      try {
+        c.publish(request, true); c.session.receive({ tag: 5, id: 1 });
+        c.session.clock = { offset: 1_000_000_000n, delay: 6_000_000n, at: 1000 };
+        timingFrames(c, 1000, 20, 13, 10);
+        assert.equal(decodeSchedule(updates().at(-1)!).interval, maxRate === 200 ? 10_000_000n : 11_111_112n);
+        c.session.clock = { ...c.session.clock, at: 2200 };
+        timingFrames(c, 2200, 20, 20, 1000 / 144);
+        assert.equal(decodeSchedule(updates().at(-1)!).interval, maxRate === 200 ? 6_944_445n : 11_111_112n);
+        c.publish({ ...request, schedule: periodic(30) });
+        const manualCount = updates().length;
+        timingFrames(c, 2400, 20, 150, 10);
+        assert.equal(updates().length, manualCount, "Manual rate remains under user control");
+        assert.equal(decodeSchedule(updates().at(-1)!).interval, 33_333_334n);
+      } finally { c.close(); }
+    }
+  } finally { Object.assign(globalThis, { RTCPeerConnection: original }); }
+});
+
+test("automatic schedules encode bounded updates, preserve freshness, and follow display delay", context => {
+  const original = globalThis.RTCPeerConnection;
+  Object.assign(globalThis, { RTCPeerConnection: Peer });
+  context.mock.method(performance, "now", () => 1000);
+  const c = connection();
+  try {
+    c.publish(request, true); c.session.receive({ tag: 5, id: 1 });
+    const sub = c.session.active.get(1)!, baseline = sub.freshness;
+    timingFrames(c, 1000);
+    assert.equal(updates().length, 0, "Missing clocks never produce guessed phase updates");
+    c.session.clock = { offset: 1_234_567_890n, delay: 20_000_000n, at: 1200 };
+    timingFrames(c, 1216.6666667);
+    assert.equal(updates().length, 1);
+    const first = decodeSchedule(updates()[0]);
+    assert.equal(first.interval, 16_666_667n);
+    assert.equal(first.delay, 33_000_000n, "10 ms transit + 1 ms decode + 2 ms margin + 20 ms photon delay");
+    assert.ok(first.phase >= 0n && first.phase < first.interval);
+    assert.equal(sub.freshness, baseline, "Phase changes must not erase the acquisition freshness baseline");
+    timingFrames(c, 1433.3333333, 60, 46);
+    assert.equal(updates().length, 1, "Updates are limited to once a second per subscription");
+    timingFrames(c, 2200, 60);
+    assert.equal(updates().length, 2);
+    const changed = decodeSchedule(updates()[1]);
+    assert.equal(changed.delay - first.delay, 40_000_000n);
+    timingFrames(c, 2416.6666667, 60, 100);
+    assert.equal(updates().length, 2, "Steady timing does not churn every frame or probe");
+    c.close(); timingFrames(c, 5000, 0);
+    assert.equal(updates().length, 2);
+  } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
+});
+
+test("manual schedules and OnChange remain untouched; pending replacements cannot receive updates", context => {
+  const original = globalThis.RTCPeerConnection;
+  Object.assign(globalThis, { RTCPeerConnection: Peer });
+  context.mock.method(performance, "now", () => 1000);
+  const c = connection();
+  try {
+    c.session.clock = { offset: 1_000_000_000n, delay: 10_000_000n, at: 1000 };
+    c.publish(request); c.session.receive({ tag: 5, id: 1 });
+    timingFrames(c, 1000);
+    assert.equal(updates().length, 0, "Explicit schedules remain manual");
+    c.publish({ ...request, schedule: periodic(30) }, true);
+    assert.equal(c.isAutomatic(1), true);
+    const before = updates().length;
+    c.publish({ ...request, delivery: 2 }, true);
+    timingFrames(c, 1216.6666667, 60);
+    assert.equal(updates().length, before, "Do not race a replacement selection with schedule changes");
+    const pending = [...c.session.pending.keys()][0];
+    c.session.receive({ tag: 6, id: pending, reason: "test rejection" });
+    timingFrames(c, 1433.3333333, 60);
+    assert.ok(updates().length > before, "Rejected replacement leaves old automatic subscription active");
+    c.publish({ ...request, schedule: { kind: "onChange" } }, true);
+    const onChangeCount = updates().length;
+    timingFrames(c, 1650, 60, 100);
+    assert.equal(updates().length, onChangeCount);
+    c.publish({ ...request, schedule: periodic(60, 1_000_000n, 7_000_000n) });
+    assert.equal(c.isAutomatic(1), false);
+    const manual = updates().length;
+    timingFrames(c, 3316.6666667, 0);
+    assert.equal(updates().length, manual);
+    c.unsubscribe(1);
+    assert.equal(c.isAutomatic(1), false);
+    timingFrames(c, 3533.3333333);
+    assert.equal(updates().length, manual);
+  } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
+});
+
+test("visibility interruptions require a new clock and observed frames before realigning", context => {
+  const original = globalThis.RTCPeerConnection;
+  Object.assign(globalThis, { RTCPeerConnection: Peer });
+  context.mock.method(performance, "now", () => 1000);
+  const c = connection();
+  try {
+    c.publish(request, true); c.session.receive({ tag: 5, id: 1 });
+    c.session.clock = { offset: 1_000_000_000n, delay: 10_000_000n, at: 1000 };
+    timingFrames(c, 1000);
+    const before = updates().length;
+    c.visibilityChanged(1250, false);
+    timingFrames(c, 2000, 60);
+    assert.equal(updates().length, before);
+    c.visibilityChanged(2250, true);
+    assert.equal(Peer.latest.tracking.sent.at(-1)?.[0], 10, "Resume requests a fresh clock probe");
+    timingFrames(c, 2250, 60);
+    assert.equal(updates().length, before);
+    c.session.clock = { offset: 1_003_000_000n, delay: 12_000_000n, at: 2450 };
+    timingFrames(c, 2466.6666667, 60);
+    assert.equal(updates().length, before + 1);
+  } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
+});
+
+test("accepted and rejected replacements retain timing ownership only for live subscription ids", async context => {
+  context.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  context.mock.method(performance, "now", () => 1000);
+  context.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ type: "answer", sdp: "test" })));
+  const original = globalThis.RTCPeerConnection;
+  Object.assign(globalThis, { RTCPeerConnection: Peer });
+  const c = new Connection(() => {});
+  try {
+    await c.connect();
+    c.session.receive({ tag: 2, version: 1 }); c.session.receive({ tag: 3, capabilities: caps() });
+    const receive = (tag: number, id: number) => Peer.latest.control.onmessage!({ data: Uint8Array.of(tag, id, 0, 0, 0).buffer });
+    Peer.latest.control.onmessage!({ data: Uint8Array.of(8, 99, 0, 0, 0, 1, 0, 0, 0, 97).buffer });
+    receive(5, 1);
+    c.publish({ ...request, delivery: 2 }, true);
+    Peer.latest.control.onmessage!({ data: Uint8Array.of(6, 2, 0, 0, 0, 0).buffer });
+    assert.equal(c.isAutomatic(1), true); assert.equal(c.isAutomatic(2), false);
+    c.publish({ ...request, delivery: 2 }, true);
+    receive(5, 3);
+    assert.equal(c.session.active.has(1), false); assert.equal(c.session.active.has(3), true);
+    assert.equal(c.isAutomatic(1), false); assert.equal(c.isAutomatic(3), true);
+    c.session.clock = { offset: 1_000_000_000n, delay: 10_000_000n, at: 1000 };
+    timingFrames(c, 1000);
+    assert.equal(decodeSchedule(updates().at(-1)!).id, 3);
+    Peer.latest.control.throwing = true;
+    timingFrames(c, 1216.6666667, 60, 60);
+    assert.equal(c.state.status, "Error"); assert.equal(c.session.active.size, 0);
+    assert.equal(c.isAutomatic(3), false);
+  } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
+});

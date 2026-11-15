@@ -312,3 +312,21 @@ test("live schedules retain selection and packet state, support both channels, a
   const s=session();s.requestClock(0);const response=Buffer.alloc(21);response[0]=11;response.writeBigUInt64LE(NON_MAX,5);response.writeBigUInt64LE(NON_MAX,13);
   s.unreliable(response,1);assert.equal(s.clock,undefined);
 });
+
+test("clock offsets follow drift and stop reusing old low-delay observations", () => {
+  const s = session();
+  const probe = (sent: number, transit: number, offset: bigint) => {
+    const request = s.requestClock(sent)!, response = Buffer.alloc(21);
+    response[0] = 11; response.writeUInt32LE(new DataView(request.buffer).getUint32(1, true), 1);
+    response.writeBigUInt64LE(BigInt(Math.round((sent + transit) * 1e6)) + offset, 5);
+    response.writeBigUInt64LE(BigInt(Math.round((sent + transit) * 1e6)) + offset, 13);
+    s.unreliable(response, sent + transit * 2);
+  };
+  probe(1000, 1, 1_000_000_000n);
+  probe(2000, 1, 1_001_000_000n);
+  assert.equal(s.clock!.offset, 1_001_000_000n, "Equal-delay probes prefer the newer clock relation");
+  probe(3000, 2, 1_002_000_000n);
+  assert.equal(s.clock!.offset, 1_001_000_000n, "A fresh lower-delay observation still filters queue noise");
+  probe(4000, 2, 1_003_000_000n);
+  assert.equal(s.clock!.offset, 1_003_000_000n, "Older minimum delay must not hold the phase on a stale offset");
+});

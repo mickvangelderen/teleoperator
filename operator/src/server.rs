@@ -1,4 +1,4 @@
-use crate::tracking::Hub;
+use crate::tracking::{Group, Hub, SubscriptionSamples, validate_schedule};
 use crate::{
     protocol::{self, Message, Session},
     publication::Catalog,
@@ -9,6 +9,8 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
+use rtc::peer_connection::configuration::setting_engine::SctpMaxMessageSize;
+use std::collections::BTreeMap;
 use std::{
     sync::{
         Arc,
@@ -22,15 +24,10 @@ use tokio::{
     time::timeout,
 };
 use webrtc::{
-    api::{
-        APIBuilder,
-        setting_engine::{SctpMaxMessageSize, SettingEngine},
-    },
-    data_channel::RTCDataChannel,
+    data_channel::{DataChannel, DataChannelEvent, RTCDataChannelState},
     peer_connection::{
-        configuration::RTCConfiguration,
-        peer_connection_state::RTCPeerConnectionState,
-        sdp::{sdp_type::RTCSdpType, session_description::RTCSessionDescription},
+        PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCIceGatheringState,
+        RTCPeerConnectionState, RTCSdpType, RTCSessionDescription, SettingEngineBuilder,
     },
 };
 
@@ -41,9 +38,10 @@ struct Server {
 }
 
 enum PeerEvent {
-    Channel(Arc<RTCDataChannel>),
+    Channel(bool, Arc<dyn DataChannel>),
     Control(bytes::Bytes),
     Clock(u32, i64),
+    Progress,
 }
 
 struct Peer {
@@ -54,82 +52,162 @@ struct Peer {
     message_limit: usize,
 }
 
+struct SamplingSubscription {
+    samples: SubscriptionSamples,
+    sent: Option<u64>,
+    packet_size: usize,
+    packet: Vec<u8>,
+    values: Vec<protocol::Value>,
+}
+#[derive(Default)]
+struct SamplingSubscriptions(BTreeMap<u32, SamplingSubscription>);
+impl SamplingSubscriptions {
+    fn reconcile(
+        &mut self,
+        hub: &Arc<Hub>,
+        state: &Session,
+        replies: &[Message],
+        updated: Option<u32>,
+    ) {
+        for reply in replies {
+            match reply {
+                Message::Ended { id, .. } => {
+                    self.0.remove(id);
+                }
+                Message::Accepted { id } => {
+                    let request = &state.active[id].request;
+                    let packet_size = state
+                        .capabilities
+                        .validate_request(request)
+                        .expect("Accepted request");
+                    self.0.insert(
+                        *id,
+                        SamplingSubscription {
+                            samples: hub.subscribe(
+                                Group::from_index(state.active[id].request.group)
+                                    .expect("Advertised group"),
+                                state.active[id].request.schedule.clone(),
+                            ),
+                            sent: None,
+                            packet_size: packet_size + 1,
+                            packet: Vec::with_capacity(packet_size),
+                            values: Vec::with_capacity(state.active[id].request.samples.len()),
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        if let Some(id) = updated
+            && let (Some(sampling), Some(subscription)) =
+                (self.0.get_mut(&id), state.active.get(&id))
+        {
+            sampling
+                .samples
+                .update(subscription.request.schedule.clone());
+            sampling.sent = None;
+        }
+    }
+}
+
+struct PeerHandler {
+    peer: Arc<Peer>,
+    gathered: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for PeerHandler {
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        if state == RTCIceGatheringState::Complete {
+            self.gathered.notify_one();
+        }
+    }
+
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        log::info!("WebRTC state: {state}");
+        if matches!(
+            state,
+            RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+                | RTCPeerConnectionState::Disconnected
+        ) {
+            self.peer.close.notify_one();
+        }
+    }
+
+    async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+        let peer = self.peer.clone();
+        // Poll independently so the connection driver can keep delivering events.
+        tokio::spawn(async move {
+            if let Err(error) = peer.attach(dc).await {
+                log::warn!("Data channel failed: {error}");
+            }
+            peer.close.notify_one();
+        });
+    }
+}
+
 impl Peer {
-    fn attach(self: Arc<Self>, dc: Arc<RTCDataChannel>) {
-        let label = dc.label().to_string();
+    async fn attach(&self, dc: Arc<dyn DataChannel>) -> Result<(), String> {
+        let label = dc.label().await.map_err(|e| e.to_string())?;
         let control = label == "reliable";
         let bit = if control { 1 } else { 2 };
         let valid = matches!(label.as_str(), "reliable" | "unreliable")
-            && dc.protocol() == "xrop"
-            && dc.ordered() == control
-            && dc.max_retransmits() == if control { None } else { Some(0) }
-            && dc.max_packet_lifetime().is_none();
+            && dc.protocol().await.map_err(|e| e.to_string())? == "xrop"
+            && dc.ordered().await.map_err(|e| e.to_string())? == control
+            && dc.max_retransmits().await.map_err(|e| e.to_string())?
+                == if control { None } else { Some(0) }
+            && dc
+                .max_packet_life_time()
+                .await
+                .map_err(|e| e.to_string())?
+                .is_none();
         if !valid || self.channels.fetch_or(bit, Ordering::SeqCst) & bit != 0 {
-            log::warn!("Invalid or duplicate data channel: {label}");
-            self.close.notify_one();
-            return;
+            return Err(format!("Invalid or duplicate data channel: {label}"));
         }
-        if self
-            .events
-            .try_send(PeerEvent::Channel(dc.clone()))
-            .is_err()
-        {
-            self.close.notify_one();
-            return;
-        }
-        dc.on_open(Box::new(move || {
-            Box::pin(async move {
-                log::info!("Data channel open: {label}");
-            })
-        }));
-        let peer = self.clone();
-        dc.on_close(Box::new(move || {
-            let peer = peer.clone();
-            Box::pin(async move {
-                peer.close.notify_one();
-            })
-        }));
-        let peer = self.clone();
-        dc.on_error(Box::new(move |error| {
-            let peer = peer.clone();
-            Box::pin(async move {
-                log::warn!("Data channel failed: {error}");
-                peer.close.notify_one();
-            })
-        }));
-        dc.on_message(Box::new(move |message| {
-            let peer = self.clone();
-            Box::pin(async move {
-                let received_at = peer.hub.now();
-                if !control {
-                    if !message.is_string && message.data.len() == 5 && message.data[0] == 10 {
-                        let id = u32::from_le_bytes(message.data[1..].try_into().unwrap());
-                        let _ = peer.events.try_send(PeerEvent::Clock(id, received_at));
+        self.events
+            .try_send(PeerEvent::Channel(control, dc.clone()))
+            .map_err(|_| "Peer event queue full or closed")?;
+        while let Some(event) = dc.poll().await {
+            match event {
+                DataChannelEvent::OnOpen => log::info!("Data channel open: {label}"),
+                DataChannelEvent::OnClose => break,
+                DataChannelEvent::OnError => return Err(format!("Channel error: {label}")),
+                DataChannelEvent::OnBufferedAmountLow | DataChannelEvent::OnBufferedAmountHigh => {
+                    let _ = self.events.try_send(PeerEvent::Progress);
+                }
+                DataChannelEvent::OnMessage(message) => {
+                    let received_at = self.hub.now();
+                    let data = message.data.freeze();
+                    if !control {
+                        if !message.is_string && data.len() == 5 && data[0] == 10 {
+                            let id = u32::from_le_bytes(data[1..].try_into().unwrap());
+                            let _ = self.events.try_send(PeerEvent::Clock(id, received_at));
+                        }
+                        continue;
                     }
-                    return;
+                    if message.is_string
+                        || data.len() > protocol::MAX_CLIENT_MESSAGE
+                        || self.events.try_send(PeerEvent::Control(data)).is_err()
+                    {
+                        return Err("Invalid control message or peer event queue full".into());
+                    }
                 }
-                if message.is_string
-                    || message.data.len() > protocol::MAX_CLIENT_MESSAGE
-                    || peer
-                        .events
-                        .try_send(PeerEvent::Control(message.data))
-                        .is_err()
-                {
-                    peer.close.notify_one();
-                }
-            })
-        }));
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }
 
 impl Peer {
     async fn send(
         &self,
-        dc: &RTCDataChannel,
+        dc: &Arc<dyn DataChannel>,
         mut message: Vec<u8>,
         control: bool,
     ) -> Result<(), String> {
-        let buffered = dc.buffered_amount().await;
+        let buffered = dc.outstanding_bytes().await.map_err(|e| e.to_string())?;
         if control && buffered.saturating_add(message.len()) > 1_048_576 {
             return Err("Control backpressure limit".into());
         }
@@ -143,8 +221,8 @@ impl Peer {
                 self.message_limit
             ));
         }
-        let data = bytes::Bytes::from(message);
-        timeout(Duration::from_secs(2), dc.send(&data))
+        let data = bytes::BytesMut::from(message.as_slice());
+        timeout(Duration::from_secs(2), dc.send(data))
             .await
             .map_err(|_| "Data channel send timed out")?
             .map_err(|e| e.to_string())?;
@@ -161,8 +239,17 @@ impl Peer {
         } else {
             message
         };
+        if let Message::UpdateSchedule { schedule, .. } = &message {
+            validate_schedule(schedule, self.hub.now() as u64)?;
+        }
         if let Message::Subscribe(request) = &message {
-            let sample = self.hub.latest.lock().unwrap().clone();
+            if let Err(reason) = validate_schedule(&request.schedule, self.hub.now() as u64) {
+                return Ok(vec![Message::Rejected {
+                    id: request.id,
+                    reason: Some(reason),
+                }]);
+            }
+            let sample = Group::from_index(request.group).and_then(|group| self.hub.latest(group));
             if let Some(sample) = sample {
                 catalog.refresh_skeleton(&self.hub, &sample);
                 let validation = state.capabilities.validate_request(request).and_then(|_| {
@@ -183,33 +270,31 @@ impl Peer {
     async fn run(&self, mut incoming: mpsc::Receiver<PeerEvent>) -> Result<(), String> {
         let mut updates = self.hub.updates.subscribe();
         let mut control = None;
-        let mut tracking: Option<Arc<RTCDataChannel>> = None;
+        let mut tracking: Option<Arc<dyn DataChannel>> = None;
         let mut session: Option<(Catalog, Session)> = None;
         let mut pending_offer = None;
+        let mut sampling = SamplingSubscriptions::default();
         let deadline = tokio::time::sleep(Duration::from_secs(12));
         tokio::pin!(deadline);
         loop {
-            let next_due = session
-                .as_ref()
-                .and_then(|(_, s)| s.active.values().filter_map(|s| s.next_due).min());
-            let wait = next_due.map_or(Duration::from_secs(3600), |due| {
-                Duration::from_nanos(due.saturating_sub(self.hub.now() as u64))
-            });
             tokio::select! {
-                _ = tokio::time::sleep(wait), if next_due.is_some() => {},
                 _ = &mut deadline, if session.is_none() || control.is_none() || tracking.is_none() => return Err("Protocol setup timed out".into()),
                 event = incoming.recv() => match event.ok_or("Peer event channel closed")? {
+                    PeerEvent::Progress => {},
                     PeerEvent::Clock(id, received_at) => {
                         if let (Some((_, state)), Some(dc)) = (&session, &tracking)
-                            && state.negotiated && self.message_limit >= 21 && tracking_fits(dc.buffered_amount().await, 21) {
+                            && state.negotiated && self.message_limit >= 21 && tracking_fits(dc.outstanding_bytes().await.map_err(|e| e.to_string())?, 21) {
                             self.send(dc, protocol::clock_response(id, received_at as u64, 0), false).await?;
                         }
                     },
-                    PeerEvent::Channel(dc) => { if dc.label() == "reliable" { control = Some(dc); } else { tracking = Some(dc); } },
+                    PeerEvent::Channel(reliable, dc) => { if reliable { control = Some(dc); } else { tracking = Some(dc); } },
                     PeerEvent::Control(bytes) => {
                         let message = protocol::decode_client(&bytes)?;
                         if let Some((catalog, state)) = session.as_mut() {
-                            for reply in self.handle_control(catalog, state, message)? {
+                            let updated = match &message { Message::UpdateSchedule { id, .. } => Some(*id), _ => None };
+                            let replies = self.handle_control(catalog, state, message)?;
+                            sampling.reconcile(&self.hub, state, &replies, updated);
+                            for reply in replies {
                                 self.send(control.as_ref().ok_or("Missing control channel")?, protocol::encode(&reply), true).await?;
                             }
                             } else {
@@ -240,35 +325,12 @@ impl Peer {
             let Some((catalog, session)) = session.as_mut() else {
                 continue;
             };
-            let now = self.hub.now();
-            let due: std::collections::HashSet<_> = session
-                .active
-                .iter()
-                .filter_map(|(id, sub)| sub.due(now as u64).then_some(*id))
-                .collect();
-            // Advance even without a sample or an open channel, so missed slots cannot spin.
-            for sub in session.active.values_mut() {
-                if sub.next_due.is_some_and(|t| t <= now as u64) {
-                    sub.advance(now as u64)?;
-                }
-            }
             if catalog.changed(&self.hub) {
                 return Err("Device capabilities changed; reconnect".into());
             }
-            let Some(dc) = tracking.as_ref() else {
-                continue;
-            };
-            if dc.ready_state()
-                != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
-            {
-                continue;
-            }
-            let sample = self.hub.latest.lock().unwrap().clone();
-            let Some(sample) = sample else {
-                continue;
-            };
             if !self.hub.available.load(Ordering::SeqCst) {
                 for id in session.active.keys().copied().collect::<Vec<_>>() {
+                    sampling.0.remove(&id);
                     for reply in session.end(id, "Device acquisition stopped") {
                         self.send(control.as_ref().unwrap(), protocol::encode(&reply), true)
                             .await?;
@@ -276,46 +338,99 @@ impl Peer {
                 }
                 continue;
             }
-            // Recenter keeps the selected space; wait for an acquisition in its new origin.
-            if sample.reference_version != *self.hub.reference_version.lock().unwrap() {
+            let Some(dc) = tracking.as_ref() else {
+                continue;
+            };
+            if dc.ready_state().await.map_err(|e| e.to_string())? != RTCDataChannelState::Open {
                 continue;
             }
-            // Acquisition can advance after due-slot bookkeeping; validate the copied sample now.
-            let sampled_at = self.hub.now();
-            catalog.refresh_skeleton(&self.hub, &sample);
+            let mut tracking_buffered = dc.outstanding_bytes().await.map_err(|e| e.to_string())?;
+            let mut reliable_buffered = if session.active.values().any(|s| s.request.delivery == 2)
+            {
+                control
+                    .as_ref()
+                    .unwrap()
+                    .outstanding_bytes()
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                0
+            };
             let mut ended = Vec::new();
             for subscription in session.active.values_mut() {
-                if !due.contains(&subscription.request.id) {
-                    continue;
-                }
-                let Some(timestamp) = subscription.timestamp(sample.acquired_at, sampled_at) else {
+                let Some(sampling) = sampling.0.get_mut(&subscription.request.id) else {
                     continue;
                 };
-                // Skip superseded acquisitions under congestion; never retain a tracking backlog.
-                let packet = match catalog.publication(&subscription.request, &sample, timestamp) {
-                    Ok(packet) => packet,
-                    Err(reason) => {
-                        ended.push((subscription.request.id, reason));
-                        continue;
-                    }
-                };
-                if !subscription.should_publish(&packet) {
-                    continue;
-                }
                 let reliable = subscription.request.delivery == 2;
+                let buffered = if reliable {
+                    &mut reliable_buffered
+                } else {
+                    &mut tracking_buffered
+                };
+                let ready = if reliable {
+                    buffered.saturating_add(sampling.packet_size) <= 1_048_576
+                } else {
+                    tracking_fits(*buffered, sampling.packet_size)
+                };
+                sampling.samples.set_ready(ready);
+                if !ready {
+                    continue;
+                }
+                let sender_at = self.hub.now() as u64;
+                let Some(delivery) = sampling.samples.delivery_after(sampling.sent) else {
+                    continue;
+                };
+                let sample = &delivery.sample;
+                // Recenter keeps the selected space; wait for a capture in its new origin.
+                if sample.reference_version != *self.hub.reference_version.lock().unwrap() {
+                    continue;
+                }
+                let Some(timestamp) = subscription.timestamp(sample.acquired_at, self.hub.now())
+                else {
+                    continue;
+                };
+                catalog.refresh_skeleton(&self.hub, sample);
+                if let Err(reason) = catalog.publication_into(
+                    &subscription.request,
+                    sample,
+                    timestamp,
+                    &mut sampling.values,
+                    &mut sampling.packet,
+                ) {
+                    ended.push((subscription.request.id, reason));
+                    continue;
+                }
+                if !subscription.should_publish(&sampling.packet) {
+                    continue;
+                }
                 let channel = if reliable {
                     control.as_ref().unwrap()
                 } else {
                     dc
                 };
-                let framed = protocol::encode(&Message::Publication(packet.clone()));
-                if !reliable && !tracking_fits(channel.buffered_amount().await, framed.len()) {
+                let mut framed = bytes::BytesMut::with_capacity(sampling.packet_size);
+                framed.extend_from_slice(&[9]);
+                framed.extend_from_slice(&sampling.packet);
+                let encoded_at = self.hub.now() as u64;
+                // Recheck expiry/replacement immediately before handing off to WebRTC.
+                if !sampling.samples.is_current(sample.number) {
+                    sampling.samples.discarded(&delivery, self.hub.now() as u64);
                     continue;
                 }
-                self.send(channel, framed, reliable).await?;
-                subscription.published(&packet);
+                timeout(Duration::from_secs(2), channel.send(framed))
+                    .await
+                    .map_err(|_| "Data channel send timed out")?
+                    .map_err(|e| e.to_string())?;
+                let submitted_at = self.hub.now() as u64;
+                sampling
+                    .samples
+                    .submitted(&delivery, sender_at, encoded_at, submitted_at);
+                *buffered = buffered.saturating_add(sampling.packet_size);
+                subscription.published(&sampling.packet);
+                sampling.sent = Some(sample.number);
             }
             for (id, reason) in ended {
+                sampling.0.remove(&id);
                 for reply in session.end(id, &reason) {
                     self.send(control.as_ref().unwrap(), protocol::encode(&reply), true)
                         .await?;
@@ -363,10 +478,12 @@ async fn offer(
         .and_then(|m| m.attribute("max-message-size").flatten())
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(65_536);
+    let send_limit = SctpMaxMessageSize::Bounded(protocol::MAX_SERVER_MESSAGE as u32);
+    // rtc 0.21 caps messages at 256 KiB, even when a higher bound is configured.
     let message_limit = if remote_limit == 0 {
-        protocol::MAX_SERVER_MESSAGE
+        send_limit.as_usize()
     } else {
-        (remote_limit as usize).min(protocol::MAX_SERVER_MESSAGE)
+        (remote_limit as usize).min(send_limit.as_usize())
     };
     let (events, incoming) = mpsc::channel(32);
     let peer = Arc::new(Peer {
@@ -376,41 +493,22 @@ async fn offer(
         events,
         message_limit,
     });
-    let mut settings = SettingEngine::default();
-    settings.set_sctp_max_message_size_can_send(SctpMaxMessageSize::Bounded(
-        protocol::MAX_SERVER_MESSAGE as u32,
-    ));
-    // 0.17 retains remote DCEP reliability settings and avoids the 0.21 negotiated-channel race.
+    let settings = SettingEngineBuilder::new()
+        .with_sctp_max_message_size(send_limit)
+        .build();
+    let gathered = Arc::new(Notify::new());
     let pc = Arc::new(
-        APIBuilder::new()
+        PeerConnectionBuilder::new()
             .with_setting_engine(settings)
+            .with_handler(Arc::new(PeerHandler {
+                peer: peer.clone(),
+                gathered: gathered.clone(),
+            }))
+            .with_udp_addrs(vec!["0.0.0.0:0"])
             .build()
-            .new_peer_connection(RTCConfiguration::default())
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
     );
-    let channel_peer = peer.clone();
-    pc.on_data_channel(Box::new(move |dc| {
-        let peer = channel_peer.clone();
-        Box::pin(async move {
-            peer.attach(dc);
-        })
-    }));
-    let state_peer = peer.clone();
-    pc.on_peer_connection_state_change(Box::new(move |state| {
-        let peer = state_peer.clone();
-        Box::pin(async move {
-            log::info!("WebRTC state: {state}");
-            if matches!(
-                state,
-                RTCPeerConnectionState::Failed
-                    | RTCPeerConnectionState::Closed
-                    | RTCPeerConnectionState::Disconnected
-            ) {
-                peer.close.notify_one();
-            }
-        })
-    }));
 
     let live_pc = pc.clone();
     let live_peer = peer.clone();
@@ -428,9 +526,8 @@ async fn offer(
     let negotiation = async {
         pc.set_remote_description(offer).await?;
         let answer = pc.create_answer(None).await?;
-        let mut gathered = pc.gathering_complete_promise().await;
         pc.set_local_description(answer).await?;
-        gathered.recv().await;
+        gathered.notified().await;
         pc.local_description()
             .await
             .ok_or(webrtc::error::Error::ErrConnectionClosed)
@@ -458,7 +555,7 @@ pub async fn serve(
         slots: Arc::new(Semaphore::new(4)),
         shutdown: shutdown.clone(),
     });
-    let router = Router::new().route("/health", get(|State(server): State<Arc<Server>>| async move { Json(serde_json::json!({"application": "XR Operator", "tracking": server.hub.available.load(Ordering::SeqCst), "source": server.hub.source, "prediction_horizon_ms": crate::tracking::PREDICTION_NS as f64 / 1e6})) }))
+    let router = Router::new().route("/health", get(|State(server): State<Arc<Server>>| async move { Json(serde_json::json!({"application": "XR Operator", "tracking": server.hub.available.load(Ordering::SeqCst), "source": server.hub.source, "prediction": "subscription_schedule"})) }))
         .route("/offer", post(offer)).layer(DefaultBodyLimit::max(65_536))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(10)))
         .with_state(server.clone());
@@ -477,9 +574,147 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn peer_sampling_lifetimes_isolate_equal_ids_and_reconcile_control_atomically() {
+        use crate::{
+            protocol::{Request, Schedule, Selection},
+            tracking::Pose,
+        };
+        let hub = Hub::new("test");
+        hub.initialized.store(true, Ordering::SeqCst);
+        let request = Request {
+            id: 7,
+            group: 0,
+            delivery: 1,
+            schedule: Schedule::Periodic {
+                interval: 1_000_000_000,
+                phase: 500_000_000,
+                consumption_delay: 30_000_000,
+            },
+            samples: vec![Selection {
+                descriptor: 0,
+                format: 10,
+                space: 2,
+            }],
+        };
+        let mut states = std::array::from_fn::<_, 2, _>(|_| {
+            let mut state = Session::new(Catalog::snapshot(&hub).capabilities);
+            state.handle(Message::Offer(vec![1]), hub.now()).unwrap();
+            state
+        });
+        let mut peers = [
+            SamplingSubscriptions::default(),
+            SamplingSubscriptions::default(),
+        ];
+        for (state, peer) in states.iter_mut().zip(&mut peers) {
+            let replies = state
+                .handle(Message::Subscribe(request.clone()), hub.now())
+                .unwrap();
+            peer.reconcile(&hub, state, &replies, None);
+        }
+        let due = hub.next_acquisition().unwrap();
+        let mut work = hub.acquisitions(due, false);
+        assert_eq!(work.len(), 1);
+        let capture = work.pop().unwrap();
+        let sample = hub.acquire(
+            Group::Poses,
+            &std::array::from_fn(|_| Pose::default()),
+            &[],
+            None,
+            due as i64,
+            capture.target_at,
+        );
+        hub.complete(capture, sample.clone());
+        assert_eq!(
+            peers[0].0[&7].samples.latest().unwrap().number,
+            sample.number
+        );
+        assert_eq!(
+            peers[1].0[&7].samples.latest().unwrap().number,
+            sample.number
+        );
+        let mut invalid = request.clone();
+        invalid.samples[0].descriptor = u32::MAX;
+        let replies = states[0]
+            .handle(Message::Subscribe(invalid), hub.now())
+            .unwrap();
+        assert!(matches!(replies[0], Message::Rejected { .. }));
+        peers[0].reconcile(&hub, &states[0], &replies, None);
+        assert_eq!(
+            peers[0].0[&7].samples.latest().unwrap().number,
+            sample.number
+        );
+        let schedule = Schedule::Periodic {
+            interval: 1_000_000_000,
+            phase: 510_000_000,
+            consumption_delay: 80_000_000,
+        };
+        let replies = states[0]
+            .handle(Message::UpdateSchedule { id: 7, schedule }, hub.now())
+            .unwrap();
+        peers[0].reconcile(&hub, &states[0], &replies, Some(7));
+        assert!(peers[0].0[&7].samples.latest().is_none());
+        assert_eq!(
+            peers[1].0[&7].samples.latest().unwrap().number,
+            sample.number
+        );
+        let updated_due = hub.next_acquisition().unwrap();
+        let old_work = hub.acquisitions(updated_due, false).pop().unwrap();
+        let replies = states[0]
+            .handle(Message::Subscribe(request), hub.now())
+            .unwrap();
+        peers[0].reconcile(&hub, &states[0], &replies, None);
+        hub.complete(old_work, sample);
+        assert!(
+            peers[0].0[&7].samples.latest().is_none(),
+            "Replacement invalidates in-flight capture"
+        );
+        let replies = states[0]
+            .handle(Message::Unsubscribe { id: 7 }, hub.now())
+            .unwrap();
+        peers[0].reconcile(&hub, &states[0], &replies, None);
+        assert!(peers[0].0.is_empty());
+        assert!(
+            hub.next_acquisition().is_some(),
+            "The other peer remains subscribed"
+        );
+        drop(peers);
+        assert_eq!(
+            hub.next_acquisition(),
+            None,
+            "Dropping connection state releases all sampler demand"
+        );
+    }
+
+    struct GatherHandler(Arc<Notify>);
+
+    #[async_trait::async_trait]
+    impl PeerConnectionEventHandler for GatherHandler {
+        async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+            if state == RTCIceGatheringState::Complete {
+                self.0.notify_one();
+            }
+        }
+    }
+
+    async fn receive(dc: &Arc<dyn DataChannel>) -> bytes::Bytes {
+        loop {
+            match dc.poll().await.expect("Data channel closed") {
+                DataChannelEvent::OnMessage(message) => {
+                    assert!(!message.is_string);
+                    return message.data.freeze();
+                }
+                DataChannelEvent::OnClose | DataChannelEvent::OnError => {
+                    panic!("Data channel failed before receiving a message");
+                }
+                _ => {}
+            }
+        }
+    }
+
     #[tokio::test]
     async fn capabilities_above_64k_arrive_as_one_webrtc_message() {
-        use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
+        use webrtc::data_channel::RTCDataChannelInit;
 
         let hub = Hub::new("test");
         hub.initialized.store(true, Ordering::SeqCst);
@@ -498,80 +733,63 @@ mod tests {
             shutdown,
             hub,
         });
-        // This test peer supplies a larger receive buffer, like the browser.
-        let mut settings = SettingEngine::default();
-        settings.detach_data_channels();
-        let client = APIBuilder::new()
+        // This test peer accepts larger messages, like the browser.
+        let settings = SettingEngineBuilder::new()
+            .with_sctp_max_message_size(SctpMaxMessageSize::Bounded(262_144))
+            .build();
+        let gathered = Arc::new(Notify::new());
+        let client = PeerConnectionBuilder::new()
             .with_setting_engine(settings)
+            .with_handler(Arc::new(GatherHandler(gathered.clone())))
+            .with_udp_addrs(vec!["0.0.0.0:0"])
             .build()
-            .new_peer_connection(RTCConfiguration::default())
             .await
             .unwrap();
-        let (opened, mut channels) = mpsc::channel(2);
+        let mut channels = Vec::new();
         for control in [true, false] {
             let dc = client
                 .create_data_channel(
                     if control { "reliable" } else { "unreliable" },
                     Some(RTCDataChannelInit {
-                        protocol: Some("xrop".into()),
-                        ordered: Some(control),
+                        protocol: "xrop".into(),
+                        ordered: control,
                         max_retransmits: if control { None } else { Some(0) },
                         ..Default::default()
                     }),
                 )
                 .await
                 .unwrap();
-            let channel = dc.clone();
-            let opened = opened.clone();
-            dc.on_open(Box::new(move || {
-                Box::pin(async move {
-                    opened
-                        .send((control, channel.detach().await.unwrap()))
-                        .await
-                        .unwrap();
-                })
-            }));
+            channels.push(dc);
         }
         let exchange = async {
-            let mut gathered = client.gathering_complete_promise().await;
             client
                 .set_local_description(client.create_offer(None).await.unwrap())
                 .await
                 .unwrap();
-            gathered.recv().await;
-            let sdp = client.local_description().await.unwrap().sdp;
-            let description =
-                RTCSessionDescription::offer(format!("{sdp}a=max-message-size:262144\r\n"))
-                    .unwrap();
+            gathered.notified().await;
+            let description = client.local_description().await.unwrap();
             let Json(answer) = offer(State(server.clone()), HeaderMap::new(), Json(description))
                 .await
                 .unwrap();
             client.set_remote_description(answer).await.unwrap();
-            let first = channels.recv().await.unwrap();
-            let second = channels.recv().await.unwrap();
-            let (reliable, unreliable) = if first.0 {
-                (first.1, second.1)
-            } else {
-                (second.1, first.1)
-            };
+            for dc in &channels {
+                assert!(matches!(dc.poll().await, Some(DataChannelEvent::OnOpen)));
+            }
+            let reliable = &channels[0];
+            let unreliable = &channels[1];
             reliable
-                .write_data_channel(&protocol::encode(&Message::Offer(vec![1])).into(), false)
+                .send(protocol::encode(&Message::Offer(vec![1])).as_slice().into())
                 .await
                 .unwrap();
-            let mut buffer = vec![0; protocol::MAX_SERVER_MESSAGE];
-            let (size, text) = reliable.read_data_channel(&mut buffer).await.unwrap();
-            assert!(!text);
-            assert_eq!(&buffer[..size], &[2, 1, 0]);
-            let (size, text) = reliable.read_data_channel(&mut buffer).await.unwrap();
-            assert!(!text);
-            assert_eq!(&buffer[..size], expected);
+            assert_eq!(receive(reliable).await.as_ref(), &[2, 1, 0]);
+            assert_eq!(receive(reliable).await.as_ref(), expected);
             unreliable
-                .write_data_channel(&bytes::Bytes::from_static(&[10, 1, 0, 0, 0]), false)
+                .send(bytes::BytesMut::from(&[10, 1, 0, 0, 0][..]))
                 .await
                 .unwrap();
-            let (size, _) = unreliable.read_data_channel(&mut buffer).await.unwrap();
-            assert_eq!(size, 21);
-            assert_eq!(&buffer[..5], &[11, 1, 0, 0, 0]);
+            let response = receive(unreliable).await;
+            assert_eq!(response.len(), 21);
+            assert_eq!(&response[..5], &[11, 1, 0, 0, 0]);
         };
         let result = timeout(Duration::from_secs(15), exchange).await;
         let _ = stop.send(true);
@@ -630,7 +848,8 @@ mod tests {
             .iter()
             .map(|d| inputs::Input::inactive(d.kind))
             .collect();
-        hub.acquire(&poses, &inputs, None, 100, None);
+        hub.acquire(Group::Poses, &poses, &inputs, None, 100, None);
+        hub.acquire(Group::Inputs, &poses, &inputs, None, 100, None);
         let active = catalog
             .capabilities
             .descriptors
@@ -639,6 +858,7 @@ mod tests {
             .unwrap() as u32;
         let status = Request {
             id: 2,
+            group: Group::Inputs as u32,
             samples: vec![Selection {
                 descriptor: active,
                 format: 1,
@@ -657,7 +877,7 @@ mod tests {
             .unwrap();
         inputs[action].value = inputs::Value::Scalar(0.5);
         inputs[action].active = true;
-        hub.acquire(&poses, &inputs, None, 101, None);
+        hub.acquire(Group::Inputs, &poses, &inputs, None, 101, None);
         let replacement = Request {
             id: 1,
             ..status.clone()
@@ -667,7 +887,7 @@ mod tests {
             Message::Rejected { .. }
         ));
         assert_eq!(session.active[&1].request, head);
-        let sample = hub.latest.lock().unwrap().clone().unwrap();
+        let sample = hub.latest(Group::Inputs).unwrap();
         assert!(
             catalog
                 .publication(&session.active[&1].request, &sample, 101)
@@ -686,7 +906,7 @@ mod tests {
         assert!(session.active.contains_key(&1));
         assert!(!session.active.contains_key(&2));
         // Missing action slots reject without losing an existing useful head selection.
-        hub.latest.lock().unwrap().as_mut().unwrap().inputs.clear();
+        hub.acquire(Group::Inputs, &poses, &[], None, 102, None);
         assert!(matches!(
             submit(
                 &peer,

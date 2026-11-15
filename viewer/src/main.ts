@@ -50,7 +50,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </section>
     <section class="panel workspace">
       <div class="viewport"><div id="poses"></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Ready to connect</h3><p id="workspace-note">Connect to inspect the device’s tracking data.</p></div></div>
-      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="20" required aria-label="Render-to-photon latency in milliseconds"> ms</label><span id="prediction-horizon">Prediction horizon: not reported</span><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div>
+      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="20" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><span id="prediction-lead">Prediction lead: unavailable</span><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
     </section>
     <section class="panel subscriptions-panel"><span id="sample-summary" class="tag">No capabilities</span><p id="publication-status" class="publication-status status-message" role="status"></p><div id="subscriptions" class="subscriptions"><p>Connect to discover selectable samples.</p></div></section>
     <section class="panel performance-panel" id="performance" aria-label="Performance profiling"></section>
@@ -88,9 +88,10 @@ const animate = (frameTime: number) => {
   profiler.animationFrame(frameTime);
   // The frame timestamp may precede packet callbacks already processed this frame.
   const now = performance.now();
+  connection?.frame(frameTime, now, renderToPhotonMs);
   const session = current.session;
   const rest = element<HTMLSelectElement>("skeleton-view").value === "rest";
-  const key = `${rest}:` + (session ? [...session.active.values()].map(s => `${s.generation}:${s.packet?.timestamp}:${stale(s, now)}`).join(";") : "");
+  const key = `${rest}:` + (session ? [...session.active.values()].map(s => `${s.generation}:${s.packet?.timestamp}:${s.packet?.predictedFor}:${stale(s, now)}`).join(";") : "");
   if (key !== spatialKey) {
     spatialKey = key;
     trackingView = spatialFrames(session, now, rest);
@@ -179,18 +180,21 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   element<MetricDisplay>("frame-metric").update(displayedFps);
   frameChart.update([{ key: "frames", value: fps, color: neutralColor }], now);
   ageChart.update([{ key: "age", value: sampleAge, color: neutralColor }], now);
-  text("prediction-horizon", state.predictionHorizonMs === undefined ? "Prediction horizon: not reported" : `Prediction horizon: ${state.predictionHorizonMs} ms`);
+  const prediction = received.find(s => s.packet?.predictedFor != null)?.packet;
+  text("prediction-lead", prediction?.predictedFor == null ? "Prediction lead: unavailable" : `Prediction lead: ${(Number(prediction.predictedFor - prediction.timestamp) / 1e6).toFixed(1)} ms`);
   const values = view.values;
   const visiblePoses = view.poses.poses.length + (view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0);
   const visibleJoints = view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0;
   setAttribute(element("empty-state"), "hidden", visiblePoses && !view.mixedSpaces ? "" : null);
   text("workspace-title", view.mixedSpaces ? "Mixed reference spaces" : live ? "No current poses" : "Ready to connect");
   text("workspace-note", view.mixedSpaces ? "Choose the same reference space for pose samples to display them together. Numerical values remain available below." : live ? "Select pose samples and start publication. Select the associated validity samples to display pose components. Inactive and stale poses are hidden." : "Connect to inspect the device’s tracking data.");
-  text("body-quality", `${visibleJoints} current body joints · ${view.mixedSpaces ? "mixed spaces; overlay hidden" : view.space ? view.space < 0 ? "skeleton rest frame" : spaceNames[view.space] : "no current frame"} · ${view.outdated.size ? "rest revision pending" : view.rest ? "advertised rest poses" : `${view.trackedJoints} reported tracked${view.confidence === undefined ? "" : ` · confidence ${(100 * view.confidence).toFixed(0)}%`}`}`);
+  const bodyQuality = `${visibleJoints} current body joints · ${view.mixedSpaces ? "mixed spaces; overlay hidden" : view.space ? view.space < 0 ? "skeleton rest frame" : spaceNames[view.space] : "no current frame"} · ${view.outdated.size ? "rest revision pending" : view.rest ? "advertised rest poses" : `${view.trackedJoints} reported tracked${view.confidence === undefined ? "" : ` · confidence ${(100 * view.confidence).toFixed(0)}%`}`}`;
+  text("body-quality", bodyQuality);
+  setAttribute(element("body-quality"), "title", bodyQuality);
   publicationGroups.forEach((component, group) => {
     const active = subscriptions.find(s => s.request.group === group);
     const pending = [...session?.pending.values() ?? []].some(r => r.group === group);
-    component.update(active, pending, values);
+    component.update(active, pending, values, active ? connection?.isAutomatic(active.request.id) : false);
   });
 }
 
@@ -211,7 +215,10 @@ function mountCapabilities(session: Session) {
 
 element("subscriptions").addEventListener("publication-request", event => {
   publicationError = undefined;
-  try { connection?.publish((event as CustomEvent<Request>).detail); }
+  try {
+    const { automaticTiming, ...request } = (event as CustomEvent<Request & { automaticTiming: boolean }>).detail;
+    connection?.publish(request, automaticTiming);
+  }
   catch (error) { publicationError = `Selection rejected: ${String(error)}`; }
 });
 element("subscriptions").addEventListener("publication-stop", event => {
@@ -237,6 +244,7 @@ element("connect").onclick = () => {
   connection = next;
   void next.connect();
 };
+document.addEventListener("visibilitychange", () => connection?.visibilityChanged(performance.now(), !document.hidden));
 window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); connection?.close(); performancePanel.dispose(); });
 
 for (const id of ["view-angle", "view-zoom"]) element(id).oninput = () => {
