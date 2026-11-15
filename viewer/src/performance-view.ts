@@ -23,18 +23,28 @@ export function mountPerformancePanel(container: HTMLElement) {
   };
   profiler.start();
   document.addEventListener("visibilitychange", visibility);
+  let visible = false;
+  const observer = new IntersectionObserver(entries => { visible = entries[0].isIntersecting; });
+  observer.observe(container);
+  let layouts: ReturnType<TimeSeriesGraph["measure"]>[] = [];
   return {
+    measureFrame() {
+      // Batch geometry reads before this frame changes any UI text or graph sizes.
+      layouts = visible && profiler.enabled && !document.hidden ? panels.map(panel => panel.graph.measure()) : [];
+    },
     renderFrame() {
       if (!profiler.enabled || document.hidden) return;
       profiler.sampleTransfer();
+      // Keep collecting every frame; only build and paint summaries when shown.
+      if (!layouts.length) return;
       const capture = profiler.snapshot();
       panels[0].table.describe("gpu", capture.gpuStatus);
-      for (const panel of panels) {
+      for (const [index, panel] of panels.entries()) {
         const series = panel.id === "timing" ? capture.metrics : capture.transfer;
         panel.table.update(series);
-        panel.graph.update(series.map(metric => ({ ...metric, points: metric.key === "gpu" })), capture.end, capture.windowMs);
+        panel.graph.update(series.map(metric => ({ ...metric, points: metric.key === "gpu" })), capture.end, capture.windowMs, layouts[index]);
       }
     },
-    dispose() { document.removeEventListener("visibilitychange", visibility); profiler.stop(); },
+    dispose() { observer.disconnect(); document.removeEventListener("visibilitychange", visibility); profiler.stop(); },
   };
 }

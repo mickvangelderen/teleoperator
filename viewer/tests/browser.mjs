@@ -7,6 +7,7 @@ import { checkFreshness } from "./freshness.mjs";
 import { checkProtocol } from "./protocol-browser.mjs";
 import { checkTrackingColors } from "./tracking-colors.mjs";
 import { checkRecording } from "./recording-browser.mjs";
+import { checkMultipleViewers } from "./multiple-viewers.mjs";
 
 const url = process.env.VIEWER_URL || "http://127.0.0.1:5173";
 const executablePath = process.env.CHROMIUM_EXECUTABLE;
@@ -30,6 +31,7 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   const health = await (await page.request.get(new URL("/api/health", url).href)).json();
   assert.equal(health.source, "synthetic", "Browser checks require a synthetic tracking server");
+  await checkMultipleViewers(browser, url);
   if (process.env.EXPECT_RECORDING === "1") await checkRecording(browser, url);
   await page.goto(url);
   await page.waitForFunction(() => document.querySelector("#poses").dataset.assets === "ready");
@@ -85,9 +87,11 @@ try {
   assert.match(await page.locator("#subscription-1").textContent(), /on change · reliable · 1 packets/, "Unchanged rest poses are sent only once");
   await page.locator("#skeleton-view").selectOption("rest");
   await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyJoints === "70" && document.querySelector("#poses").dataset.poseCount === "0");
-  assert.match(await page.locator('[data-descriptor="/body/FB/rest/revision"] .sample-value').textContent(), /^1$/);
+  await page.locator('[data-descriptor="/body/FB/rest/revision"]').scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => document.querySelector('[data-descriptor="/body/FB/rest/revision"] .sample-value').textContent === "1");
   await page.locator("#skeleton-view").selectOption("live");
   const button = page.locator('[data-descriptor="/user/hand/left/input/x/click"]');
+  await button.scrollIntoViewIfNeeded();
   await page.waitForFunction(() => /true|false/.test(document.querySelector('[data-descriptor="/user/hand/left/input/x/click"] .sample-value').textContent));
   assert.equal(await button.locator('input[type="checkbox"]').isChecked(), true);
   await page.locator('[data-descriptor="/user/head/input/pose"] select').first().selectOption("11");
@@ -107,7 +111,8 @@ try {
   await page.locator("#publish-0").click();
   await page.waitForFunction(() => document.querySelector("#poses").dataset.poseCount === "1" && document.querySelector("#poses").dataset.bodyJoints === "1" && document.querySelector("#subscription-0").textContent.includes("7 samples"));
   assert.match(await page.locator("#subscription-0").textContent(), /7 samples/);
-  assert.equal(await button.locator(".sample-value").textContent(), "Not subscribed");
+  await button.scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => document.querySelector('[data-descriptor="/user/hand/left/input/x/click"] .sample-value').textContent === "Not subscribed");
   await page.screenshot({ path: output + "individual-joint.png", fullPage: true });
   await page.locator("#stop-0").click();
   await page.waitForFunction(() => document.querySelector("#subscription-0").textContent === "No active publication" && document.querySelector("#poses").dataset.bodyJoints === "0" && document.querySelector("#poses").dataset.poseCount === "0");

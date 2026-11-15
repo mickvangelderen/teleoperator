@@ -1,4 +1,5 @@
 sample-selection-table { display: block; min-width: 0; }
 .sample-table th { position: sticky; top: 0; z-index: 1; }
-.sample-table-wrap { overflow: auto; max-height: 390px; }
+/* Keep unrelated metric/scene repaints out of the large scrollable table subtree. */
+.sample-table-wrap { overflow: auto; max-height: 390px; contain: content; }
 .sample-table tr[data-available="false"] .sample-value { color: var(--text-muted); }

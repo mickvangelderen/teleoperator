@@ -21,10 +21,17 @@ export class TimeSeriesGraph extends HTMLElement {
     this.replaceChildren(this.canvas);
   }
 
-  update(series: Series[], end: number, windowMs: number) {
+  measure() {
+    return {
+      width: this.canvas.clientWidth, height: this.canvas.clientHeight,
+      ratio: Math.min(devicePixelRatio, 2), style: getComputedStyle(this.canvas),
+    };
+  }
+
+  update(series: Series[], end: number, windowMs: number, layout = this.measure()) {
     const canvas = this.canvas, ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const width = canvas.clientWidth, height = canvas.clientHeight, ratio = Math.min(devicePixelRatio, 2);
+    const { width, height, ratio, style } = layout;
     if (!width || !height) return;
     if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
       canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
@@ -37,7 +44,6 @@ export class TimeSeriesGraph extends HTMLElement {
     const max = Math.ceil(maximum / 10) * 10;
     const x = (at: number) => left + (at - end + windowMs) / windowMs * (right - left);
     const y = (value: number) => bottom - value / max * (bottom - top);
-    const style = getComputedStyle(canvas);
     ctx.font = style.getPropertyValue("--graph-font").trim(); ctx.lineWidth = 1;
     ctx.setLineDash([]);
     for (const value of [0, max / 2, max]) {

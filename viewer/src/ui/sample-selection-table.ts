@@ -10,6 +10,26 @@ type Row = { value: HTMLElement; check: HTMLInputElement; format: HTMLSelectElem
 export class SampleSelectionTable extends HTMLElement {
   private rows = new Map<number, Row>();
   private capabilities?: Capabilities;
+  private visible = new Set<number>();
+  private observer?: IntersectionObserver;
+
+  connectedCallback() { this.observeRows(); }
+  disconnectedCallback() { this.observer?.disconnect(); this.visible.clear(); }
+
+  private observeRows() {
+    this.observer?.disconnect();
+    this.visible.clear();
+    const indices = new Map([...this.rows].map(([index, nodes]) => [nodes.row, index]));
+    this.observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const index = indices.get(entry.target as HTMLElement)!;
+        if (entry.isIntersecting) this.visible.add(index);
+        else this.visible.delete(index);
+      }
+    });
+    // The viewport and the table's scroll container both clip row visibility.
+    for (const { row } of this.rows.values()) this.observer.observe(row);
+  }
 
   configure(c: Capabilities, group: number) {
     this.capabilities = c;
@@ -36,6 +56,7 @@ export class SampleSelectionTable extends HTMLElement {
       for (const item of [check, name, kind, format, space, value]) { const cell = document.createElement("td"); cell.append(item); row.append(cell); }
       tbody.append(row); this.rows.set(index, { row, check, format, space, value });
     });
+    if (this.isConnected) this.observeRows();
   }
 
   get selection(): Selection[] {
@@ -47,20 +68,22 @@ export class SampleSelectionTable extends HTMLElement {
   }
 
   update(values: ReadonlyMap<number, CurrentValue>) {
-    for (const [index, nodes] of this.rows) {
-      const current = values.get(index), d = this.capabilities!.descriptors[index];
-      let label = !current ? "Not subscribed" : current.stale ? "Stale · awaiting current data" : valueText(current.value);
-      const delta = current?.subscription.deltas.get(current.selection);
-      if (delta !== undefined && current?.value !== null && !current?.stale) label += ` · +${delta} ${d.kind === 11 ? "revisions" : "edges"}`;
-      if (current && !current.stale && [2,5].includes(d.kind)) for (const field of referenceFields(d.kind)) {
-        const counter = d[field] == null ? undefined : values.get(d[field]!);
-        const edges = counter?.subscription.deltas.get(counter.selection);
-        if (counter && !counter.stale && counter.value !== null && edges !== undefined) label += ` · ${kindNames[this.capabilities!.descriptors[d[field]!].kind]} +${edges}`;
-      }
-      setText(nodes.value, label);
-      setAttribute(nodes.row, "data-available", String(!!current && !current.stale && current.value !== null));
-    }
+    // Visibility callbacks only mark rows; text still changes on the caller's animation frame.
+    for (const index of this.visible) this.updateRow(index, this.rows.get(index)!, values);
+  }
 
+  private updateRow(index: number, nodes: Row, values: ReadonlyMap<number, CurrentValue>) {
+    const current = values.get(index), d = this.capabilities!.descriptors[index];
+    let label = !current ? "Not subscribed" : current.stale ? "Stale · awaiting current data" : valueText(current.value);
+    const delta = current?.subscription.deltas.get(current.selection);
+    if (delta !== undefined && current?.value !== null && !current?.stale) label += ` · +${delta} ${d.kind === 11 ? "revisions" : "edges"}`;
+    if (current && !current.stale && [2,5].includes(d.kind)) for (const field of referenceFields(d.kind)) {
+      const counter = d[field] == null ? undefined : values.get(d[field]!);
+      const edges = counter?.subscription.deltas.get(counter.selection);
+      if (counter && !counter.stale && counter.value !== null && edges !== undefined) label += ` · ${kindNames[this.capabilities!.descriptors[d[field]!].kind]} +${edges}`;
+    }
+    setText(nodes.value, label);
+    setAttribute(nodes.row, "data-available", String(!!current && !current.stale && current.value !== null));
   }
 }
 customElements.define("sample-selection-table", SampleSelectionTable);

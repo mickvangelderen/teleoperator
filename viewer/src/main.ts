@@ -84,6 +84,7 @@ let renderToPhotonMs = 20;
 const animate = (frameTime: number) => {
   frame = requestAnimationFrame(animate);
   if (document.hidden) return;
+  performancePanel.measureFrame();
   profiler.animationFrame(frameTime);
   // The frame timestamp may precede packet callbacks already processed this frame.
   const now = performance.now();
