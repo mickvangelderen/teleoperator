@@ -3,6 +3,7 @@ import { preferredFormat, restGroup, periodic, MAX_CLIENT_MESSAGE } from "./prot
 import type { Request } from "./protocol";
 import { profiler } from "./performance";
 import type { Freshness } from "./freshness";
+import type { Recorder } from "./recording";
 
 export type State = {
   status: "Disconnected" | "Connecting" | "Connected" | "Error";
@@ -46,7 +47,7 @@ export class Connection {
   private stopped = false;
   private clockTimer?: ReturnType<typeof setInterval>;
   private freshnessTimer?: ReturnType<typeof setInterval>;
-  constructor(private readonly update: (state: State) => void) { this.state.session = this.session; }
+  constructor(private readonly update: (state: State) => void, private readonly recording?: Recorder) { this.state.session = this.session; }
 
   async connect() {
     if (this.stopped || this.state.status !== "Disconnected") return;
@@ -113,6 +114,7 @@ export class Connection {
           }
           const bytes = new Uint8Array(event.data);
           const arrivedAt = started ?? performance.now();
+          this.recording?.packet("received", name === "control" ? "reliable" : "unreliable", bytes, arrivedAt);
           profiler.transfer("received", bytes.length, arrivedAt);
           if (name === "control") {
             const packet = this.session.control(bytes, arrivedAt);
@@ -204,6 +206,7 @@ export class Connection {
       if (limit < 1 || bytes.length > limit) throw new Error("Message exceeds the data channel limit");
       this.control.send(bytes as Uint8Array<ArrayBuffer>);
       const now = performance.now();
+      this.recording?.packet("sent", "reliable", bytes, now);
       profiler.transfer("sent", bytes.length, now);
       return true;
     } catch (error) {
@@ -218,6 +221,7 @@ export class Connection {
     if (!bytes) return;
     try {
       this.tracking.send(bytes);
+      this.recording?.packet("sent", "unreliable", bytes, now);
       profiler.transfer("sent", bytes.length, now);
     } catch { /* Lost probes expire; channel callbacks handle connection failure. */ }
   }
@@ -265,6 +269,7 @@ export class Connection {
   close() {
     if (this.stopped) return;
     this.stopped = true;
+    void this.recording?.stop();
     this.abort.abort();
     clearTimeout(this.deadline);
     clearInterval(this.clockTimer);

@@ -11,6 +11,7 @@ import { panelHeader } from "./ui/panel";
 import { MetricDisplay } from "./ui/metric-display";
 import { PublicationGroup } from "./ui/publication-group";
 import type { Request } from "./protocol";
+import { Recorder } from "./recording";
 import { setAttribute, setText } from "./dom";
 import { TwoSecondMedian } from "./statistics";
 import { mountFreshnessIndicator } from "./freshness-view";
@@ -39,6 +40,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="connection-box"><div><span class="section-label">DEVICE ENDPOINT</span><span id="target" class="mono"></span><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span></div><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></div>
     </section>
     <div id="error" class="status-message" data-tone="error" role="alert" hidden></div>
+    <p id="recording-status" class="recording-status" role="status" hidden></p>
     <section class="metrics" aria-label="Viewer metrics">
       <viewer-metric id="freshness" label="FRESHNESS" value-id="freshness-age" unit="ms" precision="1"></viewer-metric>
       <viewer-metric id="arrival-metric" label="ARRIVAL RATE" value-id="arrival-rate" unit="Hz" precision="1"></viewer-metric>
@@ -64,6 +66,7 @@ document.querySelector(".workspace")!.prepend(panelHeader("Tracking workspace"))
 document.querySelector(".subscriptions-panel")!.prepend(panelHeader("Samples & publication", element("sample-summary")));
 text("target", __OPERATOR_TARGET__);
 let connection: Connection | null = null;
+let recording: Recorder | undefined;
 let current = initialState();
 let spatial: SpatialView | undefined;
 let spatialKey = "";
@@ -121,6 +124,13 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   }
   freshnessIndicator.update(state.freshness);
   text("graphics-status", graphicsStatus);
+  if (recording) {
+    const status = element("recording-status");
+    setAttribute(status, "hidden", null);
+    const label = recording.status === "error" ? "Recording stopped" : recording.status === "recording" ? "Recording" : recording.savedBytes < recording.bytes ? "Saving recording" : recording.status === "limit" ? "Recording stopped · 128 MiB limit" : "Recording saved";
+    setText(status, `${label} · ${(recording.savedBytes / 1024 ** 2).toFixed(1)} MiB saved${recording.error ? ` · ${recording.error}` : ""}`);
+    setAttribute(status, "title", recording.path);
+  }
   const live = state.status === "Connected", busy = state.status === "Connecting";
   text("status", state.status);
   element("status-dot").classList.toggle("live", live);
@@ -219,9 +229,10 @@ element("connect").onclick = () => {
     return;
   }
   connection?.close();
+  recording = import.meta.env.DEV ? new Recorder() : undefined;
   const next = new Connection((state) => {
     if (connection === next) current = state;
-  });
+  }, recording);
   connection = next;
   void next.connect();
 };

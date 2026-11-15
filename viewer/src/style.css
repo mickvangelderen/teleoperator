@@ -6,6 +6,7 @@
 body { margin: 0; }
 [hidden] { display: none !important; }
 .mono { font-family: var(--mono); }
+.recording-status { font-size: 11px; margin-bottom: 16px; overflow-wrap: anywhere; }
 p { line-height: 1.6; margin: 0; color: var(--text-muted); }
 .topbar { height: 76px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; padding: 0 var(--space-10); background: var(--surface); }
 .brand { display: flex; align-items: center; gap: var(--space-3); text-decoration: none; color: inherit; font-size: var(--text-control); letter-spacing: 1.6px; font-weight: 650; }

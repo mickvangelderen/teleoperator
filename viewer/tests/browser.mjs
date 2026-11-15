@@ -6,6 +6,7 @@ import { checkMetricMedians, checkFrameRefresh, checkFrameRate } from "./frame-r
 import { checkFreshness } from "./freshness.mjs";
 import { checkProtocol } from "./protocol-browser.mjs";
 import { checkTrackingColors } from "./tracking-colors.mjs";
+import { checkRecording } from "./recording-browser.mjs";
 
 const url = process.env.VIEWER_URL || "http://127.0.0.1:5173";
 const executablePath = process.env.CHROMIUM_EXECUTABLE;
@@ -29,6 +30,7 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   const health = await (await page.request.get(new URL("/api/health", url).href)).json();
   assert.equal(health.source, "synthetic", "Browser checks require a synthetic tracking server");
+  if (process.env.EXPECT_RECORDING === "1") await checkRecording(browser, url);
   await page.goto(url);
   await page.waitForFunction(() => document.querySelector("#poses").dataset.assets === "ready");
   assert.equal(await page.locator("#poses canvas").count(), 1);
