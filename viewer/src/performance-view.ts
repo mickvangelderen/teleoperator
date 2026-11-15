@@ -1,15 +1,12 @@
 import "./performance-view.css";
 import { profiler, metrics, transferMetrics } from "./performance";
-import { recording } from "./recording";
 import { panelHeader } from "./ui/panel";
 import { MetricSummaryTable } from "./ui/metric-summary-table";
 import { TimeSeriesGraph } from "./ui/time-series-graph";
 
 export function mountPerformancePanel(container: HTMLElement) {
-  const status = document.createElement("span");
-  status.id = "recording-status"; status.className = "tag"; status.setAttribute("role", "status"); status.hidden = true;
   const results = document.createElement("div"); results.id = "profile-results";
-  container.replaceChildren(panelHeader("Performance", status), results);
+  container.replaceChildren(panelHeader("Performance"), results);
   const panels = [
     { id: "timing", unit: "ms", label: "Viewer timings", definitions: metrics },
     { id: "transfer", unit: "kB/s", label: "Payload transfer · rolling 1 s", definitions: transferMetrics },
@@ -22,7 +19,6 @@ export function mountPerformancePanel(container: HTMLElement) {
     return { ...panel, graph, table };
   });
   const visibility = () => {
-    recording.add({ type: "visibility", state: document.visibilityState });
     profiler.reset();
   };
   profiler.start();

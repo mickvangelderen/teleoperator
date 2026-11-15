@@ -1,5 +1,4 @@
 pub mod body;
-pub mod diagnostics;
 #[cfg(target_os = "android")]
 mod egl;
 pub mod inputs;
@@ -37,17 +36,11 @@ fn android_main(app: AndroidApp) {
         .expect("Network runtime");
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let hub = crate::tracking::Hub::new("openxr");
-    let recordings = app
-        .internal_data_path()
-        .expect("Application data directory")
-        .join("diagnostics");
     let server_hub = hub.clone();
     let server = runtime.spawn(async move {
         match tokio::net::TcpListener::bind("0.0.0.0:8080").await {
             Ok(listener) => {
-                if let Err(error) =
-                    crate::server::serve(listener, shutdown, server_hub, recordings).await
-                {
+                if let Err(error) = crate::server::serve(listener, shutdown, server_hub).await {
                     log::error!("Server stopped: {error}");
                 }
             }

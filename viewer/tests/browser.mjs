@@ -163,11 +163,6 @@ try {
   await page.getByRole("button", { name: "Disconnect" }).click();
   await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected");
   assert.deepEqual(consoleErrors, [], "No browser console errors during normal operation");
-  console.log(`Recording status: ${await page.locator("#recording-status").getAttribute("title")}`);
-  if (process.env.EXPECT_RECORDING === "1") {
-    assert.match(await page.locator("#recording-status").getAttribute("title"), /MiB saved/);
-    assert.equal(await page.locator("#recording-status").getAttribute("class"), "tag");
-  }
   await checkProtocol(page);
   await page.route("**/api/offer", (route) =>
     route.fulfill({ status: 503, body: "Device unavailable" }),

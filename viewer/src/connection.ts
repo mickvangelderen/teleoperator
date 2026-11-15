@@ -2,7 +2,6 @@ import { Session } from "./session";
 import { preferredFormat, restGroup, periodic, MAX_CLIENT_MESSAGE } from "./protocol";
 import type { Request } from "./protocol";
 import { profiler } from "./performance";
-import { recording, recordingId } from "./recording";
 import type { Freshness } from "./freshness";
 
 export type State = {
@@ -24,9 +23,9 @@ export const initialState = (): State => ({
   freshness: { status: "Inactive", atMs: 0, streams: [] },
 });
 
+let nextConnectionId = 1;
 export class Connection {
-  private readonly recordingId = recordingId();
-  private recordedState = "";
+  private readonly id = nextConnectionId++;
   readonly state = initialState();
   readonly session = new Session();
   private offered = false;
@@ -47,18 +46,11 @@ export class Connection {
   private stopped = false;
   private clockTimer?: ReturnType<typeof setInterval>;
   private freshnessTimer?: ReturnType<typeof setInterval>;
-  private recordedFreshness = "";
   constructor(private readonly update: (state: State) => void) { this.state.session = this.session; }
-
-  checkpoint() {
-    const { session: _session, ...state } = this.state;
-    return { connection: this.recordingId, ...state, session: this.session.checkpoint() };
-  }
 
   async connect() {
     if (this.stopped || this.state.status !== "Disconnected") return;
     profiler.resetConnectionMetrics();
-    recording.add({ type: "connection", connection: this.recordingId, status: "connecting" });
     void fetch("/api/health", { signal: this.abort.signal }).then(r => r.json()).then(data => {
       if (this.stopped) return;
       this.state.source = typeof data.source === "string" ? data.source : "unknown";
@@ -122,10 +114,9 @@ export class Connection {
           const bytes = new Uint8Array(event.data);
           const arrivedAt = started ?? performance.now();
           profiler.transfer("received", bytes.length, arrivedAt);
-          recording.packet(this.recordingId, "received", name === "control" ? "reliable" : "unreliable", bytes, arrivedAt);
           if (name === "control") {
             const packet = this.session.control(bytes, arrivedAt);
-            if (packet) profiler.trackingArrival(packet.id, `${this.recordingId}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
+            if (packet) profiler.trackingArrival(packet.id, `${this.id}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
             for (const [id, previous] of this.replacements) {
               if (this.session.pending.has(id)) continue;
               this.replacements.delete(id);
@@ -150,11 +141,10 @@ export class Connection {
             }
           } else {
             const packet = this.session.unreliable(bytes, arrivedAt);
-            if (packet) profiler.trackingArrival(packet.id, `${this.recordingId}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
+            if (packet) profiler.trackingArrival(packet.id, `${this.id}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
           }
           this.emit();
         } catch (error) {
-          recording.add({ type: "receive-error", connection: this.recordingId, channel: name, error: String(error) });
           if (name === "control") this.fail(error instanceof Error ? error.message : "Invalid control message");
           else { this.session.discarded++; this.emit(); }
         } finally { profiler.end("receive", started); }
@@ -183,7 +173,6 @@ export class Connection {
         else check();
       });
       if (this.stopped) return;
-      recording.add({ type: "signaling", connection: this.recordingId, direction: "sent", value: this.pc.localDescription?.toJSON() });
       const response = await fetch("/api/offer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -195,7 +184,6 @@ export class Connection {
           `Signaling failed (${response.status}). Check the device address and network.`,
         );
       const text = await response.text();
-      recording.add({ type: "signaling", connection: this.recordingId, direction: "received", status: response.status, value: text });
       if (text.length > 65_536)
         throw new Error("Signaling answer too large");
       const answer = JSON.parse(text) as RTCSessionDescriptionInit;
@@ -216,7 +204,6 @@ export class Connection {
       if (limit < 1 || bytes.length > limit) throw new Error("Message exceeds the data channel limit");
       this.control.send(bytes as Uint8Array<ArrayBuffer>);
       const now = performance.now();
-      recording.packet(this.recordingId, "sent", "reliable", bytes, now);
       profiler.transfer("sent", bytes.length, now);
       return true;
     } catch (error) {
@@ -231,7 +218,6 @@ export class Connection {
     if (!bytes) return;
     try {
       this.tracking.send(bytes);
-      recording.packet(this.recordingId, "sent", "unreliable", bytes, now);
       profiler.transfer("sent", bytes.length, now);
     } catch { /* Lost probes expire; channel callbacks handle connection failure. */ }
   }
@@ -265,24 +251,12 @@ export class Connection {
 
   private emit() {
     this.refreshFreshness();
-    const state = `${this.state.status}: ${this.state.detail}`;
-    if (state !== this.recordedState) {
-      recording.add({ type: "connection-state", connection: this.recordingId, status: this.state.status, detail: this.state.detail });
-      this.recordedState = state;
-    }
     if (!this.stopped) this.update(this.state);
   }
   private refreshFreshness() {
-    const freshness = this.session.freshness(performance.now());
-    this.state.freshness = freshness;
-    const key = `${freshness.status}:${freshness.worst?.id}:${freshness.worst?.generation}`;
-    if (key !== this.recordedFreshness) {
-      recording.add({ type: "freshness-state", connection: this.recordingId, ...freshness });
-      this.recordedFreshness = key;
-    }
+    this.state.freshness = this.session.freshness(performance.now());
   }
   private fail(message: string) {
-    recording.add({ type: "connection-error", connection: this.recordingId, error: message });
     this.close();
     this.state.status = "Error";
     this.state.detail = message;
@@ -290,7 +264,6 @@ export class Connection {
   }
   close() {
     if (this.stopped) return;
-    recording.add({ type: "connection", connection: this.recordingId, status: "closed" });
     this.stopped = true;
     this.abort.abort();
     clearTimeout(this.deadline);

@@ -1,5 +1,4 @@
 // Uses the same browser timing APIs as OpenArm Teleop, with independent Viewer instrumentation.
-import { recording } from "./recording";
 import { RollingRate } from "./statistics";
 export const metrics = {
   frame: { label: "Animation frame", color: "var(--series-frame)" },
@@ -121,15 +120,13 @@ class Profiler {
   attach(gl: WebGL2RenderingContext, revision: string) {
     this.gpu?.cancel();
     this.threeRevision = revision;
-    recording.add({ type: "renderer", threeRevision: revision });
     this.gpu = new GpuTimer(gl, status => {
-      if (status !== this.gpuStatus) recording.add({ type: "gpu-status", status });
       this.gpuStatus = status;
     });
   }
   reset() {
     this.generation++;
-    if (!recording.active) this.gpu?.cancel();
+    this.gpu?.cancel();
     this.previousRender = null;
     this.previousFrame = null;
     for (const history of Object.values(this.histories)) history.clear();
@@ -145,10 +142,9 @@ class Profiler {
     }
   }
   start() { this.reset(); this.enabled = true; }
-  stop() { this.enabled = false; if (!recording.active) this.gpu?.cancel(); }
-  begin() { return (this.enabled && !document.hidden) || recording.active ? performance.now() : null; }
+  stop() { this.enabled = false; this.gpu?.cancel(); }
+  begin() { return this.enabled && !document.hidden ? performance.now() : null; }
   private sample(metric: Metric, start: number, ms: number, generation = this.generation) {
-    recording.add({ type: "timing", metric, startMs: start, durationMs: ms });
     if (this.enabled && generation === this.generation) this.histories[metric].add(start, ms);
   }
   end(metric: Metric, start: number | null) {
@@ -168,7 +164,6 @@ class Profiler {
   sampleTransfer(now = performance.now()) {
     for (const key of transferKeys) {
       const bytesPerSecond = this.rates[key].rate(now);
-      recording.add({ type: "transfer-rate", metric: key, windowMs: 1000, bytesPerSecond }, undefined, now);
       if (this.enabled) this.transferHistories[key].add(now, bytesPerSecond / 1000);
     }
   }

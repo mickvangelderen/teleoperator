@@ -4,9 +4,7 @@ import { test } from "node:test";
 import { Connection } from "../src/connection";
 import { preferredFormat, subscribe } from "../src/protocol";
 import type { Capabilities } from "../src/protocol";
-import { recording } from "../src/recording";
 import { profiler } from "../src/performance";
-import type { RecordingEvent } from "../src/recording";
 class Channel {
   onmessage?: (event: { data: ArrayBuffer }) => void;
   readyState = "open"; bufferedAmount = 0; throwing = false; failAfter = Infinity; sent: Uint8Array[] = [];
@@ -112,13 +110,11 @@ test("control messages send whole and reject the smaller negotiated limit", () =
   }finally{Object.assign(globalThis,{RTCPeerConnection:original});}
 });
 
-test("freshness observers and recordings change during silence without disconnecting", async context => {
+test("freshness observers change during silence without disconnecting", async context => {
   context.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
   let now = 1000;
   context.mock.method(performance, "now", () => now);
   context.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ type: "answer", sdp: "test" })));
-  const recorded: string[] = [];
-  context.mock.method(recording, "add", (event: RecordingEvent) => { if (event.type === "freshness-state") recorded.push(String(event.status)); });
   const original = globalThis.RTCPeerConnection;
   Object.assign(globalThis, { RTCPeerConnection: Peer });
   const updates: string[] = [], c = new Connection(state => updates.push(state.freshness.status));
@@ -135,7 +131,7 @@ test("freshness observers and recordings change during silence without disconnec
     assert.equal(c.state.freshness.status, "Fresh");
     now = 1044; context.mock.timers.tick(48);
     assert.equal(c.state.status, "Connected"); assert.equal(c.state.freshness.status, "Late");
-    assert.ok(updates.includes("Late")); assert.ok(recorded.includes("Late"));
+    assert.ok(updates.includes("Late"));
     view.setBigUint64(5, 1_034_000_000n, true);
     Peer.latest.tracking.onmessage!({ data: bytes.buffer });
     assert.equal(c.state.freshness.status, "Fresh");

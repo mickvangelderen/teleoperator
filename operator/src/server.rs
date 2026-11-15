@@ -1,4 +1,3 @@
-use crate::diagnostics::Event;
 use crate::tracking::Hub;
 use crate::{
     protocol::{self, Message, Session},
@@ -13,7 +12,7 @@ use axum::{
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
     time::Duration,
 };
@@ -36,7 +35,6 @@ use webrtc::{
 };
 
 struct Server {
-    next_peer: AtomicU64,
     slots: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
     hub: Arc<Hub>,
@@ -49,7 +47,6 @@ enum PeerEvent {
 }
 
 struct Peer {
-    id: u64,
     channels: AtomicU8,
     hub: Arc<Hub>,
     close: Notify,
@@ -104,16 +101,6 @@ impl Peer {
             let peer = self.clone();
             Box::pin(async move {
                 let received_at = peer.hub.now();
-                peer.hub.trace.record(
-                    received_at,
-                    Event::Packet {
-                        peer: peer.id,
-                        channel: if control { "reliable" } else { "unreliable" },
-                        action: "receive",
-                        data: message.data.clone(),
-                        buffered_bytes: 0,
-                    },
-                );
                 if !control {
                     if !message.is_string && message.data.len() == 5 && message.data[0] == 10 {
                         let id = u32::from_le_bytes(message.data[1..].try_into().unwrap());
@@ -157,16 +144,6 @@ impl Peer {
             ));
         }
         let data = bytes::Bytes::from(message);
-        self.hub.trace.record(
-            self.hub.now(),
-            Event::Packet {
-                peer: self.id,
-                channel: if control { "reliable" } else { "unreliable" },
-                action: "send",
-                data: data.clone(),
-                buffered_bytes: buffered,
-            },
-        );
         timeout(Duration::from_secs(2), dc.send(&data))
             .await
             .map_err(|_| "Data channel send timed out")?
@@ -393,7 +370,6 @@ async fn offer(
     };
     let (events, incoming) = mpsc::channel(32);
     let peer = Arc::new(Peer {
-        id: server.next_peer.fetch_add(1, Ordering::SeqCst),
         channels: AtomicU8::new(0),
         hub: server.hub.clone(),
         close: Notify::new(),
@@ -476,23 +452,8 @@ pub async fn serve(
     listener: TcpListener,
     shutdown: watch::Receiver<bool>,
     hub: Arc<Hub>,
-    recordings: std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut random = [0; 16];
-    getrandom::fill(&mut random).map_err(|e| format!("Diagnostic recording randomness: {e}"))?;
-    let low = u64::from_le_bytes(random[..8].try_into().unwrap());
-    let high = u64::from_le_bytes(random[8..].try_into().unwrap());
-    if low == 0 && high == 0 {
-        return Err("Invalid zero diagnostic recording ID".into());
-    }
-    if let Err(error) = hub
-        .trace
-        .start(&recordings, &format!("{high:016x}{low:016x}"), hub.source)
-    {
-        log::error!("Could not start diagnostic recording: {error}");
-    }
     let server = Arc::new(Server {
-        next_peer: AtomicU64::new(1),
         hub,
         slots: Arc::new(Semaphore::new(4)),
         shutdown: shutdown.clone(),
@@ -510,7 +471,6 @@ pub async fn serve(
         .await?;
     // Wait for peer close tasks before Android tears down the runtime.
     let _ = timeout(Duration::from_secs(3), server.slots.acquire_many(4)).await;
-    server.hub.trace.stop();
     Ok(())
 }
 
@@ -534,7 +494,6 @@ mod tests {
         assert!(expected.len() > 65_536 && expected.len() < 262_144);
         let (stop, shutdown) = watch::channel(false);
         let server = Arc::new(Server {
-            next_peer: AtomicU64::new(1),
             slots: Arc::new(Semaphore::new(4)),
             shutdown,
             hub,
@@ -631,7 +590,6 @@ mod tests {
         hub.initialized.store(true, Ordering::SeqCst);
         let (events, _) = mpsc::channel(4);
         let peer = Peer {
-            id: 1,
             channels: AtomicU8::new(0),
             hub: hub.clone(),
             close: Notify::new(),

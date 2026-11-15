@@ -37,7 +37,5 @@ Without --synthetic-tracking, no tracking data is acquired."
         let _ = tokio::signal::ctrl_c().await;
         let _ = stop.send(true);
     });
-    let recordings =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.artifacts/operator-recordings");
-    xr_operator::server::serve(listener, shutdown, hub, recordings).await
+    xr_operator::server::serve(listener, shutdown, hub).await
 }

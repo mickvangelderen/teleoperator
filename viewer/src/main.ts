@@ -11,7 +11,6 @@ import { panelHeader } from "./ui/panel";
 import { MetricDisplay } from "./ui/metric-display";
 import { PublicationGroup } from "./ui/publication-group";
 import type { Request } from "./protocol";
-import { recording } from "./recording";
 import { setAttribute, setText } from "./dom";
 import { TwoSecondMedian } from "./statistics";
 import { mountFreshnessIndicator } from "./freshness-view";
@@ -73,7 +72,6 @@ let mountedSession: Session | undefined;
 const publicationGroups: PublicationGroup[] = [];
 let publicationError: string | undefined;
 let graphicsStatus = "Loading 3D view…";
-let recordingStatus: { message: string; label: string; failed: boolean } | undefined;
 const setGraphicsStatus = (message: string) => { graphicsStatus = message; };
 const sampleAgeMedian = new TwoSecondMedian();
 const arrivalRateMedian = new TwoSecondMedian();
@@ -108,12 +106,6 @@ const latencyChart = mountSparkline(element("latency-metric"), "latency-chart", 
 const frameChart = mountSparkline(element("frame-metric"), "frame-chart", "Frames rendered per second.");
 const ageChart = mountSparkline(element("age-metric"), "age-chart", "Estimated age when displayed.\nNegative means predicted ahead.");
 let metricSession: Session | undefined;
-if (import.meta.env.DEV) {
-  recording.start({ type: "session", endpoint: __OPERATOR_TARGET__, viewerVersion: "0.1.0" }, (message, failed) => {
-    recordingStatus = { message, failed, label: failed ? "Recording incomplete" : recording.active ? "Recording · rolling history" : "Saved" };
-  }, () => ({ connections: connection ? [connection.checkpoint()] : [], renderToPhotonMs,
-    continuousRendering: element<HTMLInputElement>("continuous-render").checked }));
-}
 void import("./spatial").then(({ SpatialView }) => {
   spatial = new SpatialView(element("poses"), setGraphicsStatus);
   spatial.showJoints(element<HTMLInputElement>("show-joints").checked);
@@ -129,14 +121,6 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   }
   freshnessIndicator.update(state.freshness);
   text("graphics-status", graphicsStatus);
-  if (recordingStatus) {
-    const status = element("recording-status");
-    setAttribute(status, "hidden", null);
-    setText(status, recordingStatus.label);
-    setAttribute(status, "title", recordingStatus.message);
-    setAttribute(status, "aria-label", recordingStatus.message);
-    status.classList.toggle("recording-failed", recordingStatus.failed);
-  }
   const live = state.status === "Connected", busy = state.status === "Connecting";
   text("status", state.status);
   element("status-dot").classList.toggle("live", live);
@@ -241,7 +225,7 @@ element("connect").onclick = () => {
   connection = next;
   void next.connect();
 };
-window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); connection?.close(); performancePanel.dispose(); void recording.stop("pagehide"); });
+window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); connection?.close(); performancePanel.dispose(); });
 
 for (const id of ["view-angle", "view-zoom"]) element(id).oninput = () => {
   spatial?.setView(element<HTMLSelectElement>("view-angle").value, Number(element<HTMLInputElement>("view-zoom").value));
@@ -250,16 +234,14 @@ for (const id of ["view-angle", "view-zoom"]) element(id).oninput = () => {
 element("continuous-render").onchange = () => {
   const continuous = element<HTMLInputElement>("continuous-render").checked;
   spatial?.setContinuousRendering(continuous);
-  recording.add({ type: "render-mode", continuous });
 };
 
 element<HTMLInputElement>("render-to-photon").oninput = () => {
   const input = element<HTMLInputElement>("render-to-photon"), value = input.valueAsNumber;
   if (!input.validity.valid || !Number.isFinite(value)) return;
   renderToPhotonMs = value; sampleAgeMedian.reset();
-  recording.add({ type: "render-to-photon", milliseconds: value });
 };
 
 element("skeleton-view").onchange = () => spatial?.reframe();
 element("show-joints").onchange = () => spatial?.showJoints(element<HTMLInputElement>("show-joints").checked);
-if (import.meta.hot) import.meta.hot.dispose(() => { cancelAnimationFrame(frame); connection?.close(); spatial?.dispose(); performancePanel.dispose(); void recording.stop("hot-reload"); });
+if (import.meta.hot) import.meta.hot.dispose(() => { cancelAnimationFrame(frame); connection?.close(); spatial?.dispose(); performancePanel.dispose(); });

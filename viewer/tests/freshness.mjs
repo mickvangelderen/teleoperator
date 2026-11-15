@@ -8,7 +8,7 @@ export async function checkFreshness(page, output) {
   assert.equal(await page.locator("#freshness-chart > :not(path)").count(), 0, "The inline graph has no axes or labels");
   assert.equal(await page.locator(".metric").count(), 5);
   assert.equal(await page.locator(".metric-chart").count(), 5);
-  assert.equal(await page.locator(".metrics #status, #recording-metric").count(), 0);
+  assert.equal(await page.locator(".metrics #status").count(), 0);
   assert.equal(await page.locator(".arrival-requested-line").count(), 1, "On-change groups have no requested cadence line");
   assert.equal(await page.locator(".metric").last().getAttribute("id"), "frame-metric");
   assert.doesNotMatch(await page.locator(".metrics").innerText(), /median|rolling|one-way|Late above|Requested|\bFresh\b/);

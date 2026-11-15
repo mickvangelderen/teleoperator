@@ -66,7 +66,6 @@ pub struct Hub {
     pub reference_version: Mutex<u32>,
     pub latest: Mutex<Option<Sample>>,
     pub updates: watch::Sender<()>,
-    pub trace: crate::diagnostics::Diagnostics,
 }
 
 impl Hub {
@@ -86,7 +85,6 @@ impl Hub {
             reference_version: Mutex::new(1),
             latest: Mutex::new(None),
             updates: watch::channel(()).0,
-            trace: Default::default(),
         })
     }
     pub fn next_skeleton_version(&self) -> u64 {
@@ -145,15 +143,6 @@ impl Hub {
             body: body.cloned(),
         });
         drop(latest);
-        self.trace.record(
-            self.now(),
-            crate::diagnostics::Event::Acquisition {
-                sample: number,
-                acquired_ms: acquired_at as f64 / 1e6,
-                target_ms: target_at.map(|t| t as f64 / 1e6),
-                body_available: body.is_some(),
-            },
-        );
         self.notify();
     }
 }

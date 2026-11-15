@@ -1,6 +1,5 @@
 import { defineConfig, loadEnv } from "vite";
 import type { ProxyOptions } from "vite";
-import { recordingPlugin } from "./tools/recording-server.ts";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "XR_");
@@ -27,7 +26,6 @@ export default defineConfig(({ mode }) => {
     },
   };
   return {
-    plugins: [recordingPlugin()],
     define: { __OPERATOR_TARGET__: JSON.stringify(url.host) },
     server: { port: 5173, strictPort: true, proxy },
     preview: { port: 4173, strictPort: true, proxy },
