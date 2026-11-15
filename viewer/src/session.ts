@@ -3,12 +3,18 @@ import type { Capabilities, Packet, Request, Schedule, ServerMessage } from "./p
 import { FreshnessBaseline, summarizeFreshness } from "./freshness";
 import type { StreamFreshness } from "./freshness";
 
+type ReceivedPrediction = { packet: Packet; arrivedAt: number };
 export type Subscription = {
   request: Request; generation: number; packet?: Packet; arrivedAt?: number; acquiredAtArrival?: number;
   counters: Map<number, bigint>; deltas: Map<number, bigint>;
   arrivals: number[]; packets: number; bytes: number;
+  deliveryObservations?: { acquired: bigint; arrived: number }[];
+  predictions?: ReceivedPrediction[];
+  predictionFloor?: bigint;
+  consumed?: ReceivedPrediction;
   freshness: FreshnessBaseline;
 };
+export const selectedPacket = (s: Subscription) => s.consumed?.packet ?? s.packet;
 export class Session {
   phase: "selection" | "capabilities" | "ready" | "closed" = "selection";
   capabilities?: Capabilities;
@@ -21,6 +27,7 @@ export class Session {
   detail = "Negotiating connection…";
   discarded = 0;
   clock?: { offset: bigint; delay: bigint; at: number };
+  consumptionTime?: bigint;
   private nextClock = 0;
   private readonly clockRequests = new Map<number, bigint>();
   private clockObservations: { offset: bigint; delay: bigint; at: number }[] = [];
@@ -97,6 +104,27 @@ export class Session {
     if (!this.clock || now - this.clock.at > 30_000) return undefined;
     return Number(BigInt(Math.round(now * 1e6)) - timestamp + this.clock.offset) / 1e6 + renderToPhotonMs;
   }
+  consume(now: number, offsetMs = 0) {
+    const target = this.clock && now >= this.clock.at && now - this.clock.at <= 30_000
+      ? BigInt(Math.round((now + offsetMs) * 1e6)) + this.clock.offset : undefined;
+    this.consumptionTime = target;
+    const distance = (p: Packet) => { const d = p.predictedFor! - target!; return d < 0n ? -d : d; };
+    for (const s of this.active.values()) {
+      if (target === undefined || s.packet?.predictedFor == null || !s.predictions?.length) {
+        s.consumed = undefined;
+        continue;
+      }
+      let best = s.predictions[0];
+      for (const candidate of s.predictions) {
+        const delta = distance(candidate.packet) - distance(best.packet);
+        if (delta < 0n || (delta === 0n && candidate.packet.timestamp > best.packet.timestamp)) best = candidate;
+      }
+      s.consumed = best;
+      // Older past predictions cannot become a better match as consumption advances.
+      // Keep the best past sample and future samples; arrivals are independently bounded.
+      s.predictions = s.predictions.filter(p => p === best || p.packet.predictedFor! >= target);
+    }
+  }
   // Policies can evaluate at their own control tick; freshness does not imply sample validity.
   freshness(now: number) {
     const streams: StreamFreshness[] = [];
@@ -122,6 +150,15 @@ export class Session {
     if (!delays.length) return undefined;
     const mid = Math.floor(delays.length / 2);
     return delays.length % 2 ? delays[mid] : (delays[mid - 1] + delays[mid]) / 2;
+  }
+  sampleArrivalDelay(id: number, now: number) {
+    if (!this.clock) return undefined;
+    // Keep server timestamps so a refined clock estimate rebases the entire window.
+    const delays = (this.active.get(id)?.deliveryObservations ?? [])
+      .filter(o => o.arrived > now - 2000 && o.arrived <= now)
+      .map(o => Number(BigInt(Math.round(o.arrived * 1e6)) + this.clock!.offset - o.acquired) / 1e6)
+      .filter(delay => delay >= 0 && delay <= 1000).sort((a, b) => a - b);
+    return delays.length < 8 ? undefined : delays[Math.ceil(delays.length * 0.9) - 1];
   }
   receive(message: ServerMessage) {
     if (this.phase === "closed") throw new Error("Session is closed");
@@ -166,7 +203,27 @@ export class Session {
     let packet: Packet;
     try { packet = decodeTracking(bytes, this.capabilities, active.request); }
     catch { this.discarded++; return null; }
-    if (active.packet && packet.timestamp < active.packet.timestamp) { this.discarded++; return null; }
+    const older = active.packet !== undefined && packet.timestamp < active.packet.timestamp;
+    // Current or historical runtime samples (such as body tracking) use the newest acquisition.
+    const forecast = packet.predictedFor !== null && packet.predictedFor > packet.timestamp;
+    const revisionChanged = active.packet && active.request.samples.some((selection, i) =>
+      this.capabilities!.descriptors[selection.descriptor].kind === 11
+      && packet.values[i] !== active.packet!.values[i]);
+    if (!older && (!forecast || revisionChanged)) {
+      active.predictions = undefined; active.consumed = undefined;
+      // Reordering must not resurrect predictions from before this discontinuity.
+      active.predictionFloor = packet.timestamp;
+    }
+    // A reordered prediction can still be the best value for this consumption tick.
+    // Retain it without rewinding the latest acquisition, revisions or input counters.
+    const retained = forecast && !(older && revisionChanged)
+      && (active.predictionFloor === undefined || packet.timestamp >= active.predictionFloor);
+    if (retained) {
+      const predictions = active.predictions ??= [];
+      while (predictions.length && (predictions.length >= 256 || predictions[0].arrivedAt < arrivedAt - 2000)) predictions.shift();
+      predictions.push({ packet, arrivedAt });
+    }
+    if (older) { if (!retained) this.discarded++; return null; }
     active.deltas.clear();
     packet.values.forEach((value, i) => {
       const s = active.request.samples[i];
@@ -185,7 +242,14 @@ export class Session {
       active.counters.set(i, current);
     });
     const acquired = !active.packet || packet.timestamp > active.packet.timestamp;
-    if (acquired) active.acquiredAtArrival = arrivedAt;
+    if (acquired) {
+      active.acquiredAtArrival = arrivedAt;
+      if (active.request.schedule.kind === "periodic") {
+        const observations = active.deliveryObservations ??= [];
+        while (observations.length && (observations.length >= 256 || observations[0].arrived < arrivedAt - 2000)) observations.shift();
+        observations.push({ acquired: packet.timestamp, arrived: arrivedAt });
+      }
+    }
     active.packet = packet; active.arrivedAt = arrivedAt; active.packets++; active.bytes += bytes.length;
     if (acquired && active.request.schedule.kind !== "onChange") active.freshness.observe(this.sampleAge(packet.timestamp, arrivedAt), arrivedAt, 1000 / publicationRate(active.request), Number(this.clock?.delay ?? 0n) / 2e6);
     active.arrivals.push(arrivedAt);

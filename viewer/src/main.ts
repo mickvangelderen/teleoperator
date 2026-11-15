@@ -2,6 +2,7 @@ import { Connection, initialState } from "./connection";
 import { spatialFrames, stale } from "./tracking-view";
 import { spaceNames, publicationRate } from "./protocol";
 import type { Session } from "./session";
+import { selectedPacket } from "./session";
 import type { State } from "./connection";
 import "./style.css";
 import type { SpatialView } from "./spatial";
@@ -91,7 +92,9 @@ const animate = (frameTime: number) => {
   connection?.frame(frameTime, now, renderToPhotonMs);
   const session = current.session;
   const rest = element<HTMLSelectElement>("skeleton-view").value === "rest";
-  const key = `${rest}:` + (session ? [...session.active.values()].map(s => `${s.generation}:${s.packet?.timestamp}:${s.packet?.predictedFor}:${stale(s, now)}`).join(";") : "");
+  const subscriptions = [...(session?.active.values() ?? [])];
+  const overlappingGroups = new Set(subscriptions.map(s => s.request.group)).size < subscriptions.length;
+  const key = `${rest}:${overlappingGroups ? session?.consumptionTime : ""}:` + subscriptions.map(s => { const p = selectedPacket(s); return `${s.generation}:${p?.timestamp}:${p?.predictedFor}:${stale(s, now)}`; }).join(";");
   if (key !== spatialKey) {
     spatialKey = key;
     trackingView = spatialFrames(session, now, rest);
@@ -167,7 +170,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     { key: `${s.key}:actual`, value: s.actual, color: groupColor(s.group), className: "arrival-actual-line" },
   ]), now);
   const sampleTime = received.filter(s => s.request.schedule.kind !== "onChange" && s.request.samples.some(sample => session!.capabilities!.descriptors[sample.descriptor].kind === 10))
-    .reduce<bigint | undefined>((latest, s) => latest === undefined || (s.packet!.predictedFor ?? s.packet!.timestamp) > latest ? (s.packet!.predictedFor ?? s.packet!.timestamp) : latest, undefined);
+    .reduce<bigint | undefined>((latest, s) => { const p = selectedPacket(s); const time = p && (p.predictedFor ?? p.timestamp); return time !== undefined && (latest === undefined || time > latest) ? time : latest; }, undefined);
   const sampleAge = sampleTime === undefined ? undefined : session?.sampleAge(sampleTime, now, renderToPhotonMs);
   const age = sampleAgeMedian.update(sampleAge, now);
   element<MetricDisplay>("age-metric").update(age);

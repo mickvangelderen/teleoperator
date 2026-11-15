@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { decodeServer, MAX_SERVER_MESSAGE, restGroup, compatible, counterDelta, decodeTracking, updateSchedule, validateSchedule, offer, subscribe, unsubscribe, validateCapabilities, validateRequest } from "../src/protocol";
 import type { Capabilities, Request } from "../src/protocol";
-import { Session } from "../src/session";
-import { spatialFrames, valueText } from "../src/tracking-view";
+import { Session, selectedPacket } from "../src/session";
+import { currentValues, spatialFrames, valueText } from "../src/tracking-view";
 const spec = JSON.parse(readFileSync(new URL("../../protocol/testdata/specification-v1.json", import.meta.url), "utf8"));
 const wire = (hex: string) => new Uint8Array(Buffer.from(hex, "hex"));
 const specCaps = (value: any): Capabilities => ({ groups: value.sample_groups.map((g: any) => g.max_sample_rate_hz), skeletons: value.skeletons, descriptors: value.sample_descriptors.map((d: any) => ({ ...d, formats: d.supported_formats, spaces: d.supported_spaces ?? [] })) });
@@ -329,4 +329,47 @@ test("clock offsets follow drift and stop reusing old low-delay observations", (
   assert.equal(s.clock!.offset, 1_001_000_000n, "A fresh lower-delay observation still filters queue noise");
   probe(4000, 2, 1_003_000_000n);
   assert.equal(s.clock!.offset, 1_003_000_000n, "Older minimum delay must not hold the phase on a stale offset");
+});
+
+test("consumption selects coherent predictions by time, including reordered arrivals, and clears them on tracking loss", () => {
+  const s = new Session();
+  const caps: Capabilities = { groups: [200], skeletons: [], descriptors: [
+    {id: 'pose', name: '', description: '', kind: 10, group: 0, formats: [10], spaces: [2], position_valid_sample: 1},
+    {id: 'valid', name: '', description: '', kind: 12, group: 0, formats: [1], spaces: []},
+  ] };
+  s.receive({tag: 2, version: 1}); s.receive({tag: 3, capabilities: caps});
+  s.request({id: 7, group: 0, delivery: 1, schedule: periodic(200), samples: [{descriptor: 0, format: 10, space: 2}, {descriptor: 1, format: 1, space: 0}]});
+  s.receive({tag: 5, id: 7});
+  const origin = 9_007_199_254_740_993n;
+  s.clock = {offset: origin, delay: 2_000_000n, at: 0};
+  const packet = (acquired: number, represented: number | null, valid = true) => {
+    const b = new Uint8Array(49), v = new DataView(b.buffer);
+    v.setUint32(0, 7, true); v.setBigUint64(4, origin + BigInt(acquired) * 1_000_000n, true);
+    v.setBigUint64(12, represented === null ? NON_MAX : origin + BigInt(represented) * 1_000_000n, true);
+    b[20] = Number(valid); v.setFloat32(21, acquired, true); v.setFloat32(45, 1, true);
+    return b;
+  };
+  const sub = s.active.get(7)!;
+  s.tracking(packet(1, 10), 4);
+  s.tracking(packet(3, 20, false), 5);
+  s.tracking(packet(2, 15), 6);
+  for (const target of [10, 15, 20]) {
+    s.consume(target);
+    assert.equal(selectedPacket(sub)!.predictedFor, origin + BigInt(target) * 1_000_000n);
+    const values = currentValues(s, target);
+    assert.equal(values.get(0)!.packet, values.get(1)!.packet, 'Pose and validity come from the same publication');
+  }
+  assert.equal(sub.packet!.timestamp, origin + 3_000_000n, 'Reordering does not rewind the acquisition baseline');
+  s.tracking(packet(4, 30), 21);
+  s.consume(22, 8);
+  assert.equal(selectedPacket(sub)!.predictedFor, origin + 30_000_000n, 'Explicit consumption offset is honored');
+  s.tracking(packet(5, null, false), 23);
+  s.consume(24);
+  assert.equal(selectedPacket(sub), sub.packet, 'Unavailable current data supersedes buffered valid predictions');
+  assert.equal(currentValues(s, 24).get(1)!.value, false);
+  s.tracking(packet(4, 40), 25);
+  s.tracking(packet(6, 50), 26);
+  s.tracking(packet(4, 40), 27);
+  s.consume(40);
+  assert.equal(selectedPacket(sub), sub.packet, 'Delayed predictions from before tracking loss cannot re-enter after tracking resumes');
 });

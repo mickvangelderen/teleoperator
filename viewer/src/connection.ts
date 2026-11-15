@@ -139,7 +139,7 @@ export class Connection {
               if (!this.subscribed) {
                 this.subscribed = true;
                 this.probeClock();
-                this.clockTimer = setInterval(() => this.probeClock(), 1000);
+                this.clockTimer = setInterval(() => this.probeClock(), 250);
                 this.freshnessTimer = setInterval(() => this.emit(), 16);
                 const c = this.session.capabilities!;
                 c.groups.forEach((max, group) => {
@@ -243,6 +243,7 @@ export class Connection {
   frame(frameTime: number, now: number, renderToPhotonMs: number) {
     if (this.stopped || !this.visible) return;
     this.renderToPhotonMs = renderToPhotonMs;
+    this.session.consume(now, renderToPhotonMs);
     this.timing.frame(frameTime, now);
     if (this.session.phase !== "ready") return;
     for (const sub of this.session.active.values()) {
@@ -250,10 +251,11 @@ export class Connection {
       if (!this.automatic.has(id) || schedule.kind !== "periodic" || this.session.stopping.has(id)
         || [...this.session.pending.values()].some(p => p.group === group)
         || now - (this.scheduleUpdates.get(id) ?? -Infinity) < SCHEDULE_UPDATE_INTERVAL_MS) continue;
-      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clock, this.session.networkLatency(now), this.session.capabilities!.groups[group]);
-      if (!next || !scheduleNeedsUpdate(schedule, next)) continue;
-      if (!this.send(this.session.changeSchedule(id, next))) return;
+      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clock, this.session.networkLatency(now), this.session.capabilities!.groups[group], this.session.sampleArrivalDelay(id, now));
+      if (!next) continue;
       this.scheduleUpdates.set(id, now);
+      if (!scheduleNeedsUpdate(schedule, next)) continue;
+      if (!this.send(this.session.changeSchedule(id, next))) return;
     }
   }
 

@@ -1,8 +1,9 @@
 import { Quaternion, Vector3 } from "three";
 import type { Pose, PoseFrame, JointHierarchy } from "./body-model";
 import type { Session, Subscription } from "./session";
+import { selectedPacket } from "./session";
 import { width, publicationRate } from "./protocol";
-import type { Value } from "./protocol";
+import type { Packet, Value } from "./protocol";
 
 export const poseSources = new Map([
   ["/user/head/input/pose", "head"],
@@ -10,13 +11,22 @@ export const poseSources = new Map([
   ["/user/hand/right/input/aim/pose", "right/aim"], ["/user/hand/right/input/grip/pose", "right/grip"],
 ]);
 export const stale = (s: Subscription, now: number) => s.arrivedAt === undefined || (s.request.schedule.kind !== "onChange" && now - (s.acquiredAtArrival ?? s.arrivedAt) > Math.max(500, 3000 / publicationRate(s.request)));
-export type CurrentValue = { value: Value | null; stale: boolean; subscription: Subscription; selection: number };
+export type CurrentValue = { value: Value | null; stale: boolean; subscription: Subscription; selection: number; packet?: Packet };
 export function currentValues(session: Session | undefined, now: number) {
   const values = new Map<number, CurrentValue>();
+  const distance = (packet: Packet | undefined) => {
+    if (session?.consumptionTime === undefined || packet?.predictedFor == null || packet.predictedFor <= packet.timestamp) return undefined;
+    const delta = packet.predictedFor - session.consumptionTime;
+    return delta < 0n ? -delta : delta;
+  };
   for (const s of session?.active.values() ?? []) {
+    const packet = selectedPacket(s);
     s.request.samples.forEach((sample, i) => {
       const old = values.get(sample.descriptor);
-      if (!old || (s.packet?.timestamp ?? -1n) > (old.subscription.packet?.timestamp ?? -1n)) values.set(sample.descriptor, { value: s.packet?.values[i] ?? null, stale: stale(s, now), subscription: s, selection: i });
+      const error = distance(packet), previousError = distance(old?.packet);
+      const closer = error !== undefined && previousError !== undefined && error !== previousError
+        ? error < previousError : (packet?.timestamp ?? -1n) > (old?.packet?.timestamp ?? -1n);
+      if (!old || closer) values.set(sample.descriptor, { value: packet?.values[i] ?? null, stale: stale(s, now), subscription: s, selection: i, packet });
     });
   }
   return values;
@@ -30,6 +40,7 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
   const outdated = new Set<number>();
   if (c) {
     for (const s of session?.active.values() ?? []) {
+      const packet = selectedPacket(s);
       const group = s.request.group, known = session?.revisions.get(group);
       if (!known || stale(s, now)) continue;
       // The self-revision proves which snapshot this publication contains. When it
@@ -38,11 +49,11 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
         const revision = c.descriptors[selection.descriptor];
         return revision.kind === 11 && revision.revision_of === group;
       });
-      const value = s.packet?.values[revisionIndex];
+      const value = packet?.values[revisionIndex];
       if (value != null) {
         const bits = 8 * width(s.request.samples[revisionIndex].format);
         if (BigInt.asUintN(Math.min(known.bits, bits), known.value) !== BigInt.asUintN(Math.min(known.bits, bits), BigInt(value as number | bigint))) outdated.add(group);
-      } else if (s.request.schedule.kind !== "onChange" && s.packet && known.changedAt !== undefined && s.packet.timestamp < known.changedAt) outdated.add(group);
+      } else if (s.request.schedule.kind !== "onChange" && packet && known.changedAt !== undefined && packet.timestamp < known.changedAt) outdated.add(group);
     }
   }
   const located = (index: number): LocatedPose | undefined => {
@@ -112,7 +123,7 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
     const descriptor = c!.descriptors[index];
     // Operator binding convention; servers without a companion report ordinary confidence.
     const validity = c!.descriptors.findIndex(d => d.id === `${descriptor.id}/valid` && d.kind === 1 && d.formats.includes(1));
-    if (validity >= 0 && (c!.descriptors[validity].group !== descriptor.group || read(validity) !== true || current.get(validity)?.subscription.packet?.timestamp !== current.get(index)?.subscription.packet?.timestamp)) return [];
+    if (validity >= 0 && (c!.descriptors[validity].group !== descriptor.group || read(validity) !== true || current.get(validity)?.packet?.timestamp !== current.get(index)?.packet?.timestamp)) return [];
     const value = read(index);
     return typeof value === "number" ? [value] : [];
   });
