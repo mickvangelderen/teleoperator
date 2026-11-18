@@ -1,3 +1,4 @@
+import { checkVisualizationChoices } from "./visualizations.mjs";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -121,5 +122,6 @@ try {
     await page.screenshot({ path: `${output}${width}.png`, fullPage: true });
   }
   assert.deepEqual(errors, []);
+  await checkVisualizationChoices(page);
   console.log("PASS: shared controls, component isolation, stable drafts/focus, tooltip access, and HTML/SVG/Canvas theme consistency");
 } finally { await browser.close(); }

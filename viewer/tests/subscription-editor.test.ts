@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Session } from "../src/session";
 import { timing, type Capabilities, type Request, type Value } from "../src/protocol";
-import { SubscriptionEditorModel, bindingObservations, companionDescriptors, dirtySubscription, type SubscriptionPort } from "../src/subscription-editor";
+import { SubscriptionEditorModel, bindingGroups, bindingObservations, companionDescriptors, dirtySubscription, type SubscriptionPort } from "../src/subscription-editor";
 import type { PublishResult } from "../src/connection";
 
 const capabilities: Capabilities = { groups: [90, 60], skeletons: [], descriptors: [
@@ -149,6 +149,22 @@ test("companion selection includes typed quality and operator activity, without 
   assert.deepEqual(companionDescriptors(capabilities, 3), [4]);
   const crossGroup = structuredClone(capabilities); crossGroup.descriptors[1].group = 1;
   assert.deepEqual(companionDescriptors(crossGroup, 0), [2]);
+});
+
+test("display groups follow selected relationships within each bundle and retain wire positions", () => {
+  const c = structuredClone(capabilities);
+  c.descriptors.push({ id: "extra", name: "Other", kind: 1, group: 0, formats: [1], spaces: [], description: "" });
+  const groups = (...descriptors: number[]) => bindingGroups(c, descriptors.map(descriptor =>
+    ({ descriptor, space: c.descriptors[descriptor].spaces[0] ?? 0, format: c.descriptors[descriptor].formats[0] })));
+  assert.deepEqual(groups(1, 5, 0, 2, 1), [{ primary: 1, companions: [] }, { primary: 2, companions: [0, 3, 4] }]);
+  assert.deepEqual(groups(3, 4), [{ primary: 0, companions: [1] }]);
+  assert.deepEqual(groups(1, 4), [{ primary: 0, companions: [] }, { primary: 1, companions: [] }]);
+  // Duplicate owners and distinct owners sharing a reference both leave the field independently editable.
+  assert.deepEqual(groups(0, 1, 0), [0, 1, 2].map(primary => ({ primary, companions: [] })));
+  c.descriptors.push({ ...c.descriptors[0], id: "second-pose", orientation_valid_sample: null });
+  assert.deepEqual(groups(6, 0, 1, 2), [{ primary: 0, companions: [] }, { primary: 1, companions: [3] }, { primary: 2, companions: [] }]);
+  c.descriptors.push({ ...c.descriptors[4], group: 0, id: "pose/position_valid/active" });
+  assert.deepEqual(groups(7, 0, 1), [{ primary: 1, companions: [0, 2] }]);
 });
 
 test("surviving draft identities retain exact applied observations through row and bundle edits", () => {

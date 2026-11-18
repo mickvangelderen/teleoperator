@@ -157,7 +157,7 @@ export class SubscriptionEditor extends HTMLElement {
       '<div class="bundle-actions">' + button("catalogue", "+ Add samples", attrs, pending) + button("clear-bundle", "Clear", attrs, pending || !bundle.bindings.length) +
       (index ? '<span class="bundle-order">' + button("bundle-up", "↑", attrs + ' aria-label="Move Bundle ' + index + ' up"', pending || index === 1) + button("bundle-down", "↓", attrs + ' aria-label="Move Bundle ' + index + ' down"', pending || index === entry.draft.bundles.length - 1) + button("remove-bundle", "Remove bundle", attrs, pending) + '</span>' : "") + '</div>' +
       (this.catalogue === bundle.key ? '<div class="sample-catalogue" aria-label="Sample catalogue"></div>' : "") +
-      (bundle.bindings.length ? '<div class="binding-scroll"><table class="binding-table" aria-label="Bundle ' + index + ' sample bindings"><thead><tr><th>Sample</th><th>Current value</th><th>Format</th><th>Space</th><th>Order</th></tr></thead><tbody>' +
+      (bundle.bindings.length ? '<div class="binding-scroll"><table class="binding-table" aria-label="Bundle ' + index + ' sample bindings"><thead><tr><th>Sample</th><th>Applied value</th><th>Format</th><th>Space</th><th>Order</th></tr></thead><tbody>' +
       bundle.bindings.map((row, position) => {
         const d = c.descriptors[row.descriptor], name = descriptorLabel(c, row.descriptor), rowAttrs = attrs + ' data-row="' + row.key + '"';
         return '<tr data-binding-key="' + row.key + '" data-descriptor="' + escape(d.id) + '"><td class="binding-name"><span title="' + escape(d.id + "\n" + d.description) + '">' + escape(name) + '</span></td><td class="binding-current"><span class="sample-value numeric">—</span><span class="binding-state"></span></td>' +

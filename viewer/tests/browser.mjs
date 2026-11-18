@@ -7,6 +7,7 @@ import { checkFreshness } from "./freshness.mjs";
 import { checkProtocol } from "./protocol-browser.mjs";
 import { checkTrackingColors } from "./tracking-colors.mjs";
 import { checkRecording } from "./recording-browser.mjs";
+import { checkXRVisualization } from "./visualizations.mjs";
 import { checkMultipleViewers } from "./multiple-viewers.mjs";
 import { checkAutomaticPublicationTiming } from "./publication-timing.mjs";
 import { checkEditor, selectGroup, selectedEntry, applySelected, addSample } from "./editor-browser.mjs";
@@ -88,6 +89,7 @@ try {
   assert.match(await page.locator("#requested-prediction-offset").textContent(), /^Requested: [\d.]+ ms$/);
   assert.match(await page.locator("#measured-prediction-offset").textContent(), /^Device target − acquisition: (?:-?[\d.]+ ms|unavailable)$/);
   await checkMetricMedians(page);
+  await checkXRVisualization(page);
   await checkEditor(page, output);
   // Individual selection still controls rendered geometry, with matching companions.
   for (const [group, id] of [[0, "/user/head/input/pose"], [1, "/user/hand/left/input/trigger/value"], [2, "/body/FB/7"]]) {

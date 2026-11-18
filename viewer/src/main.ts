@@ -14,7 +14,8 @@ import { MetricDisplay } from "./ui/metric-display";
 import { SubscriptionEditor } from "./ui/subscription-editor";
 import { Recorder } from "./recording";
 import { setAttribute, setText } from "./dom";
-import { TwoSecondMedian } from "./statistics";
+import { Visualization } from "./visualization";
+import { RollingRate, TwoSecondMedian } from "./statistics";
 import { GroupMetrics } from "./group-metrics";
 import { mountFreshnessIndicator } from "./freshness-view";
 import { groupColor, mountGroupLegend, mountSparkline, neutralColor } from "./sparkline";
@@ -45,8 +46,9 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <viewer-metric id="frame-metric" label="FRAME RATE" value-id="frame-rate" unit="fps" precision="0"></viewer-metric>
     </section>
     <section class="panel workspace">
+      <p class="visualization-note status-message" role="status" hidden></p><div id="controller-view"></div><div id="sample-inspector"></div>
       <div class="viewport"><div id="poses"></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Ready to connect</h3><p id="workspace-note">Connect to inspect the device’s tracking data.</p></div></div>
-      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Meta upper-body skin, when matching live and rest poses are available"><input id="show-body-mesh" type="checkbox" checked> Body mesh</label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="0" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><div class="prediction-timing" aria-label="Prediction timing"><span id="prediction-offset-label">Prediction timing</span><span id="requested-prediction-offset" title="Requested offset from the publication slot to the desired device target. This does not establish actual prediction.">Requested: unavailable</span><span id="measured-prediction-offset" title="Actual device target minus acquisition time (predicted_for − acquired_at), when the source reports a target. Publication time is not supplied, so this is not measured publication-to-consumption delay.">Device target − acquisition: unavailable</span></div><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
+      <div class="view-controls control-row"><div class="spatial-controls"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Meta upper-body skin, when matching live and rest poses are available"><input id="show-body-mesh" type="checkbox" checked> Body mesh</label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label></div><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="0" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><div class="prediction-timing" aria-label="Prediction timing"><span id="prediction-offset-label">Prediction timing</span><span id="requested-prediction-offset" title="Requested offset from the publication slot to the desired device target. This does not establish actual prediction.">Requested: unavailable</span><span id="measured-prediction-offset" title="Actual device target minus acquisition time (predicted_for − acquired_at), when the source reports a target. Publication time is not supplied, so this is not measured publication-to-consumption delay.">Device target − acquisition: unavailable</span></div><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
     </section>
     <section class="panel subscriptions-panel"><span id="sample-summary" class="tag">No capabilities</span><div id="subscriptions"><p class="subscriptions-empty">Connect to discover selectable samples.</p></div></section>
     <section class="panel performance-panel" id="performance" aria-label="Performance profiling"></section>
@@ -57,7 +59,9 @@ const element = <T extends HTMLElement = HTMLElement>(id: string) =>
 const text = (id: string, value: string) => {
   setText(element(id), value);
 };
-document.querySelector(".workspace")!.prepend(panelHeader("Tracking workspace"));
+const workspace = document.querySelector<HTMLElement>(".workspace")!;
+const visualization = new Visualization(workspace);
+workspace.prepend(panelHeader("Tracking workspace", visualization.label));
 document.querySelector(".subscriptions-panel")!.prepend(panelHeader("Subscriptions", element("sample-summary")));
 const target = element<HTMLInputElement>("target");
 let connection: Connection | null = null;
@@ -73,6 +77,7 @@ const setGraphicsStatus = (message: string) => { graphicsStatus = message; };
 const groupMetrics = new GroupMetrics();
 const latencyMedian = new TwoSecondMedian();
 const frameRateMedian = new TwoSecondMedian();
+const nonSpatialFrames = new RollingRate();
 let renderToPhotonMs = 0;
 const animate = (frameTime: number) => {
   frame = requestAnimationFrame(animate);
@@ -91,10 +96,12 @@ const animate = (frameTime: number) => {
     spatialKey = key;
     trackingView = spatialFrames(session, now, rest);
   }
-  spatial?.update(trackingView.poses, trackingView.sources, !rest && current.freshness.status === "Late", trackingView.body, trackingView.hierarchy, trackingView.bodyMesh);
+  const activeView = visualization.update(session, trackingView.values, now);
+  if (activeView === "spatial") spatial?.update(trackingView.poses, trackingView.sources, !rest && current.freshness.status === "Late", trackingView.body, trackingView.hierarchy, trackingView.bodyMesh);
   const started = profiler.begin();
   try { renderState(current, trackingView, now); } finally { profiler.end("ui", started); }
-  spatial?.renderFrame();
+  if (activeView === "spatial") spatial?.renderFrame();
+  else nonSpatialFrames.add(now);
   performancePanel.renderFrame();
 };
 let frame = requestAnimationFrame(animate);
@@ -164,7 +171,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   const displayedLatency = latencyMedian.update(latency, now);
   element<MetricDisplay>("latency-metric").update(displayedLatency);
   latencyChart.update([{ key: "probe", value: latency, color: neutralColor, peak: true }], now);
-  const fps = spatial?.frameRate(now);
+  const fps = workspace.dataset.view === "spatial" ? spatial?.frameRate(now) : nonSpatialFrames.rate(now);
   const displayedFps = frameRateMedian.update(fps, now);
   element<MetricDisplay>("frame-metric").update(displayedFps);
   frameChart.update([{ key: "frames", value: fps, color: neutralColor }], now);

@@ -1,7 +1,7 @@
 import type { Capabilities, Request, Selection, Timing, Value } from "./protocol";
 import { kindNames, preferredFormat, referenceFields, restGroup, timing } from "./protocol";
 import type { PublishResult } from "./connection";
-import { selectedBundle, type Session } from "./session";
+import { selectedBundle, type Session, type Subscription } from "./session";
 import { staleBundle, valueText } from "./tracking-view";
 
 export type BindingDraft = Selection & { key: number };
@@ -39,20 +39,59 @@ export function groupName(c: Capabilities, group: number) {
   return "Samples";
 }
 
+function descriptorIds(c: Capabilities) {
+  return new Map(c.descriptors.map((d, i) => [d.id, i]));
+}
+
+function sampleCompanions(c: Capabilities, index: number, ids: Map<string, number>) {
+  const d = c.descriptors[index], related: number[] = [];
+  for (const field of referenceFields(d.kind)) {
+    const other = d[field];
+    if (other != null && c.descriptors[other].group === d.group) related.push(other);
+  }
+  for (const suffix of ["/active", "/valid"]) {
+    const other = ids.get(d.id + suffix);
+    if (other === undefined) continue;
+    const flag = c.descriptors[other];
+    if (flag.group === d.group && flag.kind === 1 && flag.formats.includes(1)) related.push(other);
+  }
+  return related;
+}
+
+// Project one ordered wire bundle into display rows. A shared field has no unique
+// owning binding (including two poses in different spaces), so it keeps its own row.
+export function bindingGroups(c: Capabilities, bindings: readonly Selection[]) {
+  const ids = descriptorIds(c), owner = new Map<number, number | null>();
+  bindings.forEach((binding, slot) => {
+    for (const other of sampleCompanions(c, binding.descriptor, ids)) {
+      owner.set(other, owner.has(other) ? null : slot);
+    }
+  });
+  const groups = new Map<number, number[]>();
+  bindings.forEach((binding, slot) => {
+    let root = slot;
+    let parent = owner.get(binding.descriptor);
+    while (parent != null) {
+      root = parent;
+      parent = owner.get(bindings[root].descriptor);
+    }
+    if (!groups.has(root)) groups.set(root, []);
+    if (slot !== root) groups.get(root)!.push(slot);
+  });
+  return bindings.flatMap((_, primary) => groups.has(primary) ? [{ primary, companions: groups.get(primary)! }] : []);
+}
+
 // Explicit catalogue additions; the wire itself never adds companion bindings.
 export function companionDescriptors(c: Capabilities, index: number): number[] {
+  const ids = descriptorIds(c);
   const group = c.descriptors[index].group, found = new Set<number>(), queue = [index];
   const add = (i: number | null | undefined) => {
     if (i == null || i === index || found.has(i) || c.descriptors[i]?.group !== group) return;
     found.add(i); queue.push(i);
   };
   while (queue.length) {
-    const d = c.descriptors[queue.shift()!];
-    for (const field of referenceFields(d.kind)) add(d[field]);
-    for (const suffix of ["/active", "/valid"]) {
-      const i = c.descriptors.findIndex(x => x.id === d.id + suffix && x.kind === 1 && x.formats.includes(1));
-      if (i >= 0) add(i);
-    }
+    const current = queue.shift()!, d = c.descriptors[current];
+    for (const other of sampleCompanions(c, current, ids)) add(other);
     if (d.kind === 10) {
       const targets = new Set(c.skeletons.flatMap(s => s.joints.filter(j => c.descriptors[j.pose_sample] === d || c.descriptors[j.rest_pose_sample] === d).map(j => c.descriptors[j.rest_pose_sample].group)));
       c.descriptors.forEach((r, i) => { if (r.kind === 11 && r.revision_of !== undefined && targets.has(r.revision_of)) add(i); });
@@ -167,45 +206,35 @@ export class SubscriptionEditorModel {
   }
 }
 
-export type BindingObservation = { text: string; status: string; title: string; available: boolean; timestamp?: bigint };
+export type BindingObservation = { text: string; status: string; title: string; available: boolean; timestamp?: bigint; value?: Value; delta?: bigint };
 const unavailable = (status: string): BindingObservation => ({ text: "—", status, title: "", available: false });
 
-/** Exact accepted slots: descriptor-global display arbitration must never feed an editor row. */
-export function bindingObservations(entry: EditorSubscription, session: Session, now: number) {
-  const result = new Map<number, BindingObservation>(), sub = entry.activeId === undefined ? undefined : session.active.get(entry.activeId);
-  const c = session.capabilities!;
+/** Received values in their exact accepted bundle and wire slot. */
+export function subscriptionObservations(c: Capabilities, sub: Subscription, now: number) {
+  const rest = restGroup(c, sub.request.group), ids = descriptorIds(c);
   const qualifiers = new Map<number, { value: Value; timestamp: bigint; stale: boolean }[]>();
-  if (sub) sub.request.bundles.forEach((bundle, index) => {
+  sub.request.bundles.forEach((bundle, index) => {
     const received = selectedBundle(sub, index);
     if (!received) return;
-    const stale = staleBundle(sub, index, now, restGroup(c, entry.group));
+    const stale = staleBundle(sub, index, now, rest);
     bundle.forEach((selection, slot) => {
       const existing = qualifiers.get(selection.descriptor) ?? [];
       existing.push({ value: received.values[slot], timestamp: received.packet.timestamp, stale });
       qualifiers.set(selection.descriptor, existing);
     });
   });
-  let flat = 0;
-  const appliedBundles = new Map(entry.applied.bundles.map((bundle, index) => {
-    const location = { index, flat, bindings: new Map(bundle.bindings.map((row, slot) => [row.key, { row, slot }])) };
-    flat += bundle.bindings.length;
-    return [bundle.key, location] as const;
-  }));
-  entry.draft.bundles.forEach(bundle => {
-    const location = appliedBundles.get(bundle.key);
-    bundle.bindings.forEach(row => {
-      const applied = location?.bindings.get(row.key), d = c.descriptors[row.descriptor];
-      if (!location || !applied || !sameBinding(applied.row, row)) { result.set(row.key, unavailable("Not applied")); return; }
-      const { index, flat } = location, { slot } = applied;
-      if (!sub) { result.set(row.key, unavailable(entry.pendingId === undefined ? "Stopped" : "Waiting")); return; }
-      const received = selectedBundle(sub, index);
-      if (!received) { result.set(row.key, unavailable("Waiting")); return; }
-      const value = received.values[slot], packet = received.packet;
-      if (value === undefined) { result.set(row.key, unavailable("Missing")); return; }
-      const stale = staleBundle(sub, index, now, restGroup(c, entry.group));
+  let offset = 0;
+  return sub.request.bundles.map((bundle, index) => {
+    const flat = offset;
+    offset += bundle.length;
+    const received = selectedBundle(sub, index), stale = staleBundle(sub, index, now, rest);
+    return bundle.map((binding, slot): BindingObservation => {
+      if (!received) return unavailable("Waiting");
+      const d = c.descriptors[binding.descriptor], value = received.values[slot], packet = received.packet;
+      if (value === undefined) return unavailable("Missing");
       const statuses: string[] = [];
       if (stale) statuses.push("Stale");
-      else if (index > 0 || restGroup(c, entry.group)) statuses.push("Retained");
+      else if (index > 0 || rest) statuses.push("Retained");
       const quality = (descriptor: number | null | undefined) => {
         if (descriptor == null) return undefined;
         const matching = qualifiers.get(descriptor)?.filter(q => !q.stale && q.timestamp === packet.timestamp);
@@ -218,17 +247,31 @@ export function bindingObservations(entry: EditorSubscription, session: Session,
           if (valid !== true) statuses.push(valid === false ? label + " invalid" : label + " validity unknown");
         }
       }
-      const companion = c.descriptors.findIndex(x => x.group === d.group && x.kind === 1 && x.formats.includes(1) && x.id === d.id + (d.kind === 16 ? "/valid" : "/active"));
-      if (!stale && companion >= 0) {
+      const companion = ids.get(d.id + (d.kind === 16 ? "/valid" : "/active"));
+      if (!stale && companion !== undefined && c.descriptors[companion].group === d.group
+        && c.descriptors[companion].kind === 1 && c.descriptors[companion].formats.includes(1)) {
         const valid = quality(companion);
         if (valid !== true) statuses.push(valid === false ? (d.kind === 16 ? "Invalid" : "Inactive") : "Validity unknown");
       }
       const delta = sub.deltas.get(flat + slot);
       const text = valueText(value) + (delta === undefined || stale ? "" : " · +" + delta + (d.kind === 11 ? " revisions" : " edges"));
       const title = "Acquired " + packet.timestamp + " ns" + (packet.predictedFor === null ? "" : "; actual target " + packet.predictedFor + " ns") + "." + (index > 0 ? " Retained data keeps its original acquisition time; silence alone does not establish connection health." : "");
-      result.set(row.key, { text, status: statuses.join(" · "), title, available: !stale, timestamp: packet.timestamp });
+      return { text, value, status: statuses.join(" · "), title, available: !stale, timestamp: packet.timestamp, delta: stale ? undefined : delta };
     });
   });
+}
+/** Map editor feedback to accepted slots by stable draft key, including duplicates. */
+export function bindingObservations(entry: EditorSubscription, session: Session, now: number) {
+  const sub = entry.activeId === undefined ? undefined : session.active.get(entry.activeId);
+  const observed = sub && subscriptionObservations(session.capabilities!, sub, now);
+  const applied = new Map(entry.applied.bundles.map((bundle, i) => [bundle.key,
+    new Map(bundle.bindings.map((row, slot) => [row.key, { row, observation: observed?.[i][slot] }]))]));
+  const result = new Map<number, BindingObservation>();
+  for (const bundle of entry.draft.bundles) for (const row of bundle.bindings) {
+    const match = applied.get(bundle.key)?.get(row.key);
+    result.set(row.key, !match || !sameBinding(match.row, row) ? unavailable("Not applied")
+      : match.observation ?? unavailable(entry.pendingId === undefined ? "Stopped" : "Waiting"));
+  }
   return result;
 }
 export const descriptorLabel = (c: Capabilities, index: number) => c.descriptors[index].name || c.descriptors[index].id || kindNames[c.descriptors[index].kind];
