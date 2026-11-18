@@ -14,12 +14,14 @@ const TRIGGER_DEADZONE: f64 = 0.05;
 pub struct Config {
     pub linear_metres_per_second: f64,
     pub angular_degrees_per_second: f64,
+    pub invert_pitch: bool,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
-            linear_metres_per_second: 1.,
-            angular_degrees_per_second: 90.,
+            linear_metres_per_second: 0.125,
+            angular_degrees_per_second: 180.,
+            invert_pitch: true,
         }
     }
 }
@@ -125,12 +127,17 @@ impl VirtualPose {
         let left = stick(0)?;
         let right = stick(1)?;
         let angular = self.config.angular_degrees_per_second.to_radians();
+        let pitch = if self.config.invert_pitch {
+            -right[1]
+        } else {
+            right[1]
+        };
         Some(Motion {
             horizontal: left.map(|v| v * self.config.linear_metres_per_second),
             vertical: (trigger(3)? - trigger(2)?) * self.config.linear_metres_per_second,
             rotation: [
                 -right[0] * angular,
-                right[1] * angular,
+                pitch * angular,
                 (button(4)? - button(5)?) * angular,
             ],
         })
@@ -274,8 +281,9 @@ fn multiply(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 }
 pub fn append_descriptors(c: &mut Capabilities, config: Config) {
     let base = c.descriptors.len() as u32;
+    let pitch_direction = if config.invert_pitch { "down" } else { "up" };
     c.descriptors.push(Descriptor { id: POSE_ID.into(), name: "Virtual reference pose (software)".into(),
-        description: format!("Software-generated pose, not a tracked physical controller or standard OpenXR input path. Model frame only: +X right, +Y up, -Z forward; origin [0,0,0], initial identity orientation. Left stick moves horizontally in independent yaw heading; RT/LT up/down; right stick right turns right, up pitches up (clamped +/-90 degrees); LB/RB roll left/right. Start/Options toggles enable; View/Back (Xbox) or Share/Create (PlayStation) resets and pauses; Xbox Series Share is unused. Horizontal/vertical speed each {} m/s, rotation {} degrees/s. Virtual-only radial stick deadzone 0.15, trigger deadzone 0.05, rescaled. Paused state remains a valid software pose; disconnect/missing controls invalidates it. Tracked flags always false. No prediction. Same software observation timestamp as inputs.",config.linear_metres_per_second,config.angular_degrees_per_second),
+        description: format!("Software-generated pose, not a tracked physical controller or standard OpenXR input path. Model frame only: +X right, +Y up, -Z forward; origin [0,0,0], initial identity orientation. Left stick moves horizontally in independent yaw heading; RT/LT up/down; right stick right turns right, up pitches {pitch_direction} (clamped +/-90 degrees); LB/RB roll left/right. Start/Options toggles enable; View/Back (Xbox) or Share/Create (PlayStation) resets and pauses; Xbox Series Share is unused. Horizontal/vertical speed each {} m/s, rotation {} degrees/s. Virtual-only radial stick deadzone 0.15, trigger deadzone 0.05, rescaled. Paused state remains a valid software pose; disconnect/missing controls invalidates it. Tracked flags always false. No prediction. Same software observation timestamp as inputs.",config.linear_metres_per_second,config.angular_degrees_per_second),
         kind:10, formats:vec![10,11], group:0, spaces:vec![6], position_valid_sample:Some(base+1),orientation_valid_sample:Some(base+2),position_tracked_sample:Some(base+3),orientation_tracked_sample:Some(base+4),..Default::default() });
     for (suffix, kind, description) in [
         (
@@ -333,10 +341,10 @@ mod tests {
         let mut p = pose();
         let mut v = synthetic_virtual_values(0);
         for (index, value, expected) in [
-            (14, InputValue::Stick([1., 0.]), [1., 0., 0.]),
-            (14, InputValue::Stick([0., 1.]), [0., 0., -1.]),
-            (16, InputValue::Scalar(1.), [0., -1., 0.]),
-            (17, InputValue::Scalar(1.), [0., 1., 0.]),
+            (14, InputValue::Stick([1., 0.]), [0.125, 0., 0.]),
+            (14, InputValue::Stick([0., 1.]), [0., 0., -0.125]),
+            (16, InputValue::Scalar(1.), [0., -0.125, 0.]),
+            (17, InputValue::Scalar(1.), [0., 0.125, 0.]),
         ] {
             v[index] = value;
             p.finish(&v);
@@ -349,17 +357,20 @@ mod tests {
         }
         v[15] = InputValue::Stick([1., 0.]);
         p.finish(&v);
-        near(p.motion.rotation[0], -FRAC_PI_2);
+        near(p.motion.rotation[0], -PI);
         v[15] = InputValue::Stick([0., 1.]);
         p.finish(&v);
-        near(p.motion.rotation[1], FRAC_PI_2);
+        near(p.motion.rotation[1], -PI);
+        p.config.invert_pitch = false;
+        p.finish(&v);
+        near(p.motion.rotation[1], PI);
         v[6] = InputValue::Button(true);
         p.finish(&v);
-        near(p.motion.rotation[2], FRAC_PI_2);
+        near(p.motion.rotation[2], PI);
         v[6] = InputValue::Button(false);
         v[7] = InputValue::Button(true);
         p.finish(&v);
-        near(p.motion.rotation[2], -FRAC_PI_2);
+        near(p.motion.rotation[2], -PI);
         assert_eq!(deadzone([0.1, 0.1]), [0., 0.]);
         near(deadzone([1., 1.])[0], 1. / 2f64.sqrt());
         v = synthetic_virtual_values(0);
@@ -436,7 +447,7 @@ mod tests {
         p.press(p.indices[6]);
         assert!(p.enabled);
         p.begin(20_000_000, &v);
-        near(p.position[0], 0.01);
+        near(p.position[0], 0.00125);
         let held = p.position;
         p.begin(200_000_001, &v);
         p.press(p.indices[6]);

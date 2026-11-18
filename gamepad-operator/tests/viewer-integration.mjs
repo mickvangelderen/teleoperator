@@ -453,14 +453,19 @@ async function verifyVirtual(page) {
             else if(l[0]===1)label='right';else if(l[0]===-1)label='left';
             else if(rt===1)label='up';else if(lt===1)label='down';
             else if(r[0]===1)label='yawRight';else if(r[0]===-1)label='yawLeft';
-            else if(r[1]===1)label='pitchUp';else if(r[1]===-1)label='pitchDown';
+            else if(r[1]===1)label='pitchDown';else if(r[1]===-1)label='pitchUp';
             else if(rb)label='rollRight';else if(lb)label='rollLeft';else label='neutral';
             const at=Number(pose.packet.timestamp)/1e9;
             if(!segment||segment.label!==label)segment={label,p:[...p],at};
             if(at-segment.at>0.2&&!reports[label]&&requirements.includes(label)) {
-              if(delta[label]){const [axis,sign]=delta[label];if((p[axis]-segment.p[axis])*sign<0.03)throw Error('Wrong axis/direction '+label);}
-              else if(label==='neutral'||label==='paused'){if(p.some((x,i)=>Math.abs(x-segment.p[i])>1e-5))throw Error('Motion while '+label);}
-              else if(label==='combined'){if(Math.hypot(...p.slice(0,3).map((x,i)=>x-segment.p[i]))<0.05||Math.hypot(...p.slice(3).map((x,i)=>x-segment.p[i+3]))<0.05)throw Error('Combined motion did not translate and rotate');}
+              // Full translation at the default 0.125 m/s should cover at least 2 cm in this 200 ms window.
+              const minTranslation = 0.02;
+              if (delta[label]) {
+                const [axis, sign] = delta[label];
+                const minimum = axis < 3 ? minTranslation : 0.03;
+                if ((p[axis] - segment.p[axis]) * sign < minimum) throw Error('Wrong axis/direction ' + label);
+              } else if(label==='neutral'||label==='paused'){if(p.some((x,i)=>Math.abs(x-segment.p[i])>1e-5))throw Error('Motion while '+label);}
+              else if(label==='combined'){if(Math.hypot(...p.slice(0,3).map((x,i)=>x-segment.p[i]))<minTranslation||Math.hypot(...p.slice(3).map((x,i)=>x-segment.p[i+3]))<0.05)throw Error('Combined motion did not translate and rotate');}
               reports[label]={seconds:at-segment.at,delta:p.map((x,i)=>x-segment.p[i])};
             }
             if(resetSeen&&requirements.every(key=>reports[key]))break;

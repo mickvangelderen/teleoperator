@@ -17,7 +17,7 @@ const DEFAULT_PORT: u16 = 8080;
     version,
     about = "Share a local gamepad over HTTP/WebRTC",
     long_about = "Share a local gamepad over HTTP/WebRTC. LAN listeners advertise their signaling address via DNS-SD. Linux SDL2 evdev supports mapped Xbox/PlayStation and raw-index fallback for unknown layouts. Raw input is the default; optional --virtual-pose generates a software pose. No rumble or hardware outputs. Defaults select exactly one eligible gamepad; multiple gamepads require --device.",
-    after_help = "Identity: only a nonzero MAC-shaped kernel input uniq is eligible for reconnect with a new capability epoch; duplicate identities are rejected. USB/receiver serials, including non-MAC uniq values copied by USB HID, use current input-slot IDs and require restart after unplug; run --list again because slot IDs may change. MAC shape is an identity heuristic, not hardware authentication; sequential devices claiming the same MAC cannot be distinguished.\nTiming: up to 100 Hz software observations of retained SDL state, aligned to compatible publication schedules; idle is valid. Native event order drives counters. Initial held states/disconnects do not create edges. Prediction requests are advisory; actual prediction timestamps are always absent.\nVirtual pose (--virtual-pose): starts PAUSED. Start/Options toggles motion; View/Back (Xbox), Share (PS4) or Create (PS5) resets position/orientation and pauses (reset wins simultaneous commands). The separate Xbox Series Share button is unused. Left stick: yaw-relative horizontal movement, up = forward. RT/LT: up/down. Right stick: right = yaw right, up = pitch up; pitch clamped to +/-90 degrees. LB/RB: roll left/right. Defaults: 1 m/s each for horizontal and vertical movement, 90 degrees/s rotation. Model frame: +X right, +Y up, -Z forward, origin [0,0,0], initial identity orientation; no real-world placement. Heading remains independent of pitch/roll, including vertical pitch. Virtual-only radial stick deadzone 0.15 and trigger deadzone 0.05, rescaled; raw values/counters unchanged. Paused pose remains valid software state; tracked flags always false and actual prediction absent. Disconnect, missing controls or observation gaps >100 ms pause; fresh Start/Options press required to resume. New device epochs start at the origin paused. Missing mapped controls leave raw mode with a health diagnostic.\nBuild: Cargo bundles SDL2; a C compiler and CMake are required. Linux evdev read access is required for a physical gamepad. No permission or udev changes are performed.\nExamples:\n  gamepad-operator --list\n  gamepad-operator --device 'ID from --list'\n  gamepad-operator --synthetic"
+    after_help = "Identity: only a nonzero MAC-shaped kernel input uniq is eligible for reconnect with a new capability epoch; duplicate identities are rejected. USB/receiver serials, including non-MAC uniq values copied by USB HID, use current input-slot IDs and require restart after unplug; run --list again because slot IDs may change. MAC shape is an identity heuristic, not hardware authentication; sequential devices claiming the same MAC cannot be distinguished.\nTiming: up to 100 Hz software observations of retained SDL state, aligned to compatible publication schedules; idle is valid. Native event order drives counters. Initial held states/disconnects do not create edges. Prediction requests are advisory; actual prediction timestamps are always absent.\nVirtual pose (--virtual-pose): starts PAUSED. Start/Options toggles motion; View/Back (Xbox), Share (PS4) or Create (PS5) resets position/orientation and pauses (reset wins simultaneous commands). The separate Xbox Series Share button is unused. Left stick: yaw-relative horizontal movement, up = forward. RT/LT: up/down. Right stick: right = yaw right, up = pitch down by default; pitch clamped to +/-90 degrees. LB/RB: roll left/right. Model frame: +X right, +Y up, -Z forward, origin [0,0,0], initial identity orientation; no real-world placement. Heading remains independent of pitch/roll, including vertical pitch. Virtual-only radial stick deadzone 0.15 and trigger deadzone 0.05, rescaled; raw values/counters unchanged. Paused pose remains valid software state; tracked flags always false and actual prediction absent. Disconnect, missing controls or observation gaps >100 ms pause; fresh Start/Options press required to resume. New device epochs start at the origin paused. Missing mapped controls leave raw mode with a health diagnostic.\nBuild: Cargo bundles SDL2; a C compiler and CMake are required. Linux evdev read access is required for a physical gamepad. No permission or udev changes are performed.\nExamples:\n  gamepad-operator --list\n  gamepad-operator --device 'ID from --list'\n  gamepad-operator --synthetic"
 )]
 struct Args {
     /// Print metadata, eligibility, mapping/access diagnostics and selection IDs, then exit
@@ -41,12 +41,15 @@ struct Args {
     /// Opt in to a software model-frame pose; requires all mapped controls described below
     #[arg(long)]
     virtual_pose: bool,
-    /// Maximum horizontal and vertical speeds, each in metres/second, range (0,10], default 1
-    #[arg(long, requires = "virtual_pose")]
-    virtual_linear_speed: Option<f64>,
-    /// Maximum virtual yaw/pitch/roll speed in degrees/second, range (0,720], default 90
-    #[arg(long, requires = "virtual_pose")]
-    virtual_angular_speed: Option<f64>,
+    /// Maximum horizontal and vertical speeds, each in metres/second, range (0,10]
+    #[arg(long, requires = "virtual_pose", default_value_t = Config::default().linear_metres_per_second)]
+    virtual_linear_speed: f64,
+    /// Maximum virtual yaw/pitch/roll speed in degrees/second, range (0,720]
+    #[arg(long, requires = "virtual_pose", default_value_t = Config::default().angular_degrees_per_second)]
+    virtual_angular_speed: f64,
+    /// Pushing the right stick up pitches the virtual pose down when true
+    #[arg(long, requires = "virtual_pose", action = clap::ArgAction::Set, default_value_t = Config::default().invert_pitch)]
+    virtual_invert_pitch: bool,
     /// Script all virtual controls over 10s cycles, including explicit enable/reset presses (software only)
     #[arg(long, requires_all = ["synthetic", "virtual_pose"])]
     synthetic_virtual_demo: bool,
@@ -56,9 +59,10 @@ struct Args {
 }
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
-    let virtual_config = args.virtual_pose.then(|| Config {
-        linear_metres_per_second: args.virtual_linear_speed.unwrap_or(1.),
-        angular_degrees_per_second: args.virtual_angular_speed.unwrap_or(90.),
+    let virtual_config = args.virtual_pose.then_some(Config {
+        linear_metres_per_second: args.virtual_linear_speed,
+        angular_degrees_per_second: args.virtual_angular_speed,
+        invert_pitch: args.virtual_invert_pitch,
     });
     if let Some(config) = virtual_config
         && let Err(message) = config.validate()
