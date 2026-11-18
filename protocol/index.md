@@ -1,13 +1,17 @@
 # Tracking protocol specification
 
 Clients discover a device's inputs, poses and skeleton mappings, select the values and representations they need, and subscribe to their publication.
-Subscriptions choose reliable or unreliable delivery and periodic or on-change timing.
+Subscriptions choose reliable or unreliable delivery, control publication timing, and group values into continuously published or acknowledged on-change bundles.
 Sample references associate inputs with edge counters and poses with quality data, while clock exchanges and actual prediction timestamps let clients relate samples to consumption time.
 
 ## Status
 
-This is an unpublished version 1 wire specification derived from requirements at commit `067f1ed53383a7c3b7fadc715917b175f114e48b`, with the explicit [feedback overrides](derivation.md#feedback-overrides).
-`MUST`, `MUST NOT` and `SHOULD` express obligations in this specification.
+This is an unpublished version 1 wire specification derived from requirements at commit `da17cd684a906ca77ab66aa90912ccdb8ea0d017`, with the explicit [feedback overrides](derivation.md#feedback-overrides).
+The transport, interaction, type and encoding definitions are normative, including declarative constraints and imperative rules without capitalized keywords.
+`MUST` and `MUST NOT` emphasize requirements; `SHOULD` identifies a recommendation that permits a justified exception.
+Sections explicitly labeled guidance, examples, derivation and cited design considerations are informative.
+The operator binding defines additional policies for that binding only.
+Observable delivery, ordering and acknowledgment rules are required; suggested local data structures are implementation guidance.
 Concrete encoding choices and their requirement basis are recorded in [derivation](derivation.md).
 
 ## Reading order
@@ -32,10 +36,10 @@ Start with [transport and sessions](overview.md), then follow the interactions:
 | Skeleton mapping      | [Skeleton](types/Skeleton.md), [Joint](types/Joint.md)                                                                                                                                                                                                |
 | Indices               | [SampleGroupIndex](types/SampleGroupIndex.md), [SampleDescriptorIndex](types/SampleDescriptorIndex.md), [JointIndex](types/JointIndex.md), [NonMax](types/NonMax.md)                                                                                  |
 | Sample interpretation | [SampleKind](types/SampleKind.md), [SampleFormat](types/SampleFormat.md), [ReferenceSpace](types/ReferenceSpace.md)                                                                                                                                   |
-| Subscription          | [Channel](types/Channel.md), [SampleSelection](types/SampleSelection.md), [SampleSelectionEntry](types/SampleSelectionEntry.md), [Subscribe](types/Subscribe.md), [SubscriptionAccepted](types/SubscriptionAccepted.md), [SubscriptionRejected](types/SubscriptionRejected.md) |
-| Scheduling | [PublicationSchedule](types/PublicationSchedule.md), [PublicationSchedulePeriodic](types/PublicationSchedulePeriodic.md), [UpdateSchedule](types/UpdateSchedule.md) |
+| Subscription          | [Channel](types/Channel.md), [SampleBinding](types/SampleBinding.md), [SequenceNumberFormat](types/SequenceNumberFormat.md), [Subscribe](types/Subscribe.md), [SubscriptionAccepted](types/SubscriptionAccepted.md), [SubscriptionRejected](types/SubscriptionRejected.md) |
+| Scheduling | [UpdateSchedule](types/UpdateSchedule.md) |
 | Time | [Instant](types/Instant.md), [Duration](types/Duration.md) |
-| Publication           | [SamplePublication](types/SamplePublication.md)                                                                                                                                                                                                       |
+| Publication           | [Publication](types/Publication.md), [PublicationAcknowledged](types/PublicationAcknowledged.md)                                                                                                                                                                                                       |
 | Unsubscription        | [Unsubscribe](types/Unsubscribe.md), [Unsubscribed](types/Unsubscribed.md)                                                                                                                                                    |
 | Clock estimation      | [ClockRequest](types/ClockRequest.md), [ClockResponse](types/ClockResponse.md)                                                                                                                                                                        |
 

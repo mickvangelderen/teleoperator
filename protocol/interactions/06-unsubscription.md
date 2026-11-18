@@ -9,6 +9,6 @@ The client retires the indicated id but preserves a pending replacement request 
 Publications for retired ids are discarded.
 Reusing an id has the [unordered-packet limitation](05-replacement.md#unreliable-id-reuse).
 
-Connection loss retires all subscription, schedule and pending-operation state.
+Connection loss discards all subscriptions, pending bundle states, sequence and acknowledgment histories, timing and pending operations.
 
 Requirements: [PRO-0005](../../design/requirements/protocol/PRO-0005.md), [PRO-0024](../../design/requirements/protocol/PRO-0024.md).

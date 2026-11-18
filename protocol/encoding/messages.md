@@ -7,7 +7,8 @@ Each binary transport message contains exactly one protocol message, on either c
 | `message_tag` | `u8` | Message type below. |
 | `payload` | Type-specific | Fields in the type definition's wire order. |
 
-The payload consumes the rest of the transport message. There is no application length prefix, splitting or coalescing of protocol messages.
+The payload consumes the rest of the transport message.
+There is no application length prefix, splitting or coalescing of protocol messages.
 The complete message, including its tag, must fit the transport binding's message limit and any smaller negotiated peer limit.
 The same tag and payload bytes encode a publication on either channel; the accepted subscription determines its channel.
 
@@ -21,10 +22,11 @@ The same tag and payload bytes encode a publication on either channel; the accep
 | `0x06` | [SubscriptionRejected](../types/SubscriptionRejected.md) | Server → client | Reliable; response to request. |
 | `0x07` | [Unsubscribe](../types/Unsubscribe.md) | Client → server | Reliable; for a subscription id. |
 | `0x08` | [Unsubscribed](../types/Unsubscribed.md) | Server → client | Reliable; termination or unsubscription. |
-| `0x09` | [SamplePublication](../types/SamplePublication.md) | Server → client | Accepted subscription's channel. |
+| `0x09` | [Publication](../types/Publication.md) | Server → client | Accepted subscription's channel. |
 | `0x0A` | [ClockRequest](../types/ClockRequest.md) | Client → server | Unreliable; after successful version selection. |
 | `0x0B` | [ClockResponse](../types/ClockResponse.md) | Server → client | Unreliable; response to clock request. |
-| `0x0C` | [UpdateSchedule](../types/UpdateSchedule.md) | Client → server | Reliable; change a live publication schedule. |
+| `0x0C` | [UpdateSchedule](../types/UpdateSchedule.md) | Client → server | Reliable; update interval, phase and prediction offset. |
+| `0x0D` | [PublicationAcknowledged](../types/PublicationAcknowledged.md) | Client → server | Unreliable; exact acknowledgment using the subscription's sequence format. |
 
 Other tags are invalid in version 1.
 Control requests are processed in reliable receive order, with responses sent in that order.

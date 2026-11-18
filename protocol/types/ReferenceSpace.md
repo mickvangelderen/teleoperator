@@ -17,4 +17,12 @@ A selection uses a space advertised by its pose descriptor.
 Position is in meters, and orientation rotates from the source frame into the selected frame.
 Coordinates use the right-handed convention of the named OpenXR spaces: positive Y up, positive X right and negative Z forward in the defining orientation.
 
+## Parent-space resolution
+
+For a joint's `pose_sample`, the parent frame is its parent joint's `pose_sample`; for `rest_pose_sample`, use the parent's `rest_pose_sample`.
+A root's self-parent resolves to its own corresponding descriptor.
+For every descriptor advertising `parent`, these mappings across the advertisement must identify exactly one parent-frame descriptor.
+A missing mapping or conflicting parent-frame descriptors makes the advertisement invalid because a SampleBinding carries no joint or skeleton discriminator.
+Sharing is allowed when all occurrences resolve to the same descriptor; descriptors that do not advertise `parent` need no unique parent mapping.
+
 Requirements: [PRO-0015](../../design/requirements/protocol/PRO-0015.md).

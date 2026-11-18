@@ -15,7 +15,8 @@ These rules apply to bootstrap messages and version 1.
 | Bitmap                            | Bit `i` is `(byte[i / 8] >> (i % 8)) & 1`, using integer division.           |
 
 There is no implicit alignment or padding between fields, components, strings, or list elements.
-A bitmap occupies `ceil(bit_count / 8)` bytes. Receivers MUST ignore unused high bits in its final byte; those bits do not participate in semantic comparisons.
+A bitmap occupies `ceil(bit_count / 8)` bytes.
+Receivers MUST ignore unused high bits in its final byte; those bits do not participate in semantic comparisons.
 Writers may use zero-initialized bytes so unused bits remain zero.
 A zero-length bitmap occupies no bytes.
 List counts count elements; string lengths count bytes.
@@ -29,7 +30,8 @@ Strings used as ids compare exactly; no case folding or Unicode normalization is
 
 Receivers MUST check lengths, counts, arithmetic overflow, and available message bytes before allocating or reading memory.
 An implementation's resource bounds can be smaller than the representable wire limits.
-A reliable message exceeding those bounds can end the connection; a readable subscription that cannot be serviced is rejected with a reason.
+Reliable control exceeding decoding bounds ends the connection.
+A structurally valid subscription that cannot be serviced is rejected; see the [outcome rules](../overview.md#invalid-messages).
 No decoder may use a wire count as permission to read beyond the containing message.
 
 See [message encoding](messages.md), [publication layout](publication.md), and [normalized sample formats](../types/SampleFormat.md).

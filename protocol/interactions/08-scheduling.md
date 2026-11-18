@@ -1,58 +1,56 @@
 # Publication timing
 
-[PublicationSchedule](../types/PublicationSchedule.md) controls timing independently of the selected channel.
-A newly accepted subscription starts publication immediately; the schedule governs subsequent publications.
+The subscription's `interval`, `phase` and `prediction_offset` govern both channels and all bundles.
+Acceptance SHOULD initiate publication immediately, without waiting for an acknowledgment.
+If no acquisition exists, the initial publication waits for one.
+After that initial opportunity, publication uses scheduled slots; a change marks a bundle pending without bypassing the interval.
+For an immediate first publication outside the slot grid, use its publication opportunity time `t` as the timing reference and request target `t + prediction_offset`.
+If it waits for the first acquisition, `t` is the opportunity time when that acquisition becomes available.
+This request never substitutes for the actual device target in `predicted_for`.
+An initial publication exactly at a scheduled slot serves that slot.
 
-## Periodic
+## Scheduled slots
 
-All durations are integer nanoseconds and phase refers to the [server clock origin](../types/Instant.md).
-For server time `t`, the next scheduled time at or after `t` is:
+All durations are integer nanoseconds; phase refers to the [server clock origin](../types/Instant.md).
+For server time `t`, the next slot at or after `t` is:
 
 ```text
 next_publication_time(t) = t + ((phase - t) mod interval)
-target_time(t) = next_publication_time(t) + consumption_delay
+target_time(t) = next_publication_time(t) + prediction_offset
 ```
 
-Modulo here is mathematical modulo with a nonnegative result.
-Phase values are equivalent modulo interval.
-Compute differences and additions without unsigned underflow or overflow.
-If a next slot or prediction target is beyond the representable Instant range, it is unavailable; it must not wrap to an earlier time or the absence sentinel.
+Modulo has a nonnegative result, so phase values are equivalent modulo interval.
+Compute without unsigned underflow or overflow.
+An unrepresentable next slot or target is unavailable; it must not wrap or become the absence sentinel.
 
-The server schedules publication independently of acquisition notifications, using the latest available group acquisition at a due slot.
-An unchanged acquisition can therefore appear in multiple periodic publications with its original acquisition time.
-If the server wakes late, it publishes the latest state once and skips missed slots instead of queuing a burst of old samples.
-A slot is sent at most once; the next slot after serving a due time is strictly later.
-The interval is desired publication timing, not a request to increase the acquisition group's maximum sample rate.
+At a due slot, use the latest group acquisition and the [pending bundle rules](04-publication.md#bundle-state).
+An unchanged acquisition may be published again with its original acquisition time.
+If the server wakes late, serve the most recent elapsed slot once with the latest state and skip earlier missed slots instead of queuing a burst.
+Serve each slot at most once; after serving or skipping it, consider only later slots.
+The interval does not request an increase in the group's acquisition rate.
 
-`consumption_delay` communicates the desired prediction target.
-The actual prediction time, when predicted values are present, is carried in [SamplePublication.predicted_for](../types/SamplePublication.md).
-A server must not label a value as predicted for a requested time unless its source actually represents that time.
-If a source uses a fixed prediction horizon, publish its actual target time.
-
-## OnChange
-
-Publish a complete selected snapshot when a selected encoded value changes from the last publication.
-This includes selected quality/status values; changes to unselected status do not trigger publication.
-Only meaningful bitmap bits participate in comparison.
-Timestamp changes alone do not trigger publication.
-No earlier publication is required to decode the result.
-
-Unreliable OnChange does not retransmit, await acknowledgment or periodically refresh unchanged data.
-A lost final change can leave the client stale until another change occurs.
-Use Reliable when guaranteed delivery of an unchanged final state is needed, or Periodic when regular fresh snapshots are needed.
+`prediction_offset` requests a prediction target; it does not establish the source's actual target.
+[Publication.predicted_for](../types/Publication.md) reports that actual target only when available.
+No particular device prediction algorithm is prescribed.
 
 ## Live schedule changes
 
-The client sends [UpdateSchedule](../types/UpdateSchedule.md) to replace timing for an existing id.
-The server applies updates in reliable receive order without changing the selection or channel, or repeating the initial-publication step.
-Switching to Periodic follows the next slot in the new schedule.
-Switching to OnChange compares against the last published selected values.
-Already submitted transport messages are not withdrawn by an update.
-There is no response message or cross-channel delivery boundary for this operation.
+[UpdateSchedule](../types/UpdateSchedule.md) atomically replaces the three timing fields in reliable receive order.
+It does not repeat the initial-publication step or reset bundle state, acknowledgment history or sequence numbering.
+Use the next slot at or after processing the update under the new timing.
+Already submitted messages are not withdrawn, and there is no cross-channel delivery boundary or response message.
 
-## Requirement boundary
+## Client timing guidance
 
-PRO-0026 references PRO-0030 for consumption delay, but PRO-0030 is absent from this requirement baseline.
-This specification defines the provided schedule and actual prediction timestamp without adding an unspecified prediction algorithm or requiring a particular device API change.
+Using the client's current server-clock estimate, a desired consumption event can guide timing:
+
+```text
+prediction_offset = transit_delay + processing_delay + arrival_margin
+scheduled_publication_time = consumption_time - prediction_offset + server_minus_client_offset
+phase = scheduled_publication_time mod interval
+```
+
+These are estimation hints, not guaranteed latency or prediction accuracy.
+See [clock estimation](07-clock-estimation.md).
 
 Requirements: [PRO-0024](../../design/requirements/protocol/PRO-0024.md), [PRO-0026](../../design/requirements/protocol/PRO-0026.md), [PRO-0027](../../design/requirements/protocol/PRO-0027.md), [PRO-0028](../../design/requirements/protocol/PRO-0028.md), [PRO-0029](../../design/requirements/protocol/PRO-0029.md).

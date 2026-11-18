@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check the revised specification's wire vectors and local Markdown links."""
+import copy
 import json
 import math
 import re
@@ -14,6 +15,8 @@ COMPONENTS = {kind: (7 if kind == 10 else 2 if kind == 9 else 1) for kind in ran
 ALLOWED = {1: set(range(1, 16)), 2: {1}, 3: {2, 3, 4, 5}, 4: {2, 3, 4, 5}, 5: {1}, 6: {2, 3, 4, 5}, 7: {2, 3, 4, 5}, 8: {10, 11, 12, 13}, 9: {10, 11, 14, 15}, 10: {10, 11}, 11: {2, 3, 4, 5}, 12: {1}, 13: {1}, 14: {1}, 15: {1}, 16: {10, 11, 12, 13}}
 TAILS = {2: [('press_count_sample', 3), ('release_count_sample', 4)], 5: [('touch_count_sample', 6), ('untouch_count_sample', 7)], 10: [('position_valid_sample', 12), ('orientation_valid_sample', 13), ('position_tracked_sample', 14), ('orientation_tracked_sample', 15), ('confidence_sample', 16)]}
 MAX_TIME = 0xffffffffffffffff
+SEQUENCES = {1: ('H', 16), 2: ('I', 32), 3: ('Q', 64)}
+TIMING = ('interval', 'phase', 'prediction_offset')
 
 class Reader:
     def __init__(self, data):
@@ -81,47 +84,57 @@ def capabilities(r):
     return {'sample_groups': groups, 'sample_descriptors': desc, 'skeletons': skeletons}
 
 
-def schedule(r):
-    tag = r.number('B')
-    assert tag in (1, 2), 'invalid schedule'
-    if tag == 2:
-        return {'kind': 'OnChange'}
-    return {'kind': 'Periodic', **{field: r.time() for field in ('interval', 'phase', 'consumption_delay')}}
+def timing(r):
+    return {field: r.time() for field in TIMING}
 
 
 def request(r, c):
-    def entry():
-        s = {'descriptor': r.index(), 'format': r.number('B')}
-        assert s['descriptor'] < len(c['sample_descriptors']), 'unknown descriptor'
-        if c['sample_descriptors'][s['descriptor']]['kind'] == 10:
-            s['reference_space'] = r.number('B')
-        return s
-    q = {'subscription_id': r.number('I')}
-    q['selection'] = {'group': r.index(), 'samples': r.items(entry)}
-    q['channel'] = r.number('B')
-    q['schedule'] = schedule(r)
-    return q
+    def binding():
+        value = {'descriptor': r.index(), 'format': r.number('B')}
+        assert value['descriptor'] < len(c['sample_descriptors']), 'unknown descriptor'
+        if c['sample_descriptors'][value['descriptor']]['kind'] == 10:
+            value['reference_space'] = r.number('B')
+        return value
+    value = {'subscription_id': r.number('I'), 'group': r.index(), 'channel': r.number('B'), **timing(r)}
+    sequence_format = r.number('B')
+    assert sequence_format in (0, 1, 2, 3), 'invalid sequence format'
+    value['sequence_number_format'] = sequence_format or None
+    value['bundles'] = r.items(lambda: r.items(binding))
+    return value
 
 
-def message(data, c=None):
-    assert 0 < len(data) <= 1_048_576, 'message size'
+def sequence(r, q):
+    fmt = q['sequence_number_format']
+    return str(r.number(SEQUENCES[fmt][0])) if fmt is not None else None
+
+
+def acknowledgment(r, q):
+    assert q is not None and q['sequence_number_format'] is not None, 'unsequenced subscription'
+    value = {'subscription_id': r.number('I')}
+    assert value['subscription_id'] == q['subscription_id'], 'unknown subscription'
+    value['sequence_number'] = sequence(r, q)
+    return value
+
+
+def message(data, c=None, q=None):
+    assert 0 < len(data), 'empty message'
     r = Reader(data)
     tag = r.number('B')
-    assert 1 <= tag <= 12, 'invalid message tag'
-    if tag in (1, 4, 7, 10, 12):
-        assert len(data) <= 65_535, 'client message size'
-    return tag, payload(r, tag, c)
+    assert 1 <= tag <= 13, 'invalid message tag'
+    return tag, payload(r, tag, c, q)
 
 
-def payload(r, tag, c=None):
+def payload(r, tag, c=None, q=None):
     if tag == 1:
-        value = {'supported_versions': r.items(lambda: r.number('H'))}
+        versions = r.items(lambda: r.number('H'))
+        assert versions and 0 not in versions and len(set(versions)) == len(versions)
+        value = {'supported_versions': versions}
     elif tag == 2:
         value = {'selected_version': r.number('H')}
     elif tag == 3:
         value = capabilities(r)
     elif tag == 4:
-        assert c is not None, 'selection requires capabilities'
+        assert c is not None, 'bindings require capabilities'
         value = request(r, c)
     elif tag in (5, 7):
         value = {'subscription_id': r.number('I')}
@@ -136,7 +149,9 @@ def payload(r, tag, c=None):
     elif tag == 11:
         value = {'request_id': r.number('I'), 'received_at': r.time(), 'sent_at': r.time()}
     elif tag == 12:
-        value = {'subscription_id': r.number('I'), 'schedule': schedule(r)}
+        value = {'subscription_id': r.number('I'), **timing(r)}
+    elif tag == 13:
+        value = acknowledgment(r, q)
     else:
         raise AssertionError('unknown tag')
     r.done()
@@ -158,35 +173,104 @@ def validate_capabilities(c):
                 assert 0 <= index < len(desc) and desc[index]['kind'] == kind
         if d['kind'] == 11:
             assert 0 <= d['revision_of'] < len(groups)
+    parent_frames = {}
     for skeleton in c['skeletons']:
         joints = skeleton['joints']
         assert joints
         for joint in joints:
             assert 0 <= joint['parent'] < len(joints)
-            assert 0 <= joint['pose_sample'] < len(desc)
-            assert 0 <= joint['rest_pose_sample'] < len(desc)
+            for field in ('pose_sample', 'rest_pose_sample'):
+                index = joint[field]
+                assert 0 <= index < len(desc) and desc[index]['kind'] == 10, 'joint reference is not a pose'
+        for start, joint in enumerate(joints):
+            seen, current = set(), start
+            while joints[current]['parent'] != current:
+                assert current not in seen, 'non-root parent cycle'
+                seen.add(current)
+                current = joints[current]['parent']
+            for field in ('pose_sample', 'rest_pose_sample'):
+                parent_frames.setdefault(joint[field], set()).add(joints[joint['parent']][field])
+    for index, d in enumerate(desc):
+        if d['kind'] == 10 and 5 in d['supported_spaces']:
+            assert len(parent_frames.get(index, set())) == 1, 'missing or conflicting parent frame'
 
 
-def validate_schedule(s):
-    assert s['kind'] in ('Periodic', 'OnChange')
-    if s['kind'] == 'Periodic':
-        assert set(s) == {'kind', 'interval', 'phase', 'consumption_delay'}
-        assert all(0 <= int(s[field]) < MAX_TIME for field in ('interval', 'phase', 'consumption_delay'))
-        assert int(s['interval']) > 0
-    else:
-        assert set(s) == {'kind'}
+def validate_timing(q):
+    assert all(0 <= int(q[field]) < MAX_TIME for field in TIMING)
+    assert int(q['interval']) > 0, 'zero interval'
 
 
-def validate_request(c, q):
-    selection = q['selection']
-    assert 0 <= selection['group'] < len(c['sample_groups'])
-    assert q['channel'] in (1, 2)
-    validate_schedule(q['schedule'])
-    assert selection['samples']
-    for s in selection['samples']:
-        d = c['sample_descriptors'][s['descriptor']]
-        assert d['group'] == selection['group'] and s['format'] in d['supported_formats']
-        assert s['reference_space'] in d['supported_spaces'] if d['kind'] == 10 else 'reference_space' not in s
+class RequestRejected(AssertionError):
+    """Readable, well-typed Subscribe that cannot be served."""
+
+
+def validate_request(c, q, limits=None):
+    assert 0 <= q['group'] < 0xffffffff
+    assert q['channel'] in (1, 2), 'invalid channel enum'
+    validate_timing(q)
+    assert q['sequence_number_format'] in (None, 1, 2, 3)
+    assert q['bundles'], 'no bundles'
+    assert len(q['bundles']) == 1 or q['sequence_number_format'] is not None, 'bundles require sequences'
+    # Validate all type constraints before any admission rejection.
+    for bundle in q['bundles']:
+        for binding in bundle:
+            assert 0 <= binding['descriptor'] < len(c['sample_descriptors']), 'unknown descriptor'
+            assert binding['format'] in range(1, 16), 'invalid format enum'
+            d = c['sample_descriptors'][binding['descriptor']]
+            if d['kind'] == 10:
+                assert binding['reference_space'] in range(1, 7), 'invalid space enum'
+            else:
+                assert 'reference_space' not in binding
+    if q['group'] >= len(c['sample_groups']):
+        raise RequestRejected('unknown group')
+    for bundle in q['bundles']:
+        for binding in bundle:
+            d = c['sample_descriptors'][binding['descriptor']]
+            if d['group'] != q['group'] or binding['format'] not in d['supported_formats']:
+                raise RequestRejected('unsupported membership or format')
+            if d['kind'] == 10 and binding['reference_space'] not in d['supported_spaces']:
+                raise RequestRejected('unsupported space')
+    limits = limits or {}
+    if 1 + publication_size(c, q) > limits.get('max_publication_bytes', math.inf):
+        raise RequestRejected('publication too large')
+    if 1_000_000_000 / int(q['interval']) > limits.get('max_publication_rate_hz', math.inf):
+        raise RequestRejected('publication rate unavailable')
+
+
+def message_outcome(data, c, q, case):
+    """Check the specified externally observable result, not just parse failure."""
+    channel = case['channel']
+    tag = data[0] if data else None
+    error = 'discard_message' if channel == 1 or tag == 9 else 'close_connection'
+    if len(data) > case.get('limits', {}).get('max_message_bytes', math.inf):
+        return error
+    try:
+        if tag != 9 and tag is not None:
+            assert channel == (1 if tag in (10, 11, 13) else 2), 'wrong control channel'
+        tag, value = message(data, c, q)
+        if tag == 3:
+            validate_capabilities(value)
+        elif tag == 4:
+            validate_request(c, value, case.get('limits'))
+        elif tag == 9:
+            assert q is not None and q['channel'] == channel, 'wrong publication channel or unknown id'
+            publication(value, c, q)
+        elif tag == 12:
+            validate_timing(value)
+            if q is None or value['subscription_id'] != q['subscription_id']:
+                return 'ignore_update'
+            if case.get('subscription_state') == 'ended':
+                return 'ignore_update'
+            if 1_000_000_000 / int(value['interval']) > case.get('limits', {}).get('max_publication_rate_hz', math.inf):
+                return 'terminate_subscription'
+        elif tag == 13 and 'sent_sequences' in case:
+            if value['sequence_number'] not in case['sent_sequences']:
+                return 'discard_message'
+    except RequestRejected:
+        return 'reject_subscription'
+    except (AssertionError, IndexError, KeyError, UnicodeError, struct.error):
+        return error
+    return 'accept_message'
 
 
 def bitmap(r, count):
@@ -203,35 +287,180 @@ def numeric(r, fmt):
     return value
 
 
+def bundle_values(r, c, bindings):
+    bits = iter(bitmap(r, sum(binding['format'] == 1 for binding in bindings)))
+    values = []
+    for binding in bindings:
+        kind = c['sample_descriptors'][binding['descriptor']]['kind']
+        fmt = binding['format']
+        if fmt == 1:
+            value = next(bits)
+        else:
+            parts = [numeric(r, fmt) for _ in range(COMPONENTS[kind])]
+            if kind in (8, 9, 10, 16):
+                assert all(math.isfinite(v) for v in parts), 'nonfinite value'
+            if kind in (8, 16):
+                assert 0 <= parts[0] <= 1, 'normalized value out of range'
+            if kind == 9:
+                assert all(-1 <= v <= 1 for v in parts), 'axis out of range'
+            if kind == 10:
+                tolerance = 1e-5 if fmt == 10 else 1e-12
+                assert abs(sum(v*v for v in parts[3:]) - 1) <= tolerance, 'nonunit quaternion'
+            if fmt in (5, 9):
+                parts = [str(v) for v in parts]
+            value = parts[0] if COMPONENTS[kind] == 1 else parts
+        values.append(value)
+    return values
+
+
 def publication(data, c, q):
     r = Reader(data)
     result = {'subscription_id': r.number('I'), 'acquired_at': r.time(), 'predicted_for': r.time(optional=True)}
     assert result['subscription_id'] == q['subscription_id'], 'unknown subscription'
-    samples = q['selection']['samples']
-    bits = iter(bitmap(r, sum(s['format'] == 1 for s in samples)))
-    values = []
-    for s in samples:
-        kind = c['sample_descriptors'][s['descriptor']]['kind']
-        if s['format'] == 1:
-            value = next(bits)
-        else:
-            parts = [numeric(r, s['format']) for _ in range(COMPONENTS[kind])]
-            if kind in (8, 9, 10, 16):
-                assert all(math.isfinite(v) for v in parts)
-            if kind in (8, 16):
-                assert 0 <= parts[0] <= 1
-            if kind == 9:
-                assert all(-1 <= v <= 1 for v in parts)
-            if kind == 10:
-                tolerance = 1e-5 if s['format'] == 10 else 1e-12
-                assert abs(sum(v*v for v in parts[3:]) - 1) <= tolerance
-            if s['format'] in (5, 9):
-                parts = [str(v) for v in parts]
-            value = parts[0] if COMPONENTS[kind] == 1 else parts
-        values.append(value)
-    result['values'] = values
+    result['sequence_number'] = sequence(r, q)
+    presence = [True] + bitmap(r, len(q['bundles']) - 1)
+    result['bundles'] = [bundle_values(r, c, bindings) if present else None
+                         for bindings, present in zip(q['bundles'], presence)]
     r.done()
     return result
+
+
+def publication_size(c, q, included=None):
+    if included is None:
+        included = range(len(q['bundles']))
+    width = 0 if q['sequence_number_format'] is None else SEQUENCES[q['sequence_number_format']][1] // 8
+    size = 20 + width + (len(q['bundles']) - 1 + 7) // 8
+    for j in included:
+        bindings = q['bundles'][j]
+        size += (sum(b['format'] == 1 for b in bindings) + 7) // 8
+        size += sum(COMPONENTS[c['sample_descriptors'][b['descriptor']]['kind']] * struct.calcsize(FORMATS[b['format']])
+                    for b in bindings if b['format'] != 1)
+    return size
+
+
+def sequence_order(fmt, current, previous):
+    modulus = 1 << SEQUENCES[fmt][1]
+    delta = (int(current) - int(previous)) % modulus
+    if delta == 0:
+        return 'duplicate'
+    if delta == modulus // 2:
+        return 'ambiguous'
+    return 'newer' if delta < modulus // 2 else 'older'
+
+
+def check_acknowledgment_trace(trace):
+    """Small behavioral model; revisions and history are local, never serialized."""
+    states, revisions, pending, history = None, [], set(), {}
+    next_sequence = int(trace['initial_sequence'])
+    fmt = trace['sequence_format']
+    for step in trace['steps']:
+        if 'acquire' in step:
+            acquired = step['acquire']
+            if states is None:
+                revisions = [0] * len(acquired)
+                pending = set(range(1, len(acquired) + 1))
+            else:
+                assert len(acquired) == len(states)
+                for j, (old, new) in enumerate(zip(states, acquired), 1):
+                    if old != new:
+                        revisions[j - 1] += 1
+                        pending.add(j)
+            states = acquired
+        elif 'publish' in step:
+            if not trace['continuous'] and not pending:
+                assert step['publish'] is None
+                continue
+            included = [0] + sorted(pending)
+            assert step['publish'] == {'sequence': str(next_sequence) if fmt else None, 'included': included}
+            if fmt:
+                assert next_sequence not in history, 'ambiguous outstanding sequence reuse'
+                history[next_sequence] = {j: revisions[j - 1] for j in pending}
+                next_sequence = (next_sequence + 1) % (1 << SEQUENCES[fmt][1])
+                assert trace['history_limit'] < (1 << (SEQUENCES[fmt][1] - 1))
+                while len(history) > trace['history_limit']:
+                    del history[next(iter(history))]
+        elif 'ack' in step:
+            for j, revision in history.pop(int(step['ack']), {}).items():
+                if revisions[j - 1] == revision:
+                    pending.discard(j)
+        else:
+            raise AssertionError('unknown trace step')
+        if 'pending' in step:
+            assert sorted(pending) == step['pending'], (trace['name'], step)
+
+
+def check_receive_trace(trace):
+    applied = {}
+    newest_wire = newest_position = None
+    fmt = trace['sequence_format']
+    modulus = 1 << SEQUENCES[fmt][1]
+    for step in trace['steps']:
+        current = int(step['sequence'])
+        updated = []
+        if newest_wire is None:
+            position = current
+            newest_wire, newest_position = current, position
+        else:
+            order = sequence_order(fmt, current, newest_wire)
+            if order == 'ambiguous':
+                assert step['apply'] == [] and not step['ack']
+                continue
+            delta = (current - newest_wire) % modulus
+            position = newest_position + (delta if delta < modulus // 2 else delta - modulus)
+            if order == 'newer':
+                newest_wire, newest_position = current, position
+        for j in step['bundles']:
+            if j not in applied or position > applied[j]:
+                applied[j] = position
+                updated.append(j)
+        assert updated == step['apply'], (trace['name'], step)
+        assert step['ack'] or not any(j > 0 for j in step['bundles']), 'missing required ACK'
+        if not step['ack']:
+            continue
+        # Valid duplicates/older arrivals with on-change bundles require an ACK.
+        raw = struct.pack('<I', 7) + struct.pack('<' + SEQUENCES[fmt][0], current)
+        r = Reader(raw)
+        assert acknowledgment(r, {'subscription_id': 7, 'sequence_number_format': fmt}) == {
+            'subscription_id': 7, 'sequence_number': step['sequence']}
+        r.done()
+
+
+def check_replacement_trace(trace):
+    active, pending, received = 'old', None, []
+    queued_ack = trace.get('queued_ack', False)
+    for step in trace['steps']:
+        event = step['event']
+        if event == 'request':
+            assert pending is None
+            pending, queued_ack = 'new', False
+        elif event == 'server_accept':
+            assert step['notifications'] == ['SubscriptionAccepted']
+        elif event == 'publication':
+            decoded = active is not None and not (pending and step['channel'] == 1)
+            assert decoded == step['decode']
+            assert (active if decoded else None) == step['layout']
+            ack = decoded and pending is None and step.get('on_change', True)
+            assert ack == step['ack']
+            if decoded:
+                received.append(step['sequence'])
+        elif event == 'accepted':
+            assert pending is not None
+            active, pending, received = pending, None, []
+        elif event == 'rejected':
+            assert pending is not None
+            pending = None
+        elif event == 'terminated':
+            active, received = None, []
+        else:
+            raise AssertionError('unknown replacement event')
+        if 'active' in step:
+            assert active == step['active']
+        if 'pending' in step:
+            assert (pending is not None) == step['pending']
+        if 'received' in step:
+            assert received == step['received']
+        if 'queued_ack' in step:
+            assert queued_ack == step['queued_ack']
 
 
 def equivalent(a, b):
@@ -281,6 +510,15 @@ def main():
     c = fixture['capabilities']['device']
     for capabilities_set in fixture['capabilities'].values():
         validate_capabilities(capabilities_set)
+    for case in fixture['capability_cases']:
+        candidate = copy.deepcopy(c)
+        candidate['skeletons'] = case['skeletons']
+        for index, spaces in case.get('descriptor_spaces', {}).items():
+            candidate['sample_descriptors'][int(index)]['supported_spaces'] = spaces
+        if case['valid']:
+            validate_capabilities(candidate)
+        else:
+            must_reject(lambda: validate_capabilities(candidate))
     for setup in fixture['requests'].values():
         validate_request(fixture['capabilities'][setup['capabilities']], setup['value'])
     for case in fixture['records']:
@@ -293,21 +531,25 @@ def main():
             case_caps, expected = fixture['capabilities'][setup['capabilities']], setup['value']
         else:
             expected = case['value']
-        tag, value = message(bytes.fromhex(case['hex']), case_caps)
+        raw = bytes.fromhex(case['hex'])
+        tag, value = message(raw, case_caps)
         assert tag == case['tag'] and equivalent(value, expected), case['name']
         if tag == 3:
             validate_capabilities(value)
         if tag == 4:
             validate_request(case_caps, value)
         if tag == 12:
-            validate_schedule(value['schedule'])
+            validate_timing(value)
+        must_reject(lambda: message(raw[:-1], case_caps))
+        must_reject(lambda: message(raw + b'\x00', case_caps))
     for case in fixture['datagrams']:
         raw = bytes.fromhex(case['hex'])
-        tag, value = message(raw)
+        q = fixture['requests'][case['request']]['value'] if 'request' in case else None
+        tag, value = message(raw, q=q)
         assert tag == case['tag'] and equivalent(value, case['value']), case['name']
-        must_reject(lambda: message(raw[:-1]))
-        must_reject(lambda: message(raw + b'\x00'))
-        assert tag in (10, 11), 'clock channel routing'
+        must_reject(lambda: message(raw[:-1], q=q))
+        must_reject(lambda: message(raw + b'\x00', q=q))
+        assert tag in (10, 11, 13), 'unreliable control routing'
     for case in fixture['publications']:
         tag, body = message(bytes.fromhex(case['hex']))
         assert tag == 9
@@ -315,11 +557,22 @@ def main():
             setup = fixture['requests'][name]
             case_caps, q = fixture['capabilities'][setup['capabilities']], setup['value']
             assert equivalent(publication(body, case_caps, q), case['value']), (case['name'], name)
+            included = [j for j, values in enumerate(case['value']['bundles']) if values is not None]
+            assert len(body) == publication_size(case_caps, q, included)
+            assert len(body) <= publication_size(case_caps, q)
             must_reject(lambda: publication(body[:-1], case_caps, q))
             must_reject(lambda: publication(body + b'\x00', case_caps, q))
+    for case in fixture['message_outcomes']:
+        setup = fixture['requests'][case['request']] if 'request' in case else None
+        case_caps = fixture['capabilities'][setup['capabilities']] if setup else c
+        q = setup['value'] if setup else None
+        if case.get('subscription_state') == 'ended':
+            tag, value = message(bytes.fromhex(case['hex']), case_caps, q)
+            assert tag == 12 and q is not None and value['subscription_id'] == q['subscription_id']
+        actual = message_outcome(bytes.fromhex(case['hex']), case_caps, q, case)
+        assert actual == case['outcome'], (case['name'], actual, case['outcome'])
     for case in fixture['formats']:
-        raw = bytes.fromhex(case['hex'])
-        r = Reader(raw)
+        r = Reader(bytes.fromhex(case['hex']))
         value = bitmap(r, 1)[0] if case['format'] == 1 else numeric(r, case['format'])
         expected = case['decoded']
         if expected in ('true', 'false'):
@@ -332,7 +585,7 @@ def main():
     for case in fixture['clock_examples']:
         t1, t2, t3, t4 = case['timestamps_ns']
         offset = ((t2-t1)+(t3-t4))/2
-        delay = (t4-t1)-(t3-t2)
+        delay = max(case['precision_ns'], (t4-t1)-(t3-t2))
         assert offset == case['server_minus_client_ns'] and delay == case['round_trip_delay_ns']
         assert case['acquired_at_ns'] - offset == case['client_sample_time_ns']
     for case in fixture['time_values']:
@@ -340,51 +593,57 @@ def main():
         assert r.time(optional=case['optional']) == case['value'], case['name']
         r.done()
     for case in fixture['schedule_examples']:
-        now, interval, phase, delay = (int(case[k]) for k in ('now', 'interval', 'phase', 'consumption_delay'))
+        now, interval, phase, offset = (int(case[k]) for k in ('now', 'interval', 'phase', 'prediction_offset'))
         due = now + (phase - now) % interval
-        target = due + delay
+        target = due + offset
         assert (str(due) if due < MAX_TIME else None) == case['next_publication_time']
         assert (str(target) if target < MAX_TIME else None) == case['target_time']
-    assert {(q['value']['channel'], q['value']['schedule']['kind']) for q in fixture['requests'].values()} == {(1, 'Periodic'), (1, 'OnChange'), (2, 'Periodic'), (2, 'OnChange')}
+    for case in fixture['initial_target_examples']:
+        target = int(case['opportunity_time']) + int(case['prediction_offset'])
+        assert (str(target) if target < MAX_TIME else None) == case['requested_target']
+    for case in fixture['sequence_examples']:
+        assert sequence_order(case['format'], case['current'], case['previous']) == case['order']
+    for trace in fixture['acknowledgment_traces']:
+        check_acknowledgment_trace(trace)
+    for trace in fixture['receive_traces']:
+        check_receive_trace(trace)
+    for trace in fixture['replacement_traces']:
+        check_replacement_trace(trace)
+    assert {q['value']['channel'] for q in fixture['requests'].values()} == {1, 2}
+    assert {q['value']['sequence_number_format'] for q in fixture['requests'].values()} == {None, 1, 2, 3}
+    for field in TIMING:
+        invalid = {'interval': '10', 'phase': '0', 'prediction_offset': '0', field: str(MAX_TIME)}
+        must_reject(lambda: validate_timing(invalid))
+        raw = b''.join(struct.pack('<Q', int(invalid[k])) for k in TIMING)
+        must_reject(lambda: timing(Reader(raw)))
     must_reject(lambda: Reader(b'\xff' * 8).time())
     must_reject(lambda: Reader(b'\x02').optional_string())
-    for tag in (0, 3, 255):
-        must_reject(lambda: schedule(Reader(bytes([tag]))))
-    for field in ('interval', 'phase', 'consumption_delay'):
-        invalid = {'kind': 'Periodic', 'interval': '10', 'phase': '0', 'consumption_delay': '0', field: str(MAX_TIME)}
-        must_reject(lambda: validate_schedule(invalid))
-        raw = b'\x01' + b''.join(struct.pack('<Q', int(invalid[k])) for k in ('interval', 'phase', 'consumption_delay'))
-        must_reject(lambda: schedule(Reader(raw)))
-    must_reject(lambda: validate_schedule({'kind': 'Periodic', 'interval': '0', 'phase': '0', 'consumption_delay': '0'}))
     assert Reader(bytes.fromhex('ffffffff')).index(optional=True) is None
     must_reject(lambda: Reader(bytes.fromhex('ffffffff')).index())
-    must_reject(lambda: message(b''))
-    must_reject(lambda: message(b'\x00'))
-    must_reject(lambda: message(b'\x01' * 65_536))
-    for case in fixture['records']:
-        raw = bytes.fromhex(case['hex'])
-        must_reject(lambda: message(raw[:-1], c))
-        must_reject(lambda: message(raw + b'\x00', c))
     first = bytes.fromhex(fixture['publications'][0]['hex'])[1:]
-    bad_padding = bytearray(first); bad_padding[20] |= 0x80
-    assert publication(bad_padding, c, fixture['requests']['inputs']['value']) == publication(first, c, fixture['requests']['inputs']['value'])
-    bad_time = bytearray(first); bad_time[4:12] = b'\xff' * 8
-    must_reject(lambda: publication(bad_time, c, fixture['requests']['inputs']['value']))
-    bad_id = bytearray(first); bad_id[:4] = struct.pack('<I', 99)
-    must_reject(lambda: publication(bad_id, c, fixture['requests']['inputs']['value']))
+    ignored_padding = bytearray(first); ignored_padding[20] |= 0x80
+    assert publication(ignored_padding, c, fixture['requests']['inputs']['value']) == publication(first, c, fixture['requests']['inputs']['value'])
     for case in fixture['datagrams']:
         if case['tag'] == 11:
             for offset in (5, 13):
                 bad_time = bytearray.fromhex(case['hex']); bad_time[offset:offset+8] = b'\xff' * 8
                 must_reject(lambda: message(bad_time))
-    bad_ref = json.loads(json.dumps(c)); bad_ref['sample_descriptors'][0]['press_count_sample'] = 0
+    bad_ref = copy.deepcopy(c); bad_ref['sample_descriptors'][0]['press_count_sample'] = 0
     must_reject(lambda: validate_capabilities(bad_ref))
     check_links(fixture['requirements_commit'])
+    for path in ROOT.rglob('*'):
+        if path.is_file() and path.suffix in ('.md', '.json', '.py'):
+            raw = path.read_bytes()
+            assert b'\r' not in raw and raw.endswith(b'\n'), path
     examples = (ROOT / 'encoding/examples.md').read_text()
-    wire_hex = {case[key] for group in ('records', 'datagrams', 'publications', 'time_values') for case in fixture[group] for key in ('hex',)}
+    wire_hex = {case['hex'] for group in ('records', 'datagrams', 'publications', 'time_values') for case in fixture[group]}
     for block in re.findall(r'```text\n([0-9a-f \n]+)\n```', examples):
         assert ''.join(block.split()) in wire_hex, 'documentation byte example differs from vectors'
-    print(f"Verified {len(fixture['records'])} reliable messages, {len(fixture['datagrams'])} clock datagrams, {len(fixture['publications'])} publications, {len(fixture['formats'])} scalar formats, NonMax times, all channel/schedule pairs, clock and schedule arithmetic, malformed data and Markdown links.")
+    print(f"Verified {len(fixture['records'])} reliable messages, {len(fixture['datagrams'])} unreliable controls, "
+          f"{len(fixture['publications'])} publications, {len(fixture['message_outcomes'])} message outcomes, "
+          f"{len(fixture['formats'])} scalar formats, all sequence widths, exact acknowledgment traces, "
+          "per-bundle ordering, replacement races, capability references, clock/schedule arithmetic, NonMax times, line endings and Markdown links.")
+
 
 if __name__ == '__main__':
     main()

@@ -1,55 +1,54 @@
-# Sample publication encoding
+# Publication encoding
 
-Both channels carry the same [SamplePublication](../types/SamplePublication.md) body as the payload of tag `0x09`.
-[Message encoding](messages.md) adds one tag byte on either channel.
+Both channels carry the same [Publication](../types/Publication.md) payload with tag `0x09`.
+Offsets below exclude that one-byte tag.
 
-## Header
+| Offset | Bytes | Field |
+| ------ | ----- | ----- |
+| 0 | 4 | `subscription_id`, `u32`. |
+| 4 | 8 | `acquired_at`, [Instant](../types/Instant.md). |
+| 12 | 8 | `predicted_for`, `Option<Instant>`. |
+| 20 | S | Optional sequence number; S is 0, 2, 4 or 8. |
+| 20 + S | P | Bundle presence bitmap; P is `ceil((bundle_count - 1) / 8)`. |
+| 20 + S + P | Variable | Included bundles, in increasing bundle index order. |
 
-| Offset | Bytes    | Field                                         |
-| ------ | -------- | --------------------------------------------- |
-| 0      | 4        | `subscription_id`, `u32`.                     |
-| 4      | 8        | `acquired_at`, [Instant](../types/Instant.md). |
-| 12     | 8        | `predicted_for`, `Option<Instant>`.            |
-| 20     | Variable | Boolean values, numeric values.               |
+Presence bit `j - 1` selects bundle `j` for `j >= 1`.
+Bundle 0 is always included.
+The accepted subscription supplies all counts, formats and component counts; none are repeated in a publication.
+All included values come from the acquisition identified by `acquired_at`.
+An omitted bundle contributes no bytes and is not needed to decode any included bundle.
 
-The accepted request supplies the sample count, value order, formats and component counts.
-The body is independently decodable from that context.
+## Bundle values
 
-Every selected sample contributes its complete value representation; there is no availability bitmap or omitted value.
-All values come from the group's identified acquisition.
-Predicted values represent the actual common time in `predicted_for`, which is absent when no predicted samples are present.
+Encode each included bundle independently:
 
-## Boolean values
+1. Pack its `bit` bindings in binding order, using `ceil(B / 8)` bytes for B bits.
+2. Append its non-bit bindings in binding order, with components in [SampleKind](../types/SampleKind.md) order and [SampleFormat](../types/SampleFormat.md) encoding.
 
-Collect selections using format `bit`, in request order.
-For `B` such values, write `ceil(B / 8)` bytes in that order.
-A false value occupies its bit with value zero.
+Each bundle starts at a byte boundary; bits from different bundles never share a byte.
+There are no per-sample absence bits, identifiers, counts or lengths.
+An empty bundle contributes zero bytes.
+A false value occupies its bit with value zero, and an f32 pose occupies 28 bytes.
+All bitmaps are least-significant-bit first; unused high bits in their last byte are ignored.
 
-## Numeric values
-
-Write each non-bit sample in request order, with components in [SampleKind](../types/SampleKind.md) order and the selected [SampleFormat](../types/SampleFormat.md).
-A pose encoded as `f32` occupies 28 bytes.
-No per-value identifiers, lengths or padding are present.
-
-The body length is exactly:
+The exact body length is:
 
 ```text
-20 + ceil(B / 8)
-   + sum(component_count[i] * component_width_bytes[i]
-         for each non-bit selection i)
+20 + S + ceil((bundle_count - 1) / 8)
+   + sum(ceil(bit_bindings[j] / 8)
+         + sum(component_count[i] * component_width_bytes[i]
+               for each non-bit binding i in bundle j)
+         for each included bundle j)
 ```
 
-The bitmap uses least-significant-bit-first order. Receivers MUST ignore unused high bits in the last byte.
-The fixed size depends only on the accepted selection.
-On either channel, the publication including its tag must fit the transport message limit and implementation resource limits.
+Admission checks the maximum message size with every bundle present, including the tag.
+A publication's length varies only with its presence bitmap.
 
 ## Validation
 
-Use `subscription_id` to obtain the accepted layout.
-Discard unknown or retired ids before decoding values.
-For an accepted id, the selected channel, exact length and kind-specific numeric rules must be valid before exposing any values.
-A malformed publication is discarded as a unit.
+Resolve the accepted subscription by id before decoding its layout.
+Discard unknown or retired ids, wrong-channel publications, invalid required times, incorrect lengths and invalid sample values.
+Validate the complete publication before exposing any values or acknowledging it.
+Padding bits in both presence and value bitmaps do not affect length or semantics.
 
-The [complete-value policy](../interactions/04-publication.md#values-and-quality) and [derivation](../derivation.md#feedback-overrides) explain the change from the earlier absence-aware requirements.
-
-Requirements: [PRO-0001](../../design/requirements/protocol/PRO-0001.md), [PRO-0002](../../design/requirements/protocol/PRO-0002.md), [PRO-0006](../../design/requirements/protocol/PRO-0006.md), [PRO-0011](../../design/requirements/protocol/PRO-0011.md), [PRO-0012](../../design/requirements/protocol/PRO-0012.md), [PRO-0028](../../design/requirements/protocol/PRO-0028.md), [PRO-0019](../../design/requirements/protocol/PRO-0019.md).
+Requirements: [PRO-0001](../../design/requirements/protocol/PRO-0001.md), [PRO-0002](../../design/requirements/protocol/PRO-0002.md), [PRO-0011](../../design/requirements/protocol/PRO-0011.md), [PRO-0012](../../design/requirements/protocol/PRO-0012.md), [PRO-0028](../../design/requirements/protocol/PRO-0028.md).
