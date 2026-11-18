@@ -15,6 +15,7 @@ p { line-height: 1.6; margin: 0; color: var(--text-muted); }
 main { max-width: 1570px; margin: auto; padding: var(--space-6) var(--space-10); }
 .connection-box { display: flex; gap: var(--space-4); align-items: center; min-width: 0; }
 .endpoint { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+#operator-list { width: clamp(15ch, 23vw, 40ch); max-width: 100%; text-overflow: ellipsis; }
 .endpoint .mono { font-size: var(--text-sm); width: 29ch; max-width: 100%; min-width: 0; }
 .connection-status { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-muted); }
 #error { margin-bottom: var(--space-5); }
@@ -51,7 +52,7 @@ main { max-width: 1570px; margin: auto; padding: var(--space-6) var(--space-10);
 }
 @media (max-width: 800px) {
   .prediction-timing { grid-template-columns: minmax(0, 1fr); }
-  .topbar { padding-inline: var(--space-5); }
+  .topbar { padding-inline: var(--space-5); flex-wrap: wrap; }
   main { padding: var(--space-5); }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-6) 0; }
   .metric:nth-child(2n) { border: 0; }
@@ -62,4 +63,5 @@ main { max-width: 1570px; margin: auto; padding: var(--space-6) var(--space-10);
   .topbar { flex-wrap: wrap; gap: var(--space-3); }
   .connection-box { width: 100%; gap: var(--space-2); flex-wrap: wrap; }
   .endpoint { flex: 1 0 100%; }
+  #operator-list, .endpoint .mono { width: 100%; }
 }

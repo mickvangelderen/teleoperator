@@ -56,12 +56,13 @@ export class Connection {
   private freshnessTimer?: ReturnType<typeof setInterval>;
   constructor(private readonly update: (state: State) => void, private readonly recording?: Recorder) { this.state.session = this.session; }
 
-  async connect(address?: string) {
+  async connect(address?: string, onHealthy?: (health: unknown) => void) {
     if (this.stopped || this.state.status !== "Disconnected") return;
     profiler.resetConnectionMetrics();
     const headers: Record<string, string> = address ? { "X-Operator-Address": address } : {};
-    void fetch("/api/health", { headers, signal: this.abort.signal }).then(r => r.json()).then(data => {
-      if (this.stopped) return;
+    void fetch("/api/health", { headers, signal: this.abort.signal }).then(r => r.ok ? r.json() : null).then(data => {
+      if (this.stopped || !data || typeof data !== "object") return;
+      onHealthy?.(data);
       this.state.source = typeof data.source === "string" ? data.source : "unknown";
       this.emit();
     }).catch(() => {});

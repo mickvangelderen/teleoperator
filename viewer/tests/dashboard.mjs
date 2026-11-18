@@ -26,6 +26,8 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE ?? "/opt/google/chrome/chrome", headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = [];
   page.on("pageerror", error => errors.push(error.message));
+  let nearby = [];
+  await page.route("**/api/operators", route => route.fulfill({ json: nearby }));
   await page.goto(url);
   await page.waitForFunction(() => document.querySelector("#poses").dataset.assets === "ready");
   assert.equal(await page.title(), "Teleoperator protocol");
@@ -40,6 +42,8 @@ try {
   assert.equal(await page.locator("#render-to-photon").inputValue(), "0");
   await page.keyboard.press("Tab");
   assert.equal(await page.locator(".brand").evaluate(el => el === document.activeElement), true);
+  await page.keyboard.press("Tab");
+  assert.equal(await page.locator("#operator-list").evaluate(el => el === document.activeElement), true);
   await page.keyboard.press("Tab");
   assert.equal(await page.locator("#target").evaluate(el => el === document.activeElement), true);
   await page.keyboard.press("Tab");
@@ -137,7 +141,7 @@ try {
   for (const width of [1440, 800, 390, 320]) {
     await page.setViewportSize({ width, height: 1000 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `No horizontal overflow at ${width}`);
-    const controls = await page.locator("header .brand, header #target, header #status, header #connect").evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return { x: r.x, right: r.right, y: r.y, bottom: r.bottom }; }));
+    const controls = await page.locator("header .brand, header #operator-list, header #target, header #status, header #connect").evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return { x: r.x, right: r.right, y: r.y, bottom: r.bottom }; }));
     assert.ok(controls.every(r => r.x >= 0 && r.right <= width), `Header controls fit at ${width}`);
     const header = await page.locator("header").boundingBox(), metrics = await page.locator(".metrics").boundingBox();
     assert.ok(metrics.y - (header.y + header.height) < 75, "No unused hero spacing");
@@ -161,6 +165,18 @@ try {
   await page.waitForFunction(() => !document.querySelector("#error").hidden);
   assert.ok((await page.locator("#error").innerText()).includes(address));
   assert.equal(await page.locator("#target").inputValue(), address);
+  nearby = [{ name: "Lab operator", address: "http://192.0.2.2:8123" }];
+  await page.route("**/api/health", route => route.fulfill({ headers: { "X-Operator-Response": "1" }, json: { tracking: false } }));
+  await page.reload();
+  await page.waitForFunction(value => document.querySelector("#target").value === value, address);
+  const chooser = page.getByRole("combobox", { name: "Operator", exact: true });
+  await page.waitForFunction(value => Array.from(document.querySelector("#operator-list").options)
+    .some(option => option.value === value && option.textContent.includes("HTTP reachable · input unavailable")), address);
+  await chooser.selectOption(nearby[0].address);
+  assert.equal(await page.locator("#target").inputValue(), nearby[0].address);
+  await chooser.selectOption("");
+  assert.equal(await page.locator("#target").inputValue(), "");
+  assert.equal(await page.locator("#target").evaluate(el => el === document.activeElement), true);
   assert.deepEqual(errors, []);
   console.log("PASS: compact header/footer cleanup, keyboard/connection/error controls, 0 ms default, grouped age/arrival headlines and raw traces, missing-data behavior, 1440/800/390/320 px layouts");
 } finally {

@@ -5,3 +5,8 @@ export function operatorOrigin(value: string): string {
   }
   throw new Error("Enter an HTTP(S) operator address, for example http://127.0.0.1:8080.");
 }
+
+export interface OperatorEndpoint {
+  name: string;
+  address: string;
+}

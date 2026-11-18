@@ -46,12 +46,14 @@ test("concurrent viewer requests use independent origins and forward only operat
       const response = await fetch(viewer + "/api/" + route, { method, headers });
       assert.equal(response.status, 200);
       assert.equal(response.headers.get("Set-Cookie"), null);
+      assert.equal(response.headers.has("X-Operator-Response"), route === "health");
       assert.equal(await response.text(), address === first ? "first" : "second");
     }
   }));
   assert.deepEqual(requests.sort(), ["first GET /health", "first POST /offer", "second GET /health", "second POST /offer"]);
   for (const [path, options, status] of [
     ["/offer", { method: "POST", headers: { Origin: "http://another.test", "Content-Type": "application/json" } }, 403],
+    ["/operators", { headers: { Origin: "http://another.test" } }, 403],
     ["/health", { headers: { "X-Operator-Address": second + "/other" } }, 400],
     ["/offer", { method: "POST", body: "text" }, 415],
     ["/other", {}, 404],

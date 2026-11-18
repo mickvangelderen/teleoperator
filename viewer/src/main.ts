@@ -1,4 +1,5 @@
 import { Connection, initialState } from "./connection";
+import { mountOperatorChooser } from "./operator-chooser";
 import { operatorOrigin } from "./operator-address";
 import { spatialFrames, staleBundle } from "./tracking-view";
 import { spaceNames } from "./protocol";
@@ -33,7 +34,7 @@ const icon = (name: "head" | "controller" | "body") => {
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <header class="topbar">
     <h1 class="product-title"><a class="brand" href="/" aria-label="Teleoperator protocol home"><span class="brand-mark" aria-hidden="true">×</span><span>Teleoperator protocol</span></a></h1>
-    <form class="connection-box"><label class="endpoint"><span class="section-label">OPERATOR ADDRESS</span><input id="target" type="url" class="mono" required spellcheck="false" autocomplete="off" disabled></label><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></form>
+    <form class="connection-box"><div class="endpoint"><label class="section-label" for="operator-list">Operator</label><select id="operator-list"></select></div><label class="endpoint"><span class="section-label">OPERATOR ADDRESS</span><input id="target" type="url" class="mono" required spellcheck="false" autocomplete="off"></label><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></form>
   </header>
   <main>
     <div id="error" class="status-message" data-tone="error" role="alert" hidden></div>
@@ -138,6 +139,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     setAttribute(status, "title", recording.path);
   } else setAttribute(element("recording-status"), "hidden", "");
   const live = state.status === "Connected", busy = state.status === "Connecting";
+  setAttribute(element("operator-list"), "disabled", live || busy ? "" : null);
   setAttribute(target, "readonly", live || busy ? "" : null);
   setAttribute(target, "title", live ? "Disconnect to change the operator address." : busy ? "Cancel to change the operator address." : null);
   text("status", state.status);
@@ -202,21 +204,12 @@ function mountCapabilities(session: Session) {
   container.append(subscriptionEditor);
 }
 
-const connectButton = element<HTMLButtonElement>("connect");
-connectButton.disabled = true;
-fetch("/api/operator-address").then(async response => {
-  if (!response.ok) throw new Error();
-  target.value = operatorOrigin(await response.json());
-}).catch(() => {
-  current = { ...initialState(), status: "Error", detail: "Could not load the initial operator address. Enter an address to connect." };
-}).finally(() => { target.disabled = false; connectButton.disabled = false; });
-
-target.oninput = () => {
+const chooser = mountOperatorChooser(element<HTMLSelectElement>("operator-list"), target, () => {
   target.setCustomValidity("");
   recording = undefined;
   profiler.resetConnectionMetrics();
   if (current.status === "Error") current = initialState();
-};
+});
 document.querySelector<HTMLFormElement>(".connection-box")!.onsubmit = event => {
   event.preventDefault();
   if (
@@ -235,17 +228,29 @@ document.querySelector<HTMLFormElement>(".connection-box")!.onsubmit = event => 
     return;
   }
   target.value = address;
+  chooser.pin();
   connection?.close();
   recording = import.meta.env.DEV ? new Recorder() : undefined;
+  let saved = false;
   const next = new Connection((state) => {
-    if (connection === next) current = state.status === "Error" ? { ...state, detail: `${address} — ${state.detail}` } : state;
+    if (connection !== next) return;
+    if (state.status === "Connected" && !saved) {
+      saved = true;
+      chooser.remember(address);
+    }
+    current = state.status === "Error" ? { ...state, detail: `${address} — ${state.detail}` } : state;
   }, recording);
   connection = next;
   target.readOnly = true;
-  void next.connect(address);
+  void next.connect(address, health => {
+    if (connection === next) {
+      saved = true;
+      chooser.remember(address, health);
+    }
+  });
 };
 document.addEventListener("visibilitychange", () => connection?.visibilityChanged(performance.now(), !document.hidden));
-window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); connection?.close(); performancePanel.dispose(); });
+window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); chooser.dispose(); connection?.close(); performancePanel.dispose(); });
 
 for (const id of ["view-angle", "view-zoom"]) element(id).oninput = () => {
   spatial?.setView(element<HTMLSelectElement>("view-angle").value, Number(element<HTMLInputElement>("view-zoom").value));
@@ -265,4 +270,4 @@ element<HTMLInputElement>("render-to-photon").oninput = () => {
 element("skeleton-view").onchange = () => spatial?.reframe();
 element("show-body-mesh").onchange = () => spatial?.showBodyMesh(element<HTMLInputElement>("show-body-mesh").checked);
 element("show-joints").onchange = () => spatial?.showJoints(element<HTMLInputElement>("show-joints").checked);
-if (import.meta.hot) import.meta.hot.dispose(() => { cancelAnimationFrame(frame); connection?.close(); spatial?.dispose(); performancePanel.dispose(); });
+if (import.meta.hot) import.meta.hot.dispose(() => { cancelAnimationFrame(frame); chooser.dispose(); connection?.close(); spatial?.dispose(); performancePanel.dispose(); });

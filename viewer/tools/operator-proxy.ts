@@ -2,9 +2,14 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { TLSSocket } from "node:tls";
 import type { Connect, Plugin } from "vite";
+import { browseOperators } from "./operator-discovery.ts";
 import { operatorOrigin } from "../src/operator-address.ts";
 
 export function operatorProxy(initialAddress: string): Plugin {
+  let discovery: ReturnType<typeof browseOperators> | undefined;
+  function startDiscovery() {
+    try { discovery = browseOperators(); } catch { /* Direct addresses also work without multicast. */ }
+  }
   const middleware: Connect.NextHandleFunction = (req, res, next) => {
     if (!req.url?.startsWith("/api/")) return next();
     const reply = (status: number, message: string, type = "text/plain") => {
@@ -20,6 +25,10 @@ export function operatorProxy(initialAddress: string): Plugin {
     }
     if (req.method === "GET" && req.url === "/api/operator-address") {
       return reply(200, JSON.stringify(initialAddress), "application/json");
+    }
+    if (req.method === "GET" && req.url === "/api/operators") {
+      const endpoints = discovery?.list();
+      return reply(endpoints ? 200 : 503, JSON.stringify(endpoints ?? []), "application/json");
     }
     const health = req.method === "GET" && req.url === "/api/health";
     const offer = req.method === "POST" && req.url === "/api/offer";
@@ -38,6 +47,7 @@ export function operatorProxy(initialAddress: string): Plugin {
       timeout: 15_000,
     }, response => {
       const status = response.statusCode ?? 502;
+      if (health) res.setHeader("X-Operator-Response", "1");
       res.writeHead(status, { "Content-Type": status === 200 ? "application/json" : "text/plain" });
       response.on("error", () => res.destroy());
       response.pipe(res);
@@ -52,7 +62,17 @@ export function operatorProxy(initialAddress: string): Plugin {
   };
   return {
     name: "xr-operator-proxy",
-    configureServer(server) { server.middlewares.use(middleware); },
-    configurePreviewServer(server) { server.middlewares.use(middleware); },
+    configureServer(server) {
+      if (server.httpServer) {
+        startDiscovery();
+        server.httpServer.once("close", () => discovery?.close());
+      }
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
+      startDiscovery();
+      server.httpServer.once("close", () => discovery?.close());
+      server.middlewares.use(middleware);
+    },
   };
 }
