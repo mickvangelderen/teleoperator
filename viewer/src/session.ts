@@ -11,7 +11,6 @@ export type Subscription = {
   bundles: (ReceivedBundle | undefined)[]; newestPosition?: bigint; version: number;
   counters: Map<number, bigint>; deltas: Map<number, bigint>;
   arrivals: number[]; packets: number; bytes: number;
-  deliveryObservations?: { acquired: bigint; arrived: number }[];
   freshness: FreshnessBaseline;
 };
 export const selectedBundle = (s: Subscription, index: number) => s.bundles[index]?.consumed ?? s.bundles[index];
@@ -151,16 +150,6 @@ export class Session {
     const mid = Math.floor(delays.length / 2);
     return delays.length % 2 ? delays[mid] : (delays[mid - 1] + delays[mid]) / 2;
   }
-  sampleArrivalDelay(id: number, now: number) {
-    const clock = this.clockEstimate(now);
-    if (!clock) return undefined;
-    // Keep server timestamps so a refined clock estimate rebases the entire window.
-    const delays = (this.active.get(id)?.deliveryObservations ?? [])
-      .filter(o => o.arrived > now - 2000 && o.arrived <= now)
-      .map(o => Number(BigInt(Math.round(o.arrived * 1e6)) + clock.offset - o.acquired) / 1e6)
-      .filter(delay => delay >= 0 && delay <= 1000).sort((a, b) => a - b);
-    return delays.length < 8 ? undefined : delays[Math.ceil(delays.length * 0.9) - 1];
-  }
   receive(message: ServerMessage) {
     if (this.phase === "closed") throw new Error("Session is closed");
     if (this.phase === "selection") {
@@ -251,9 +240,6 @@ export class Session {
       });
       if (index === 0 && acquired && selections.length) {
         active.acquiredAtArrival = arrivedAt;
-        const observations = active.deliveryObservations ??= [];
-        while (observations.length && (observations.length >= 256 || observations[0].arrived < arrivedAt - 2000)) observations.shift();
-        observations.push({ acquired: packet.timestamp, arrived: arrivedAt });
         active.freshness.observe(this.sampleAge(packet.timestamp, arrivedAt), arrivedAt, 1000 / publicationRate(active.request), Number(this.clockEstimate(arrivedAt)?.delay ?? 0n) / 2e6);
       }
     });

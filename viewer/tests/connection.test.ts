@@ -213,6 +213,40 @@ test("automatic schedules encode bounded updates, preserve freshness, and follow
   } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
 });
 
+test("retained acquisitions and skipped slots do not advance the automatic publication phase", context => {
+  context.mock.method(performance, "now", () => 1000);
+  const original = globalThis.RTCPeerConnection;
+  Object.assign(globalThis, { RTCPeerConnection: Peer });
+  const c = connection();
+  try {
+    c.publish(request, true);
+    c.session.receive({ tag: 5, id: 1 });
+    setClock(c.session, { offset: 0n, delay: 2_000_000n, at: 1000 });
+    timingFrames(c, 1000, 0);
+    const initial = decodeSchedule(updates().at(-1)!);
+    const packet = new Uint8Array(77), view = new DataView(packet.buffer);
+    packet[0] = 9;
+    view.setUint32(1, 1, true);
+    view.setBigUint64(13, NON_MAX, true);
+    view.setFloat64(69, 1, true);
+    // One acquisition per three publication opportunities. Repeat it once and
+    // skip one slot, keeping transport and the consumer cadence constant.
+    for (let i = 0; i < 126; i++) {
+      const frame = 1200 + (i + 1) * 1000 / 60;
+      const acquired = Math.round((frame - (i % 3) * 1000 / 60 - 12) * 1e6);
+      if (i % 3 < 2) {
+        view.setBigUint64(5, BigInt(acquired), true);
+        assert.ok(c.session.unreliable(packet, frame - 2));
+      }
+      c.frame(frame, frame, 0);
+      const age = c.session.freshness(frame).worst!.ageMs!;
+      assert.ok(Math.abs(age - (frame - acquired / 1e6)) < 0.001);
+    }
+    assert.equal(updates().length, 1, "Source age must not change the timing sent on the wire");
+    assert.equal(initial.delay, 4_000_000n);
+  } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
+});
+
 test("manual timing remains untouched and pending replacements cannot receive updates", context => {
   const original = globalThis.RTCPeerConnection;
   Object.assign(globalThis, { RTCPeerConnection: Peer });

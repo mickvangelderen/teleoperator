@@ -259,7 +259,7 @@ export class Connection {
       if (!this.automatic.has(id) || this.session.stopping.has(id)
         || [...this.replacements].some(([pending, previous]) => previous === id && this.session.pending.has(pending))
         || now - (this.scheduleUpdates.get(id) ?? -Infinity) < SCHEDULE_UPDATE_INTERVAL_MS) continue;
-      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clockEstimate(now), this.session.networkLatency(now), this.session.capabilities!.groups[group], this.session.sampleArrivalDelay(id, now));
+      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clockEstimate(now), this.session.networkLatency(now), this.session.capabilities!.groups[group]);
       if (!next) continue;
       this.scheduleUpdates.set(id, now);
       if (!scheduleNeedsUpdate(schedule, next)) continue;

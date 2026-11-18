@@ -40,14 +40,12 @@ export class PublicationTiming {
     this.processing = this.processing.filter(p => now - p.at < 2000).slice(-64);
   }
 
-  schedule(current: Timing, now: number, renderToPhotonMs: number, clock?: ClockEstimate, transitMs?: number, maxRate = Infinity, sampleArrivalMs?: number): Timing | undefined {
+  schedule(current: Timing, now: number, renderToPhotonMs: number, clock?: ClockEstimate, transitMs?: number, maxRate = Infinity): Timing | undefined {
     if (!clock || clock.at < this.clockAfter || now < clock.at || now - clock.at > 3000 || clock.delay < 0n
       || this.lastFrame === undefined || now - this.lastFrame > 250 || this.intervals.length < 4
       || !Number.isFinite(renderToPhotonMs) || renderToPhotonMs < 0 || renderToPhotonMs > 1000) return;
     const transit = transitMs ?? Number(clock.delay) / 2e6;
     if (!Number.isFinite(transit) || transit < 0 || transit > 1000) return;
-    const arrival = sampleArrivalMs ?? transit;
-    if (!Number.isFinite(arrival) || arrival < 0 || arrival > 1000) return;
     const typical = median(this.intervals);
     // Average ordinary frame intervals to avoid treating rAF timestamp rounding
     // as a refresh-rate change; exclude missed frames from the estimate.
@@ -65,11 +63,11 @@ export class PublicationTiming {
     const costs = this.processing.filter(p => now - p.at < 2000).map(p => p.duration).sort((a, b) => a - b);
     const receiveCost = Math.max(1, costs[Math.floor((costs.length - 1) * 0.9)] ?? 1);
     // Leave time for decoding plus a small arrival margin, enlarged by measured jitter.
-    // Actual sample traffic includes sender work, transport and callback queueing.
-    // Its upper percentile already covers delivery jitter; probes bootstrap it.
-    const probeJitter = sampleArrivalMs === undefined ? Math.abs(transit - Number(clock.delay) / 2e6) : 0;
+    // Acquisition can precede a publication slot by a full device poll or more.
+    // Only clock probes estimate transit independently of the retained sample's age.
+    const probeJitter = Math.abs(transit - Number(clock.delay) / 2e6);
     const arrivalMargin = 2 + Math.min(50, 2 * frameJitter + probeJitter);
-    const lead = arrival + Math.min(50, receiveCost) + arrivalMargin;
+    const lead = transit + Math.min(50, receiveCost) + arrivalMargin;
     // Choose an upcoming render far enough away for the reliable update to reach the server.
     const anchor = this.lastFrame + callbackDelay;
     const framesAhead = Math.max(1, Math.ceil((now + transit + 2 + lead - anchor) / cadence));
