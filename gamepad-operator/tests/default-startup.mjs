@@ -51,9 +51,11 @@ try {
   browser = await chromium.launch({executablePath: process.env.CHROMIUM_EXECUTABLE ?? '/opt/google/chrome/chrome'});
   const page = await browser.newPage();
   await page.goto(url.href);
-  await page.waitForFunction(() => !document.querySelector('#target').disabled);
-  assert.equal(await page.locator('#target').inputValue(), endpoint.origin);
-  const health = await page.request.get(new URL('/api/health', url).href);
+  const owned = [endpoint.origin, ...Array.from(server.log.matchAll(/LAN signaling: (http:\/\/\S+)/g), match => new URL(match[1]).origin)];
+  await page.waitForFunction(() => !!document.querySelector('#target')?.value);
+  const selected = await page.locator('#target').inputValue();
+  assert.ok(owned.includes(selected), `Expected this test's operator, got ${selected}`);
+  const health = await page.request.get(new URL('/api/health', url).href, {headers: {'X-Operator-Address': selected}});
   assert.equal(health.status(), 200);
   const info = await health.json();
   assert.equal(info.application, 'Gamepad Operator');
@@ -63,13 +65,15 @@ try {
   const offer = page.waitForResponse(r => r.url().endsWith('/api/offer'));
   await page.locator('#connect').click();
   const answer = await offer;
+  const offered = await answer.request().headerValue('X-Operator-Address');
+  assert.ok(owned.includes(offered), `Unexpected signaling target ${offered}`);
   assert.equal(answer.status(), 200, answer.ok() ? undefined : await answer.text());
   await page.locator('subscription-editor .subscription-message').filter({hasText: /\d+ packets/}).waitFor();
   assert.equal(await page.locator('#status').innerText(), 'Connected');
   const row = page.locator('tr[data-descriptor^="/user/gamepad/input/"], tr[data-descriptor^="/gamepad/raw/"]').first();
   await row.scrollIntoViewIfNeeded();
   await page.waitForFunction(el => el.dataset.available === 'true', await row.elementHandle());
-  console.log(url.origin, '→', endpoint.origin, info.selected.device.name, await page.locator('#sample-summary').innerText(),
+  console.log(url.origin, '→', offered, info.selected.device.name, await page.locator('#sample-summary').innerText(),
     await row.getAttribute('data-descriptor'), await row.locator('.sample-value').innerText(),
     await page.locator('.subscription-message').innerText());
 
