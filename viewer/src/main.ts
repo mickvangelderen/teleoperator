@@ -1,4 +1,5 @@
 import { Connection, initialState } from "./connection";
+import { operatorOrigin } from "./operator-address";
 import { spatialFrames, staleBundle } from "./tracking-view";
 import { spaceNames } from "./protocol";
 import type { Session } from "./session";
@@ -18,8 +19,6 @@ import { GroupMetrics } from "./group-metrics";
 import { mountFreshnessIndicator } from "./freshness-view";
 import { groupColor, mountGroupLegend, mountSparkline, neutralColor } from "./sparkline";
 
-declare const __OPERATOR_TARGET__: string;
-
 const icon = (name: "head" | "controller" | "body") => {
   const paths = {
     head: '<path d="M5 8h14l2 4-2 6h-5l-2-2-2 2H5l-2-6z"/><path d="M7 8V6h10v2M7 12h3m4 0h3"/>',
@@ -33,7 +32,7 @@ const icon = (name: "head" | "controller" | "body") => {
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <header class="topbar">
     <h1 class="product-title"><a class="brand" href="/" aria-label="Teleoperator protocol home"><span class="brand-mark" aria-hidden="true">×</span><span>Teleoperator protocol</span></a></h1>
-    <div class="connection-box"><div class="endpoint"><span class="section-label">DEVICE ENDPOINT</span><span id="target" class="mono"></span></div><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></div>
+    <form class="connection-box"><label class="endpoint"><span class="section-label">OPERATOR ADDRESS</span><input id="target" type="url" class="mono" required spellcheck="false" autocomplete="off" disabled></label><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></form>
   </header>
   <main>
     <div id="error" class="status-message" data-tone="error" role="alert" hidden></div>
@@ -60,7 +59,7 @@ const text = (id: string, value: string) => {
 };
 document.querySelector(".workspace")!.prepend(panelHeader("Tracking workspace"));
 document.querySelector(".subscriptions-panel")!.prepend(panelHeader("Subscriptions", element("sample-summary")));
-text("target", __OPERATOR_TARGET__);
+const target = element<HTMLInputElement>("target");
 let connection: Connection | null = null;
 let recording: Recorder | undefined;
 let current = initialState();
@@ -130,12 +129,14 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     const label = recording.status === "error" ? "Recording stopped" : recording.status === "recording" ? "Recording" : recording.savedBytes < recording.bytes ? "Saving recording" : recording.status === "limit" ? "Recording stopped · 128 MiB limit" : "Recording saved";
     setText(status, `${label} · ${(recording.savedBytes / 1024 ** 2).toFixed(1)} MiB saved${recording.error ? ` · ${recording.error}` : ""}`);
     setAttribute(status, "title", recording.path);
-  }
+  } else setAttribute(element("recording-status"), "hidden", "");
   const live = state.status === "Connected", busy = state.status === "Connecting";
+  setAttribute(target, "readonly", live || busy ? "" : null);
+  setAttribute(target, "title", live ? "Disconnect to change the operator address." : busy ? "Cancel to change the operator address." : null);
   text("status", state.status);
   element("status-dot").classList.toggle("live", live);
   element("status-dot").classList.toggle("busy", busy);
-  text("connect", live ? "Disconnect" : busy ? "Cancel" : "Connect ↗");
+  text("connect", live ? "Disconnect" : busy ? "Cancel" : state.status === "Error" ? "Retry" : "Connect ↗");
   element("connect").classList.toggle("secondary", live || busy);
   setAttribute(element("error"), "hidden", state.status !== "Error" ? "" : null);
   text("error", state.detail);
@@ -194,7 +195,23 @@ function mountCapabilities(session: Session) {
   container.append(subscriptionEditor);
 }
 
-element("connect").onclick = () => {
+const connectButton = element<HTMLButtonElement>("connect");
+connectButton.disabled = true;
+fetch("/api/operator-address").then(async response => {
+  if (!response.ok) throw new Error();
+  target.value = operatorOrigin(await response.json());
+}).catch(() => {
+  current = { ...initialState(), status: "Error", detail: "Could not load the initial operator address. Enter an address to connect." };
+}).finally(() => { target.disabled = false; connectButton.disabled = false; });
+
+target.oninput = () => {
+  target.setCustomValidity("");
+  recording = undefined;
+  profiler.resetConnectionMetrics();
+  if (current.status === "Error") current = initialState();
+};
+document.querySelector<HTMLFormElement>(".connection-box")!.onsubmit = event => {
+  event.preventDefault();
   if (
     connection &&
     ["Connecting", "Connected"].includes(connection.state.status)
@@ -203,13 +220,22 @@ element("connect").onclick = () => {
     connection = null;
     return;
   }
+  let address: string;
+  try { address = operatorOrigin(target.value); }
+  catch (error) {
+    target.setCustomValidity((error as Error).message);
+    target.reportValidity();
+    return;
+  }
+  target.value = address;
   connection?.close();
   recording = import.meta.env.DEV ? new Recorder() : undefined;
   const next = new Connection((state) => {
-    if (connection === next) current = state;
+    if (connection === next) current = state.status === "Error" ? { ...state, detail: `${address} — ${state.detail}` } : state;
   }, recording);
   connection = next;
-  void next.connect();
+  target.readOnly = true;
+  void next.connect(address);
 };
 document.addEventListener("visibilitychange", () => connection?.visibilityChanged(performance.now(), !document.hidden));
 window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); connection?.close(); performancePanel.dispose(); });

@@ -41,6 +41,8 @@ try {
   await page.keyboard.press("Tab");
   assert.equal(await page.locator(".brand").evaluate(el => el === document.activeElement), true);
   await page.keyboard.press("Tab");
+  assert.equal(await page.locator("#target").evaluate(el => el === document.activeElement), true);
+  await page.keyboard.press("Tab");
   assert.equal(await page.locator("#connect").evaluate(el => el === document.activeElement), true);
 
   // Real Session decoding/consumption and dashboard rendering with independent
@@ -148,7 +150,17 @@ try {
   await page.route("**/api/health", route => route.fulfill({ json: { source: "test" } }));
   await page.locator("header #connect").click();
   await page.waitForFunction(() => document.querySelector("#status").textContent === "Error");
-  assert.equal(await page.locator("#error").isVisible(), true);
+  assert.match(await page.locator("#error").innerText(), /127\.0\.0\.1:1/);
+  assert.equal(await page.locator("#connect").innerText(), "Retry");
+  const address = "http://192.168.1.42:8082";
+  await page.getByLabel("Operator address").fill(address + "/");
+  await page.locator("#error").waitFor({ state: "hidden" });
+  const requests = ["health", "offer"].map(route => page.waitForRequest(r => r.url().endsWith("/api/" + route)));
+  await page.getByLabel("Operator address").press("Enter");
+  for (const request of await Promise.all(requests)) assert.equal(await request.headerValue("X-Operator-Address"), address);
+  await page.waitForFunction(() => !document.querySelector("#error").hidden);
+  assert.ok((await page.locator("#error").innerText()).includes(address));
+  assert.equal(await page.locator("#target").inputValue(), address);
   assert.deepEqual(errors, []);
   console.log("PASS: compact header/footer cleanup, keyboard/connection/error controls, 0 ms default, grouped age/arrival headlines and raw traces, missing-data behavior, 1440/800/390/320 px layouts");
 } finally {

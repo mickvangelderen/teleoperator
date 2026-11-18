@@ -56,10 +56,11 @@ export class Connection {
   private freshnessTimer?: ReturnType<typeof setInterval>;
   constructor(private readonly update: (state: State) => void, private readonly recording?: Recorder) { this.state.session = this.session; }
 
-  async connect() {
+  async connect(address?: string) {
     if (this.stopped || this.state.status !== "Disconnected") return;
     profiler.resetConnectionMetrics();
-    void fetch("/api/health", { signal: this.abort.signal }).then(r => r.json()).then(data => {
+    const headers: Record<string, string> = address ? { "X-Operator-Address": address } : {};
+    void fetch("/api/health", { headers, signal: this.abort.signal }).then(r => r.json()).then(data => {
       if (this.stopped) return;
       this.state.source = typeof data.source === "string" ? data.source : "unknown";
       this.emit();
@@ -70,7 +71,7 @@ export class Connection {
     this.deadline = setTimeout(
       () =>
         this.fail(
-          "Connection timed out. Check that the Quest is awake and reachable.",
+          "Connection timed out. Check that the operator is running and reachable.",
         ),
       15_000,
     );
@@ -192,7 +193,7 @@ export class Connection {
       if (this.stopped) return;
       const response = await fetch("/api/offer", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify(this.pc.localDescription),
         signal: this.abort.signal,
       });
@@ -334,6 +335,7 @@ export class Connection {
     this.refreshFreshness();
     this.state.status = "Disconnected";
     this.state.detail = "Disconnected. Reconnect to inspect the device.";
+    this.state.source = "unknown";
     this.state.control = "closed";
     this.state.tracking = "closed";
     this.update(this.state);
