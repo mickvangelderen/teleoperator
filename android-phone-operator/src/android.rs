@@ -11,6 +11,8 @@ use jni::{
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::watch;
 
+const PORT: u16 = if cfg!(feature = "arcore") { 8081 } else { 8080 };
+
 struct App {
     hub: Arc<Hub>,
     stop: watch::Sender<bool>,
@@ -48,7 +50,7 @@ fn addresses() -> String {
                         .to_ne_bytes();
                     let ip = std::net::Ipv4Addr::from(bytes);
                     if !ip.is_loopback() && !ip.is_unspecified() {
-                        ips.push(format!("http://{ip}:8080"));
+                        ips.push(format!("http://{ip}:{PORT}"));
                     }
                 }
                 entry = (*entry).ifa_next;
@@ -59,7 +61,7 @@ fn addresses() -> String {
     ips.sort();
     ips.dedup();
     if ips.is_empty() {
-        "No LAN IPv4 address. Connect Wi-Fi; server port 8080.".into()
+        format!("No LAN IPv4 address. Connect Wi-Fi; server port {PORT}.")
     } else {
         ips.join("\n")
     }
@@ -81,9 +83,16 @@ pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeStart(
         return;
     }
     let previous = current.stopping.take();
+    #[cfg(not(feature = "arcore"))]
     let hub = Hub::new(
         std::array::from_fn(|i| mask & (1 << i) != 0),
         "Android SensorManager (physical phone)",
+    );
+    #[cfg(feature = "arcore")]
+    let hub = Hub::spatial_at(
+        std::array::from_fn(|i| mask & (1 << i) != 0),
+        "ARCore spatial tracking (experimental physical phone)",
+        phone::now(),
     );
     let (stop, rx) = watch::channel(false);
     let network = Arc::new(Mutex::new("Starting server…".into()));
@@ -109,8 +118,8 @@ pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeStart(
             }
         };
         runtime.block_on(async move {
-            let listener=match tokio::net::TcpListener::bind("0.0.0.0:8080").await {Ok(l)=>l,Err(e)=>{*n.lock().unwrap()=format!("Server unavailable: {e}");return;}};
-            *n.lock().unwrap()="Listening — port 8080".into();
+            let listener=match tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED,PORT)).await {Ok(l)=>l,Err(e)=>{*n.lock().unwrap()=format!("Server unavailable: {e}");return;}};
+            *n.lock().unwrap()=format!("Listening — port {PORT}");
             let source=h.clone();let mut ticker_stop=rx.clone();
             let ticker=tokio::spawn(async move {
                 let mut timer=tokio::time::interval(std::time::Duration::from_millis(25));
@@ -133,6 +142,8 @@ pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeStop(
     _env: JNIEnv,
     _class: JClass,
 ) {
+    #[cfg(feature = "arcore")]
+    crate::arcore::stop();
     let mut current = app().lock().unwrap();
     if let Some(running) = current.running.take() {
         current.stopping = Some(running.shutdown());
@@ -214,4 +225,45 @@ pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeFlags(
     app().lock().unwrap().running.as_ref().map_or(0, |a| {
         i32::from(a.hub.held()) | ((a.hub.selected() as i32) << 1)
     })
+}
+
+#[cfg(feature = "arcore")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativePrepare(
+    env: JNIEnv,
+    _class: JClass,
+    activity: jni::objects::JObject,
+    requested: jni::sys::jboolean,
+) -> jint {
+    crate::arcore::prepare(
+        env.get_raw().cast(),
+        activity.as_raw().cast(),
+        requested != 0,
+    )
+}
+#[cfg(feature = "arcore")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeCameraStart(
+    env: JNIEnv,
+    _class: JClass,
+    activity: jni::objects::JObject,
+) {
+    if let Some(a) = app().lock().unwrap().running.as_ref() {
+        match (env.get_java_vm(), env.new_global_ref(activity)) {
+            (Ok(vm), Ok(activity)) => crate::arcore::start(vm, activity, a.hub.clone()),
+            _ => a.hub.spatial_failure(
+                a.hub.spatial_context().0,
+                "Could not attach ARCore worker",
+                phone::now(),
+            ),
+        }
+    }
+}
+#[cfg(feature = "arcore")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeCameraStop(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    crate::arcore::stop();
 }

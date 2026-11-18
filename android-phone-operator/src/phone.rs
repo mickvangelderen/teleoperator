@@ -31,7 +31,7 @@ pub fn multiply(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
         w * r - x * i - y * j - z * k,
     ]
 }
-fn normalized(q: [f64; 4]) -> Option<[f64; 4]> {
+pub(crate) fn normalized(q: [f64; 4]) -> Option<[f64; 4]> {
     let n = q.iter().map(|v| v * v).sum::<f64>().sqrt();
     (n.is_finite() && n > 1e-12).then(|| q.map(|v| v / n))
 }
@@ -41,7 +41,7 @@ pub fn android_to_tracking(q: [f64; 4]) -> Option<[f64; 4]> {
     let s = std::f64::consts::FRAC_1_SQRT_2;
     normalized(multiply([-s, 0., 0., s], normalized(q)?))
 }
-fn heading_inverse(q: [f64; 4]) -> Option<[f64; 4]> {
+pub(crate) fn heading_inverse(q: [f64; 4]) -> Option<[f64; 4]> {
     let [x, y, z, w] = q;
     let forward = [
         -2. * (x * z + w * y),
@@ -83,6 +83,7 @@ struct Demand {
     publication: Weak<Mutex<PublicationState>>,
 }
 struct State {
+    spatial: Option<crate::spatial::SpatialState>,
     selected: Hand,
     held: bool,
     foreground: bool,
@@ -306,8 +307,21 @@ impl State {
                 } else {
                     IDENTITY
                 };
-                values.push(Value::Numbers([vec![0.; 3], q.to_vec()].concat()));
-                values.extend([false, valid, false, valid].map(Value::Bit));
+                if let Some(spatial) = &self.spatial {
+                    let valid = valid && spatial.origin && spatial.pose.is_some();
+                    let pose = if valid {
+                        spatial.pose.unwrap()
+                    } else {
+                        crate::spatial::Pose::IDENTITY
+                    };
+                    values.push(Value::Numbers(
+                        [pose.position.to_vec(), pose.orientation.to_vec()].concat(),
+                    ));
+                    values.extend([valid; 4].map(Value::Bit));
+                } else {
+                    values.push(Value::Numbers([vec![0.; 3], q.to_vec()].concat()));
+                    values.extend([false, valid, false, valid].map(Value::Bit));
+                }
             } else if group == 3 {
                 values.extend([
                     Value::Bit(self.held && self.selected as usize == hand),
@@ -394,9 +408,26 @@ impl Hub {
         Self::at(available, source, now())
     }
     pub fn at(available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
-        let c = Arc::new(catalog(available));
+        Self::with_mode(available, source, at, false)
+    }
+    pub fn spatial_at(mut available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
+        available[0] = true;
+        Self::with_mode(available, source, at, true)
+    }
+    fn with_mode(available: [bool; 3], source: &'static str, at: u64, spatial: bool) -> Arc<Self> {
+        let mut c = catalog(available);
+        if spatial {
+            for d in &mut c.descriptors {
+                if d.kind == 10 {
+                    d.name = d.name.replace("orientation", "spatial grip");
+                    d.description = "ARCore Android sensor origin (zero grip translation), +X phone right, +Y out-screen, -Z phone top. Local translation/yaw relative to a current origin anchor, gravity Y-up. Fresh TRACKING + verified camera REALTIME/frame metadata clock required; active only selected and held. Recenter explicitly after loss; anchor is not a fixed robot frame. acquired_at is associated camera-frame timestamp, not API query time; no prediction.".into();
+                }
+            }
+        }
+        let c = Arc::new(c);
         let (updates, _) = watch::channel(0);
         let mut state = State {
+            spatial: spatial.then(Default::default),
             selected: Hand::Left,
             held: false,
             foreground: false,
@@ -447,6 +478,24 @@ impl Hub {
     pub fn action(&self, action: Action, at: u64) {
         let mut s = self.state.lock().unwrap();
         let at = s.transition_time(at);
+        if let Some(spatial) = &mut s.spatial {
+            match action {
+                Action::Pause
+                | Action::Shutdown
+                | Action::Resume
+                | Action::Focus(false)
+                | Action::Recenter => {
+                    spatial.invalidate("Origin cleared — recenter after tracking is ready");
+                    spatial.recenter = matches!(action, Action::Recenter);
+                    if matches!(action, Action::Resume) {
+                        spatial.clock = Default::default();
+                    }
+                    s.heading_set = false;
+                    s.good[0] = false;
+                }
+                _ => {}
+            }
+        }
         match action {
             Action::Select(hand) => {
                 s.cancel();
@@ -483,7 +532,8 @@ impl Hub {
             }
             Action::Recenter => {
                 s.cancel();
-                if s.fresh(0, at)
+                if s.spatial.is_none()
+                    && s.fresh(0, at)
                     && let Some(q) = s.orientation.and_then(heading_inverse)
                 {
                     s.heading = q;
@@ -504,6 +554,10 @@ impl Hub {
             return;
         }
         let mut s = self.state.lock().unwrap();
+        // The AR app never substitutes IMU orientation for a spatial pose.
+        if kind == 0 && s.spatial.is_some() {
+            return;
+        }
         if !s.foreground || !s.available[kind] {
             return;
         }
@@ -558,6 +612,9 @@ impl Hub {
                 }
             }
             if stale[0] {
+                if let Some(spatial) = &mut s.spatial {
+                    spatial.invalidate("Camera frame stalled — recenter required");
+                }
                 s.cancel();
                 s.publish_all(at, &self.capabilities);
             } else {
@@ -572,6 +629,27 @@ impl Hub {
     }
     pub fn status(&self, at: u64) -> String {
         let s = self.state.lock().unwrap();
+        if let Some(spatial) = &s.spatial {
+            return format!(
+                "{:?} hand · {}\n{}\nOrigin: {} · camera pose: {}\nSensor-origin position (m): {:?}\nGrip quaternion xyzw: {:?}\n{}\nNo prediction. Raw IMU available as advertised.\nKeep rear camera unobstructed. Recenter upright, then hold.\nExperimental local reference; not a fixed robot frame.",
+                s.selected,
+                if s.held { "HELD" } else { "INACTIVE" },
+                spatial.status,
+                if spatial.origin {
+                    "established"
+                } else {
+                    "recenter required"
+                },
+                if s.fresh(0, at) {
+                    "fresh"
+                } else {
+                    "unavailable / stale"
+                },
+                spatial.pose.map(|p| p.position),
+                spatial.pose.map(|p| p.orientation),
+                spatial.diagnostics
+            );
+        }
         let sensor = |i: usize| {
             if !s.available[i] {
                 "unavailable"
@@ -608,6 +686,99 @@ impl Hub {
     }
     pub fn selected(&self) -> Hand {
         self.state.lock().unwrap().selected
+    }
+    /// Worker token rejects results crossing pause, focus loss or recenter.
+    pub fn spatial_context(&self) -> (u64, bool, bool) {
+        let s = self.state.lock().unwrap();
+        let a = s.spatial.as_ref().expect("Spatial hub");
+        (a.generation, s.foreground && s.focused, a.recenter)
+    }
+    pub fn spatial_failure(&self, generation: u64, reason: &str, at: u64) {
+        let mut s = self.state.lock().unwrap();
+        let a = s.spatial.as_mut().expect("Spatial hub");
+        if a.generation != generation {
+            return;
+        }
+        a.invalidate(reason);
+        s.good[0] = false;
+        s.heading_set = false;
+        s.cancel();
+        s.publish_all(at, &self.capabilities);
+        self.updates.send_replace(s.serial);
+    }
+    pub fn spatial_frame(&self, f: crate::spatial::Frame) {
+        use crate::spatial::{Acquisition, relative_grip};
+        let mut s = self.state.lock().unwrap();
+        if !s.foreground || !s.focused {
+            return;
+        }
+        let a = s.spatial.as_mut().expect("Spatial hub");
+        if f.generation != a.generation {
+            return;
+        }
+        a.diagnostics = format!(
+            "Frame ns: {} · metadata: {:?}\nREALTIME: {} · query BOOTTIME: {}..{}\nFrame age at return ns: {} (not measured physical latency)",
+            f.timestamp,
+            f.metadata_timestamp,
+            f.realtime,
+            f.query_started,
+            f.query_finished,
+            f.query_finished.saturating_sub(f.timestamp.max(0) as u64)
+        );
+        let result = if !f.tracking {
+            Err("Camera PAUSED/STOPPED — recenter required")
+        } else if a.origin && f.anchor.is_none() {
+            Err("Origin anchor PAUSED/STOPPED — recenter required")
+        } else {
+            a.clock.observe(&f)
+        };
+        let result = result.and_then(|acquisition| {
+            if acquisition == Acquisition::Repeated {
+                return Ok(None);
+            }
+            if f.created_origin && a.recenter {
+                a.origin = true;
+                a.recenter = false;
+            }
+            if !a.origin {
+                a.status = "Camera ready — press Recenter to establish origin".into();
+                return Ok(None);
+            }
+            let pose = f
+                .anchor
+                .and_then(|anchor| relative_grip(f.sensor, anchor))
+                .ok_or("Invalid sensor/origin pose — recenter required")?;
+            Ok(Some((f.timestamp as u64, pose)))
+        });
+        match result {
+            Ok(Some((timestamp, pose))) => {
+                let a = s.spatial.as_mut().unwrap();
+                a.pose = Some(pose);
+                a.status = "ARCore TRACKING · verified frame clock".into();
+                s.last[0] = Some(timestamp);
+                s.good[0] = true;
+                s.heading_set = true;
+                s.orientation = Some(IDENTITY);
+                // Camera frames can arrive after newer UI placeholders. They
+                // still establish source freshness, even though publishing
+                // them would regress the group's timestamp. active() separately
+                // requires a capture after the hold began. Never retime a frame.
+                if timestamp < s.snapshots[0].timestamp {
+                    return;
+                }
+                s.publish(0, timestamp, &self.capabilities);
+                self.updates.send_replace(s.serial);
+            }
+            Ok(None) => {} // Cached frames never refresh acquisition/freshness.
+            Err(reason) => {
+                s.spatial.as_mut().unwrap().invalidate(reason);
+                s.good[0] = false;
+                s.heading_set = false;
+                s.cancel();
+                s.publish_all(f.query_finished, &self.capabilities);
+                self.updates.send_replace(s.serial);
+            }
+        }
     }
 }
 
@@ -863,5 +1034,221 @@ mod tests {
         h.action(Action::Pause, 8);
         let inactive = p.lock().unwrap().candidate().unwrap();
         assert_eq!(inactive.body[25], 0);
+    }
+}
+
+#[cfg(test)]
+mod spatial_tests {
+    use super::*;
+    use crate::spatial::{Frame, Pose};
+    fn frame(h: &Hub, t: u64) -> Frame {
+        Frame {
+            generation: h.spatial_context().0,
+            timestamp: t as i64,
+            metadata_timestamp: Some(t as i64),
+            realtime: true,
+            query_started: t,
+            query_finished: t + 1,
+            tracking: true,
+            sensor: Pose {
+                position: [1., 2., 3.],
+                ..Pose::IDENTITY
+            },
+            anchor: Some(Pose::IDENTITY),
+            created_origin: false,
+        }
+    }
+    fn ready() -> Arc<Hub> {
+        let h = Hub::spatial_at([true; 3], "SYNTHETIC test", 0);
+        h.action(Action::Resume, 1);
+        h.action(Action::Focus(true), 2);
+        h.action(Action::Recenter, 3);
+        let mut f = frame(&h, 10);
+        f.created_origin = true;
+        h.spatial_frame(f);
+        h.action(Action::Hold, 11);
+        h.spatial_frame(frame(&h, 20));
+        h
+    }
+    fn position_valid(h: &Hub, hand: usize) -> bool {
+        matches!(
+            h.state.lock().unwrap().snapshots[0].values[hand * 5 + 1],
+            Value::Bit(true)
+        )
+    }
+    #[test]
+    fn delayed_pre_action_frames_refresh_source_without_backdating_publications() {
+        const MS: u64 = 1_000_000;
+        for delay in [110 * MS, 200 * MS] {
+            for action in [
+                Action::Hold,
+                Action::Release,
+                Action::Select(Hand::Right),
+                Action::Cancel,
+            ] {
+                let h = Hub::spatial_at([true; 3], "delayed SYNTHETIC camera", 0);
+                h.action(Action::Resume, 1);
+                h.action(Action::Focus(true), 2);
+                h.action(Action::Recenter, 3);
+                let mut first = frame(&h, 1000 * MS);
+                first.created_origin = true;
+                first.query_started = 1000 * MS + delay - MS;
+                first.query_finished = 1000 * MS + delay;
+                h.spatial_frame(first);
+                let expect_held = matches!(action, Action::Hold);
+                if !expect_held {
+                    h.action(Action::Hold, first.query_finished);
+                }
+                let action_at = first.query_finished + 1;
+                h.action(action, action_at);
+                let mut previous_publication = action_at;
+                let mut latest_return = action_at;
+                for k in 1..15 {
+                    let mut f = frame(&h, 1000 * MS + 33 * MS * k);
+                    f.query_started = f.timestamp as u64 + delay - MS;
+                    f.query_finished = f.timestamp as u64 + delay;
+                    h.spatial_frame(f);
+                    h.tick(f.query_finished);
+                    latest_return = f.query_finished;
+                    assert_eq!(h.held(), expect_held, "Delay {delay}, action {action:?}");
+                    let s = h.state.lock().unwrap();
+                    assert!(
+                        s.spatial.as_ref().unwrap().origin,
+                        "Fresh delayed source keeps origin"
+                    );
+                    let published = s.snapshots[0].timestamp;
+                    assert!(published >= previous_publication);
+                    previous_publication = published;
+                    assert_eq!(s.last[0], Some(f.timestamp as u64));
+                    drop(s);
+                    assert_eq!(
+                        position_valid(&h, 0),
+                        expect_held && f.timestamp as u64 >= action_at
+                    );
+                }
+                if !expect_held {
+                    h.action(Action::Hold, latest_return + 1);
+                    assert!(
+                        h.held(),
+                        "Release/select/cancel must not require another origin"
+                    );
+                }
+                h.tick(latest_return + STALE_NS + 1);
+                assert!(!h.held(), "A real camera stall must still cancel");
+            }
+        }
+    }
+    #[test]
+    fn fresh_repeats_do_not_release_retime_or_create_acquisitions_but_stall_does() {
+        let h = ready();
+        assert!(h.held());
+        assert!(position_valid(&h, 0));
+        let serial = h.state.lock().unwrap().serial;
+        for t in [30, 40, 100, 1000] {
+            let mut f = frame(&h, 20);
+            f.query_started = t;
+            f.query_finished = t + 1;
+            h.spatial_frame(f);
+            h.tick(t);
+            assert!(h.held());
+            assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 20);
+            assert_eq!(h.state.lock().unwrap().serial, serial);
+        }
+        h.spatial_frame(frame(&h, 2000));
+        assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 2000);
+        let mut f = frame(&h, 2000);
+        f.query_started = 2000 + STALE_NS;
+        f.query_finished = f.query_started + 1;
+        h.spatial_frame(f);
+        assert!(!h.held());
+        assert!(!position_valid(&h, 0));
+        h.spatial_frame(frame(&h, 3000 + STALE_NS));
+        h.action(Action::Hold, 3002 + STALE_NS);
+        assert!(!h.held()); // explicit recenter still required
+    }
+    #[test]
+    fn camera_and_anchor_loss_require_recenter_and_new_press() {
+        for anchor_loss in [false, true] {
+            let h = ready();
+            let mut f = frame(&h, 30);
+            if anchor_loss {
+                f.anchor = None;
+            } else {
+                f.tracking = false;
+            }
+            h.spatial_frame(f);
+            assert!(!h.held());
+            h.spatial_frame(frame(&h, 40));
+            h.action(Action::Hold, 42);
+            assert!(!h.held());
+            h.action(Action::Recenter, 43);
+            let mut f = frame(&h, 50);
+            f.created_origin = true;
+            h.spatial_frame(f);
+            assert!(!h.held());
+            h.action(Action::Hold, 52);
+            h.spatial_frame(frame(&h, 60));
+            assert!(h.held());
+            assert!(position_valid(&h, 0));
+            let s = h.state.lock().unwrap();
+            assert_eq!(s.presses[0], 2);
+            assert_eq!(s.releases[0], 1);
+        }
+    }
+    #[test]
+    fn late_worker_results_cannot_cross_lifecycle_or_recenter_generation() {
+        for action in [
+            Action::Pause,
+            Action::Shutdown,
+            Action::Focus(false),
+            Action::Recenter,
+            Action::Resume,
+        ] {
+            let h = ready();
+            let pending = frame(&h, 100);
+            h.action(action, 30);
+            h.spatial_frame(pending);
+            assert!(!h.held());
+            assert!(!position_valid(&h, 0));
+            h.spatial_failure(pending.generation, "obsolete worker error", 110);
+            assert!(!h.status(110).contains("obsolete worker error"));
+        }
+    }
+    #[test]
+    fn hand_cancel_clock_failures_and_imu_cannot_substitute_spatial_source() {
+        let h = ready();
+        h.action(Action::Select(Hand::Right), 30);
+        assert!(!h.held());
+        h.spatial_frame(frame(&h, 40));
+        h.action(Action::Hold, 42);
+        h.spatial_frame(frame(&h, 50));
+        assert!(!position_valid(&h, 0));
+        assert!(position_valid(&h, 1));
+        let mut f = frame(&h, 60);
+        f.metadata_timestamp = Some(59);
+        h.spatial_frame(f);
+        assert!(!h.held());
+        h.sensor(0, 70, [0., 0., 0., 1.], 70);
+        h.action(Action::Hold, 80);
+        assert!(!h.held());
+        assert!(!position_valid(&h, 1));
+        let h = ready();
+        h.action(Action::Cancel, 25);
+        h.spatial_frame(frame(&h, 30));
+        assert!(!h.held());
+        let h = ready();
+        h.tick(STALE_NS + 100);
+        assert!(!h.held());
+        assert!(!position_valid(&h, 0));
+    }
+    #[test]
+    fn spatial_raw_groups_keep_real_acquisition_and_quality_together() {
+        let h = ready();
+        h.sensor(1, 25, [0., 9.81, 0., 0.], 25);
+        let s = h.state.lock().unwrap();
+        assert_eq!(s.snapshots[0].timestamp, 20);
+        assert_eq!(s.snapshots[1].timestamp, 25);
+        assert!(matches!(s.snapshots[1].values[3], Value::Bit(true)));
+        assert!(matches!(&s.snapshots[0].values[0],Value::Numbers(v) if v[..3]==[1.,2.,3.]));
     }
 }

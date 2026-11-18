@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+arcore = []
+
 [lib]
 name = "phone_operator"
 crate-type = ["cdylib", "rlib"]
@@ -11,6 +15,10 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "phone-operator-synthetic"
 path = "src/main.rs"
+
+[[bin]]
+name = "phone-operator-spatial-synthetic"
+path = "src/spatial_synthetic.rs"
 
 [dependencies]
 async-trait = "0.1"
