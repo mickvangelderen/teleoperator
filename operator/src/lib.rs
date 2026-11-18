@@ -42,6 +42,8 @@ fn android_main(app: AndroidApp) {
     let server = runtime.spawn(async move {
         match tokio::net::TcpListener::bind("0.0.0.0:8080").await {
             Ok(listener) => {
+                let _advertisement =
+                    android_discovery::advertise("Quest Operator", listener.local_addr());
                 if let Err(error) = crate::server::serve(listener, shutdown, server_hub).await {
                     log::error!("Server stopped: {error}");
                 }
