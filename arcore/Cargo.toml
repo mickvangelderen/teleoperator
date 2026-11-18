@@ -1,0 +1,9 @@
+[package]
+name = "arcore"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+arcore-sys = { path = "../arcore-sys" }
+jni = "0.21.1"
