@@ -75,6 +75,13 @@ pub enum Action {
     Recenter,
     Shutdown,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TrackingMode {
+    Orientation,
+    Displacement,
+    Spatial,
+}
+
 #[derive(Clone)]
 struct Snapshot {
     number: u64,
@@ -145,11 +152,11 @@ fn catalog(available: [bool; 3]) -> Capabilities {
         let p = descriptor(
             &mut c,
             root.clone(),
-            format!("{hand} phone orientation"),
+            format!("{hand} phone grip"),
             0,
             10,
             vec![10, 11],
-            "Orientation only: local gravity-aligned, yaw recentered; grip +X phone right, +Y out screen, -Z phone top (thumb). Position always invalid/zero. Active only while selected and held with fresh orientation; no prediction.",
+            "Local gravity-aligned grip (+X phone right, +Y out of screen, -Z phone top). Position is tracked with ARCore, estimated with IMU displacement, or unavailable with orientation alone. Read the component validity and tracking flags at the same acquisition time.",
         );
         c.descriptors[p].spaces = vec![2];
         for (suffix, kind) in [
@@ -451,24 +458,7 @@ impl Hub {
         spatial: bool,
         displacement: bool,
     ) -> Arc<Self> {
-        let mut c = catalog(available);
-        if spatial {
-            for d in &mut c.descriptors {
-                if d.kind == 10 {
-                    d.name = d.name.replace("orientation", "spatial grip");
-                    d.description = "ARCore Android sensor origin (zero grip translation), +X phone right, +Y out-screen, -Z phone top. Local translation/yaw relative to a current origin anchor, gravity Y-up. Fresh TRACKING + verified camera REALTIME/frame metadata clock required; active only selected and held. Recenter explicitly after loss; anchor is not a fixed robot frame. acquired_at is associated camera-frame timestamp, not API query time; no prediction.".into();
-                }
-            }
-        }
-        if displacement {
-            for d in &mut c.descriptors {
-                if d.kind == 10 {
-                    d.name = d.name.replace("orientation", "IMU displacement estimate");
-                    d.description = "Uncorrected IMU displacement estimate, NOT tracked position. Each hold assumes zero velocity/displacement at its first aligned acceleration after press. Rotate acceleration from phone axes into fixed local heading/Y-up, subtract9.80665m/s² gravity, integrate actual dt; no damping/deadband/bias correction. Orientation is SLERP at acceleration time with bracketing samples <=25ms each side; acquired_at is that acceleration timestamp. Gaps>50ms/skew/loss cancel hold. Position_valid means finite estimate; position_tracked=false. Grip +X phone right,+Y out-screen,-Z phone top. No prediction.".into();
-                }
-            }
-        }
-        let c = Arc::new(c);
+        let c = Arc::new(catalog(available));
         let (updates, _) = watch::channel(0);
         let mut state = State {
             spatial: spatial.then(Default::default),
@@ -502,6 +492,33 @@ impl Hub {
             updates,
             source,
         })
+    }
+    pub fn set_tracking_mode(&self, mode: TrackingMode, has_rotation_sensor: bool, at: u64) {
+        let mut s = self.state.lock().unwrap();
+        let spatial = mode == TrackingMode::Spatial;
+        let displacement = mode == TrackingMode::Displacement;
+        if spatial == s.spatial.is_some() && displacement == s.displacement.is_some() {
+            return;
+        }
+        let at = s.transition_time(at);
+        s.cancel();
+        s.spatial = spatial.then(|| crate::spatial::SpatialState {
+            generation: at,
+            ..Default::default()
+        });
+        s.displacement = displacement.then(|| {
+            let mut estimator = crate::displacement::Estimator::default();
+            estimator.resume(at);
+            estimator
+        });
+        s.available[0] = spatial || has_rotation_sensor;
+        s.last = [None; 3];
+        s.good = [false; 3];
+        s.orientation = None;
+        s.heading = IDENTITY;
+        s.heading_set = false;
+        s.publish_all(at, &self.capabilities);
+        self.updates.send_replace(s.serial);
     }
     pub fn now(&self) -> i64 {
         now() as i64
@@ -879,12 +896,14 @@ impl Hub {
     /// Worker token rejects results crossing pause, focus loss or recenter.
     pub fn spatial_context(&self) -> (u64, bool, bool) {
         let s = self.state.lock().unwrap();
-        let a = s.spatial.as_ref().expect("Spatial hub");
+        let Some(a) = &s.spatial else {
+            return (0, false, false);
+        };
         (a.generation, s.foreground && s.focused, a.recenter)
     }
     pub fn spatial_failure(&self, generation: u64, reason: &str, at: u64) {
         let mut s = self.state.lock().unwrap();
-        let a = s.spatial.as_mut().expect("Spatial hub");
+        let Some(a) = &mut s.spatial else { return };
         if a.generation != generation {
             return;
         }
@@ -901,7 +920,7 @@ impl Hub {
         if !s.foreground || !s.focused {
             return;
         }
-        let a = s.spatial.as_mut().expect("Spatial hub");
+        let Some(a) = &mut s.spatial else { return };
         if f.generation != a.generation {
             return;
         }
@@ -1247,6 +1266,31 @@ mod spatial_tests {
             created_origin: false,
         }
     }
+    #[test]
+    fn switching_sources_releases_hold_and_rejects_old_camera_frames() {
+        let hub = ready();
+        hub.action(Action::Hold, 20);
+        assert!(hub.held());
+        let old = frame(&hub, 21);
+        hub.set_tracking_mode(TrackingMode::Orientation, true, 22);
+        hub.spatial_frame(old);
+        assert!(!hub.held());
+        assert!(!position_valid(&hub, 0));
+
+        hub.action(Action::Hold, 23);
+        assert!(!hub.held());
+        let upright = std::f64::consts::FRAC_1_SQRT_2;
+        hub.sensor(0, 24, [upright, 0., 0., upright], 24);
+        hub.action(Action::Hold, 25);
+        assert!(hub.held());
+        hub.set_tracking_mode(TrackingMode::Displacement, true, 26);
+        assert!(!hub.held());
+        hub.set_tracking_mode(TrackingMode::Spatial, true, 27);
+        hub.spatial_frame(old);
+        assert_ne!(old.generation, hub.spatial_context().0);
+        assert!(!position_valid(&hub, 0));
+    }
+
     fn ready() -> Arc<Hub> {
         let h = Hub::spatial_at([true; 3], "SYNTHETIC test", 0);
         h.action(Action::Resume, 1);

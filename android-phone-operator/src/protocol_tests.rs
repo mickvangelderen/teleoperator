@@ -1,6 +1,9 @@
 use super::*;
 fn fixture() -> serde_json::Value {
-    serde_json::from_str(include_str!("../tests/fixtures/specification-v1.json")).unwrap()
+    serde_json::from_str(include_str!(
+        "../../protocol/testdata/specification-v1.json"
+    ))
+    .unwrap()
 }
 fn hex(s: &str) -> Vec<u8> {
     (0..s.len())

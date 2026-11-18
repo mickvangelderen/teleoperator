@@ -1,6 +1,6 @@
 //! Minimal JNI boundary. All tracking/lifecycle state and networking live in Rust.
 use crate::{
-    phone::{self, Action, Hand, Hub},
+    phone::{self, Action, Hand, Hub, TrackingMode},
     server,
 };
 use jni::{
@@ -11,7 +11,7 @@ use jni::{
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::watch;
 
-const PORT: u16 = if cfg!(feature = "arcore") { 8081 } else { 8080 };
+const PORT: u16 = 8080;
 
 struct App {
     hub: Arc<Hub>,
@@ -83,22 +83,9 @@ pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeStart(
         return;
     }
     let previous = current.stopping.take();
-    #[cfg(not(any(feature = "arcore", feature = "imu-displacement")))]
     let hub = Hub::new(
         std::array::from_fn(|i| mask & (1 << i) != 0),
-        "Android SensorManager (physical phone)",
-    );
-    #[cfg(all(feature = "imu-displacement", not(feature = "arcore")))]
-    let hub = Hub::displacement_at(
-        std::array::from_fn(|i| mask & (1 << i) != 0),
-        "IMU displacement estimate (uncorrected dead reckoning)",
-        phone::now(),
-    );
-    #[cfg(feature = "arcore")]
-    let hub = Hub::spatial_at(
-        std::array::from_fn(|i| mask & (1 << i) != 0),
-        "ARCore spatial tracking (experimental physical phone)",
-        phone::now(),
+        "Android phone",
     );
     let (stop, rx) = watch::channel(false);
     let network = Arc::new(Mutex::new("Starting server…".into()));
@@ -148,8 +135,6 @@ pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeStop(
     _env: JNIEnv,
     _class: JClass,
 ) {
-    #[cfg(feature = "arcore")]
-    crate::arcore::stop();
     let mut current = app().lock().unwrap();
     if let Some(running) = current.running.take() {
         current.stopping = Some(running.shutdown());
@@ -233,43 +218,101 @@ pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeFlags(
     })
 }
 
-#[cfg(feature = "arcore")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativePrepare(
-    env: JNIEnv,
-    _class: JClass,
-    activity: jni::objects::JObject,
-    requested: jni::sys::jboolean,
-) -> jint {
-    crate::arcore::prepare(
-        env.get_raw().cast(),
-        activity.as_raw().cast(),
-        requested != 0,
-    )
-}
-#[cfg(feature = "arcore")]
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeCameraStart(
-    env: JNIEnv,
-    _class: JClass,
-    activity: jni::objects::JObject,
-) {
-    if let Some(a) = app().lock().unwrap().running.as_ref() {
-        match (env.get_java_vm(), env.new_global_ref(activity)) {
-            (Ok(vm), Ok(activity)) => crate::arcore::start(vm, activity, a.hub.clone()),
-            _ => a.hub.spatial_failure(
-                a.hub.spatial_context().0,
-                "Could not attach ARCore worker",
-                phone::now(),
-            ),
-        }
-    }
-}
-#[cfg(feature = "arcore")]
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeCameraStop(
+pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeSetMode(
     _env: JNIEnv,
     _class: JClass,
+    mode: jint,
+    has_rotation_sensor: jni::sys::jboolean,
 ) {
-    crate::arcore::stop();
+    let mode = match mode {
+        0 => TrackingMode::Orientation,
+        1 => TrackingMode::Displacement,
+        2 => TrackingMode::Spatial,
+        _ => return,
+    };
+    if let Some(a) = &app().lock().unwrap().running {
+        a.hub
+            .set_tracking_mode(mode, has_rotation_sensor != 0, phone::now());
+    }
+}
+
+// The low bit requests a new origin. A change to the generation invalidates
+// frames and anchors captured before recenter, lifecycle or source changes.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_xroperator_phone_ArTracking_nativeContext(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    let current = app().lock().unwrap();
+    let Some(a) = &current.running else { return -1 };
+    let (generation, active, recenter) = a.hub.spatial_context();
+    if active {
+        ((generation << 1) | u64::from(recenter)) as jlong
+    } else {
+        -1
+    }
+}
+
+fn read_pose(env: &JNIEnv, array: &jni::objects::JFloatArray) -> Option<crate::spatial::Pose> {
+    if array.is_null() {
+        return None;
+    }
+    let mut values = [0f32; 7];
+    env.get_float_array_region(array, 0, &mut values).ok()?;
+    Some(crate::spatial::Pose {
+        position: std::array::from_fn(|i| values[i] as f64),
+        orientation: std::array::from_fn(|i| values[i + 3] as f64),
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_xroperator_phone_ArTracking_nativeOriginRotation(
+    env: JNIEnv,
+    _class: JClass,
+    sensor: jni::objects::JFloatArray,
+) -> jni::sys::jfloatArray {
+    let rotation = read_pose(&env, &sensor).and_then(crate::spatial::origin_pose);
+    let Some(origin) = rotation else {
+        return std::ptr::null_mut();
+    };
+    let Ok(array) = env.new_float_array(4) else {
+        return std::ptr::null_mut();
+    };
+    if env
+        .set_float_array_region(&array, 0, &origin.orientation.map(|n| n as f32))
+        .is_err()
+    {
+        return std::ptr::null_mut();
+    }
+    array.into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_xroperator_phone_ArTracking_nativeFrame(
+    env: JNIEnv,
+    _class: JClass,
+    generation: jlong,
+    timestamp: jlong,
+    camera_timestamp: jlong,
+    before: jlong,
+    sensor: jni::objects::JFloatArray,
+    anchor: jni::objects::JFloatArray,
+    created: jni::sys::jboolean,
+) {
+    let sensor = read_pose(&env, &sensor);
+    if let Some(a) = &app().lock().unwrap().running {
+        a.hub.spatial_frame(crate::spatial::Frame {
+            generation: generation as u64,
+            timestamp,
+            metadata_timestamp: Some(camera_timestamp),
+            realtime: true, // The camera worker checks CameraCharacteristics before starting.
+            query_started: before as u64,
+            query_finished: phone::now(),
+            tracking: sensor.is_some(),
+            sensor: sensor.unwrap_or(crate::spatial::Pose::IDENTITY),
+            anchor: read_pose(&env, &anchor),
+            created_origin: created != 0,
+        });
+    }
 }

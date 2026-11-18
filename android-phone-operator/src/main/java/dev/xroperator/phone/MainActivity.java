@@ -9,7 +9,13 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.graphics.Color;
-import android.view.Gravity;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.widget.ArrayAdapter;
+import android.widget.AdapterView;
+import android.widget.Spinner;
+import com.google.ar.core.ArCoreApk;
+import com.google.ar.core.exceptions.UnavailableException;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -27,15 +33,14 @@ public final class MainActivity extends Activity implements SensorEventListener 
     private static native void nativeSensor(int kind, long timestamp, float x, float y, float z, float w);
     private static native String nativeStatus();
     private static native int nativeFlags();
-    private static native int nativePrepare(Activity activity, boolean requested);
-    private static native void nativeCameraStart(Activity activity);
-    private static native void nativeCameraStop();
-    private static native void nativeRunSession(Activity activity);
-    // Called synchronously by the Rust worker, never by the UI. Keep an app
-    // class-loader Java frame on the stack for the SDK's JNI class lookups.
-    public void runArCore() { nativeRunSession(this); }
-    private boolean resumed, cameraStarted, installRequested, permissionRequested;
-    private String cameraMessage = "Camera permission and Google Play Services for AR required";
+    private static native void nativeSetMode(int mode, boolean hasRotationSensor);
+    private static final int ORIENTATION = 0, DISPLACEMENT = 1, SPATIAL = 2;
+    private static final int AUTO = 0, SENSOR_ONLY = 1, ESTIMATE = 2;
+    private int preference;
+    private boolean resumed, permissionRequested, installRequested, enableInstall, cameraFailed;
+    private String cameraMessage = "Using phone sensors";
+    private Button retry;
+    private ArTracking camera;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private SensorManager sensors;
     private final Sensor[] sources = new Sensor[3];
@@ -70,23 +75,56 @@ public final class MainActivity extends Activity implements SensorEventListener 
         int mask = 0;
         for (int i = 0; i < sources.length; i++) if (sources[i] != null) mask |= 1 << i;
         nativeStart(mask); started = true;
+        preference = getPreferences(MODE_PRIVATE).getInt("tracking", AUTO);
+        if (state != null) {
+            permissionRequested = state.getBoolean("askedCamera");
+            installRequested = state.getBoolean("askedInstall");
+        }
+        useSensors();
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20), dp(24), dp(20), dp(16)); root.setBackgroundColor(0xfff4f6fa);
-        TextView title = new TextView(this); title.setText("Phone Operator · ARCore Spatial"); title.setTextSize(23); title.setTextColor(0xff172b4d);
+        TextView title = new TextView(this); title.setText("Phone Operator"); title.setTextSize(23); title.setTextColor(0xff172b4d);
         root.addView(title);
         TextView notice = new TextView(this); notice.setTextSize(13);
         notice.setText(android.text.Html.fromHtml("This application runs on <a href=\"https://play.google.com/store/apps/details?id=com.google.ar.core\">Google Play Services for AR</a> (ARCore), which is provided by Google and governed by the <a href=\"https://policies.google.com/privacy\">Google Privacy Policy</a>. Use of ARCore is subject to <a href=\"https://policies.google.com/terms\">Google Terms of Service</a>.", android.text.Html.FROM_HTML_MODE_LEGACY));
         notice.setMovementMethod(android.text.method.LinkMovementMethod.getInstance()); root.addView(notice);
-        Button retry = button("Enable camera / retry ARCore"); retry.setTextSize(16);
-        retry.setOnClickListener(v -> {
-            if (checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED && permissionRequested && !shouldShowRequestPermissionRationale(android.Manifest.permission.CAMERA)) {
-                startActivity(new android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + getPackageName()))); return;
+        Spinner mode = new Spinner(this);
+        mode.setContentDescription("Tracking source");
+        ArrayAdapter<String> choices = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item,
+                new String[]{"Automatic (prefer ARCore)", "Sensors: orientation", "Sensors: estimate displacement"});
+        choices.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        mode.setAdapter(choices);
+        mode.setSelection(preference);
+        mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onNothingSelected(AdapterView<?> parent) {}
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (position == preference) return;
+                preference = position;
+                getPreferences(MODE_PRIVATE).edit().putInt("tracking", preference).apply();
+                stopCamera();
+                useSensors();
+                cameraFailed = false;
+                retry.setVisibility(View.GONE);
+                startCamera();
             }
-            installRequested = false; permissionRequested = false; stopCamera();
-            // A replacement session has a new reference. Clear source/origin
-            // immediately so a press cannot reuse the old session's fresh pose.
-            nativeAction(6); nativeAction(5); startCamera();
-        }); root.addView(retry);
+        });
+        root.addView(mode);
+        retry = button("Retry ARCore");
+        retry.setVisibility(View.GONE);
+        retry.setOnClickListener(v -> {
+            if (permissionRequested && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+                    && !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
+                startActivity(new android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        android.net.Uri.parse("package:" + getPackageName())));
+                return;
+            }
+            permissionRequested = false;
+            enableInstall = true;
+            installRequested = false;
+            cameraFailed = false;
+            startCamera();
+        });
+        root.addView(retry);
         LinearLayout hands = new LinearLayout(this);
         left = button("Left"); right = button("Right");
         hands.addView(left, new LinearLayout.LayoutParams(0, dp(62), 1));
@@ -115,7 +153,7 @@ public final class MainActivity extends Activity implements SensorEventListener 
             }
             return true;
         });
-        Button recenter = button("Recenter position + heading (stops tracking)"); recenter.setTextSize(16);
+        Button recenter = button("Recenter (stops tracking)"); recenter.setTextSize(16);
         recenter.setOnClickListener(v -> { touching = false; nativeAction(9); }); root.addView(recenter);
         ScrollView scroll = new ScrollView(this); status = new TextView(this); status.setTextSize(15); status.setTextColor(0xff172b4d);
         status.setTextIsSelectable(true); status.setPadding(0, dp(8), 0, dp(12)); scroll.addView(status);
@@ -145,39 +183,80 @@ public final class MainActivity extends Activity implements SensorEventListener 
         if (started) { started = false; handler.removeCallbacks(refresh); sensors.unregisterListener(this); if (!isChangingConfigurations()) nativeStop(); }
         super.onDestroy();
     }
-    private final Runnable retryAvailability = () -> startCamera();
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putBoolean("askedCamera", permissionRequested);
+        state.putBoolean("askedInstall", installRequested);
+    }
+    private void useSensors() {
+        touching = false;
+        nativeSetMode(preference == ESTIMATE ? DISPLACEMENT : ORIENTATION, sources[0] != null);
+        cameraMessage = preference == ESTIMATE ? "Using estimated IMU displacement" : "Using phone orientation";
+    }
+    private final Runnable retryAvailability = this::startCamera;
     private void stopCamera() {
         handler.removeCallbacks(retryAvailability);
-        if (cameraStarted) { cameraStarted = false; nativeCameraStop(); }
+        if (camera != null) {
+            camera.stop();
+            camera = null;
+            useSensors();
+        }
+    }
+    private void fallback(String reason, boolean canRetry) {
+        stopCamera();
+        useSensors();
+        cameraMessage += " · " + reason;
+        retry.setVisibility(canRetry ? View.VISIBLE : View.GONE);
+    }
+    void cameraFailed(ArTracking sender, Exception error) {
+        if (camera != sender) return;
+        android.util.Log.w("PhoneOperator", "ARCore unavailable", error);
+        cameraFailed = true;
+        fallback("ARCore unavailable (" + error.getClass().getSimpleName() + ")", true);
     }
     private void startCamera() {
-        if (!started || !resumed || !hasWindowFocus() || cameraStarted) return;
-        if (checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            cameraMessage = "Camera permission needed. Tap Enable camera to retry or open Settings.";
-            if (!permissionRequested) { permissionRequested = true; requestPermissions(new String[]{android.Manifest.permission.CAMERA}, 7); }
+        if (!started || !resumed || !hasWindowFocus() || preference != AUTO || camera != null || cameraFailed) return;
+        handler.removeCallbacks(retryAvailability);
+        ArCoreApk ar = ArCoreApk.getInstance();
+        ArCoreApk.Availability availability = ar.checkAvailability(this);
+        if (availability == ArCoreApk.Availability.UNKNOWN_CHECKING) {
+            handler.postDelayed(retryAvailability, 500);
             return;
         }
-        int result = nativePrepare(this, !installRequested);
-        if (result == 2) {
-            cameraMessage = "Checking ARCore support…";
-            handler.removeCallbacks(retryAvailability); handler.postDelayed(retryAvailability, 500); return;
+        if (!availability.isSupported()) {
+            fallback("ARCore unavailable", availability.isUnknown());
+            return;
         }
-        if (result == 1) { installRequested = true; cameraMessage = "Complete Google Play Services for AR installation"; return; }
-        if (result != 0) { cameraMessage = "ARCore unavailable (status " + result + "). Tap retry after resolving it."; return; }
-        cameraMessage = "ARCore camera enabled · foreground only · port 8081";
-        cameraStarted = true; nativeCameraStart(this);
+        if (availability != ArCoreApk.Availability.SUPPORTED_INSTALLED && !enableInstall && !installRequested) {
+            fallback("Google Play Services for AR needs installation or an update", true);
+            return;
+        }
+        try {
+            if (ar.requestInstall(this, !installRequested) == ArCoreApk.InstallStatus.INSTALL_REQUESTED) {
+                installRequested = true;
+                return;
+            }
+            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                fallback("Camera permission needed for ARCore", true);
+                if (!permissionRequested) {
+                    permissionRequested = true;
+                    requestPermissions(new String[]{Manifest.permission.CAMERA}, 7);
+                }
+                return;
+            }
+            retry.setVisibility(View.GONE);
+            cameraMessage = "Using ARCore";
+            nativeSetMode(SPATIAL, sources[0] != null);
+            camera = new ArTracking(this);
+            camera.start();
+        } catch (UnavailableException | SecurityException e) {
+            cameraFailed = true;
+            fallback("ARCore unavailable (" + e.getClass().getSimpleName() + ")", true);
+        }
     }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
         super.onRequestPermissionsResult(request, permissions, grants);
         if (request == 7) startCamera();
-    }
-    // Called by the attached native worker; CameraManager query does not open a camera.
-    public int cameraTimestampSource(String id) {
-        try {
-            android.hardware.camera2.CameraManager manager = (android.hardware.camera2.CameraManager)getSystemService(CAMERA_SERVICE);
-            Integer source = manager.getCameraCharacteristics(id).get(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE);
-            return source == null ? -1 : source;
-        } catch (Exception e) { android.util.Log.w("PhoneOperator", "Camera timestamp source unavailable", e); return -1; }
     }
     @Override public void onSensorChanged(SensorEvent event) {
         if (!started) return;

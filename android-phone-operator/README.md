@@ -4,68 +4,97 @@ Use an Android phone as a handheld motion input over Wi-Fi.
 
 ## Setup
 
-Build on Linux x86_64 with Rust/rustup, a JDK (`java`, `javac`, `keytool`),
-Python 3, curl, zip and unzip. In Android SDK Manager, install platform-tools,
-Android SDK Platform 36, Build-Tools 36.1.0 and NDK 29.0.14206865.
-The phone must support arm64 apps and Android API 32 or later.
+### Rust Toolchain
 
-From the repository root, enter the project directory and prepare the Rust target:
+Use [rustup](https://rustup.rs/) and install the `stable` toolchain.
+Then add the `aarch64-linux-android target`.
 
 ```sh
-cd android-phone-operator
-export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
-export PATH="$ANDROID_SDK_ROOT/platform-tools:$PATH"
 rustup target add aarch64-linux-android
 ```
 
-Set `ANDROID_SDK_ROOT` to your SDK location if it differs from the default above.
-Enable USB debugging on the phone, connect it by USB and authorize the computer.
+We use [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) to download tools from github releases:
+
+```sh
+curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+```
+
+We use [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) to concoct android compilation commands:
+
+```sh
+cargo binstall cargo-ndk
+```
+
+### Java SDK
+
+Install a JDK. The included Gradle wrapper downloads Gradle 9.9.1 on first use.
+This version of Gradle runs on Java 17–27. [Gradle compatibility matrix](https://docs.gradle.org/9.9.1/userguide/compatibility.html)
+
+We tested the build with JDK 25, available on Ubuntu through APT.
+
+```sh
+apt install openjdk-25-jdk
+```
+
+### Android SDK
+
+Download the [android-cli](https://developer.android.com/tools/agents/android-cli/download) to manage android skds.
+
+> Historical note: [sdkmanager](https://developer.android.com/tools/sdkmanager) is deprecated.
+
+```sh
+curl -fsSL https://dl.google.com/android/cli/latest/linux_x86_64/install.sh | bash
+```
+
+Then install the components we need:
+
+```sh
+android sdk \
+    install platforms/android-36 \
+    build-tools/36.1.0 \
+    ndk/29.0.14206865 \
+    platform-tools
+```
 
 ## Build and install
 
-Choose one variant. These commands build, install or update, and launch it.
-
-**IMU baseline:** orientation only; no camera required.
-
-```sh
-./tools/build-apk.sh
-adb install -r build/phone-operator-debug.apk
-adb shell am start -n dev.xroperator.phone.experimental/dev.xroperator.phone.MainActivity
-```
-
-**IMU displacement (optional):** adds an uncorrected position estimate that
-drifts; each hold starts with zero displacement and assumed zero velocity.
-
-The displacement app replaces the baseline. If upgrading a baseline built
-with the defaults above, first select its existing signing key:
+From `android-phone-operator/`, set `ANDROID_HOME` to your SDK directory.
+This example uses the default Linux location.
 
 ```sh
-export PHONE_DEBUG_KEYSTORE="$PWD/build/debug.keystore"
+export ANDROID_HOME="$HOME/Android/Sdk"
+export PATH="$ANDROID_HOME/platform-tools:$PATH"
 ```
 
-For a fresh install, no key override is needed. Then build and install:
+Gradle calls `cargo ndk` to build the Rust library, compiles the Java activity
+that handles the phone UI, sensors, and ARCore, and packages both into a signed APK.
 
 ```sh
-./tools/build-imu-displacement-apk.sh
-adb install -r build/imu-displacement/phone-operator-imu-displacement-debug.apk
-adb shell am start -n dev.xroperator.phone.experimental/dev.xroperator.phone.MainActivity
+./gradlew assembleDebug
 ```
 
-Keep the key used for an installed app: updates require the same key. The two
-IMU build scripts create separate debug keys by default. Returning from
-displacement to the baseline requires a supported downgrade (`adb install -r -d`)
-or uninstalling the app first; uninstalling removes its data.
+Connect the phone to ADB using either method.
 
-**ARCore (optional):** camera-assisted position and orientation; installs
-alongside either IMU variant. Requires an ARCore-supported phone.
+- **USB.** Enable **USB debugging**, plug in the phone, and accept the authorization prompt.
+- **Wi-Fi.** Join the same network and enable **Developer options → Wireless debugging**.
+  Run `adb mdns services` to discover phones. On first use, tap **Pair device with pairing code**,
+  run `adb pair IP:PAIRING_PORT` with the address shown, and enter the code.
+  If the paired phone is missing from `adb devices -l`, run `adb connect IP:CONNECTION_PORT`
+  using the address on the main **Wireless debugging** screen.
+
+Once `adb devices -l` lists the phone as `device`, install the APK.
 
 ```sh
-./tools/build-arcore-apk.sh
-adb install -r build/arcore/phone-operator-arcore-debug.apk
-adb shell am start -n dev.xroperator.phone.arcore.experimental/dev.xroperator.phone.MainActivity
+adb install -r build/android/outputs/apk/debug/phone-operator-debug.apk
 ```
 
-Allow camera access and complete any Google Play Services for AR install/update
-prompt. Keep the app open, connect the phone and client to the same Wi-Fi, and
-use the address shown in the app. Select Left or Right, recenter, then hold to
-send motion; release to stop.
+For subsequent edits, `./gradlew installDebug` builds and installs in one step.
+
+## First use
+
+Open **Phone Operator** on an ARM64 phone running Android API 32 or newer.
+The app uses ARCore when available and otherwise tracks orientation with the
+phone’s sensors. Connect the viewer computer to the same Wi-Fi network and set
+`XR_OPERATOR_URL` in `viewer/.env.local` to the Wi-Fi URL shown in **Phone Operator**
+(for example, `http://192.168.1.42:8080`). The viewer connects directly to the app.
+[Viewer setup](../viewer/README.md)
