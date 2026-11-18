@@ -13,7 +13,7 @@ export async function checkMultipleViewers(browser, url) {
     const second = await popup;
     for (const page of [first, second]) {
       page.on("pageerror", error => errors.push(error.message));
-      await page.locator("#connect").click();
+      await page.getByRole("dialog").getByRole("button", { name: "Connect" }).click();
       await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyJoints === "70");
     }
     const sampleWork = page => page.evaluate(async () => {

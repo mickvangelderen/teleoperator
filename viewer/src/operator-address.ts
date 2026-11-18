@@ -1,3 +1,5 @@
+export const defaultOperatorAddress = "http://127.0.0.1:8080";
+
 export function operatorOrigin(value: string): string {
   const address = value.trim();
   if (/^https?:\/\/[^/?#@\\\s]+\/?$/i.test(address)) {

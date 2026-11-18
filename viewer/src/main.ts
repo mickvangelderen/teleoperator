@@ -1,5 +1,5 @@
 import { Connection, initialState } from "./connection";
-import { mountOperatorChooser } from "./operator-chooser";
+import { mountOperatorChooser, operatorPickerMarkup } from "./operator-chooser";
 import { operatorOrigin } from "./operator-address";
 import { spatialFrames, staleBundle } from "./tracking-view";
 import { spaceNames } from "./protocol";
@@ -34,8 +34,9 @@ const icon = (name: "head" | "controller" | "body") => {
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <header class="topbar">
     <h1 class="product-title"><a class="brand" href="/" aria-label="Teleoperator protocol home"><span class="brand-mark" aria-hidden="true">×</span><span>Teleoperator protocol</span></a></h1>
-    <form class="connection-box"><div class="endpoint"><label class="section-label" for="operator-list">Operator</label><select id="operator-list"></select></div><label class="endpoint"><span class="section-label">OPERATOR ADDRESS</span><input id="target" type="url" class="mono" required spellcheck="false" autocomplete="off"></label><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></form>
+    <div class="connection-box"><button type="button" id="choose-operator" aria-haspopup="dialog" aria-controls="operator-picker" aria-label="Choose operator" aria-describedby="selected-address"><span class="section-label">Operator</span><span id="selected-address" class="mono"></span><span aria-hidden="true">⌄</span></button><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></div>
   </header>
+  ${operatorPickerMarkup}
   <main>
     <div id="error" class="status-message" data-tone="error" role="alert" hidden></div>
     <p id="recording-status" class="recording-status" role="status" hidden></p>
@@ -139,9 +140,8 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     setAttribute(status, "title", recording.path);
   } else setAttribute(element("recording-status"), "hidden", "");
   const live = state.status === "Connected", busy = state.status === "Connecting";
-  setAttribute(element("operator-list"), "disabled", live || busy ? "" : null);
-  setAttribute(target, "readonly", live || busy ? "" : null);
-  setAttribute(target, "title", live ? "Disconnect to change the operator address." : busy ? "Cancel to change the operator address." : null);
+  setAttribute(element("choose-operator"), "disabled", live || busy ? "" : null);
+  setAttribute(element("choose-operator"), "title", live ? "Disconnect to change the operator address." : busy ? "Cancel to change the operator address." : null);
   text("status", state.status);
   element("status-dot").classList.toggle("live", live);
   element("status-dot").classList.toggle("busy", busy);
@@ -204,14 +204,16 @@ function mountCapabilities(session: Session) {
   container.append(subscriptionEditor);
 }
 
-const chooser = mountOperatorChooser(element<HTMLSelectElement>("operator-list"), target, () => {
+const opener = element<HTMLButtonElement>("choose-operator");
+const connectButton = element<HTMLButtonElement>("connect");
+const dialog = element<HTMLDialogElement>("operator-picker");
+const chooser = mountOperatorChooser(dialog, opener, () => {
   target.setCustomValidity("");
   recording = undefined;
   profiler.resetConnectionMetrics();
   if (current.status === "Error") current = initialState();
 });
-document.querySelector<HTMLFormElement>(".connection-box")!.onsubmit = event => {
-  event.preventDefault();
+function activateConnection() {
   if (
     connection &&
     ["Connecting", "Connected"].includes(connection.state.status)
@@ -223,12 +225,14 @@ document.querySelector<HTMLFormElement>(".connection-box")!.onsubmit = event => 
   let address: string;
   try { address = operatorOrigin(target.value); }
   catch (error) {
+    chooser.open();
     target.setCustomValidity((error as Error).message);
     target.reportValidity();
     return;
   }
   target.value = address;
   chooser.pin();
+  chooser.close(connectButton);
   connection?.close();
   recording = import.meta.env.DEV ? new Recorder() : undefined;
   let saved = false;
@@ -241,14 +245,16 @@ document.querySelector<HTMLFormElement>(".connection-box")!.onsubmit = event => 
     current = state.status === "Error" ? { ...state, detail: `${address} — ${state.detail}` } : state;
   }, recording);
   connection = next;
-  target.readOnly = true;
-  void next.connect(address, health => {
+  opener.disabled = true;
+  void next.connect(address, () => {
     if (connection === next) {
       saved = true;
-      chooser.remember(address, health);
+      chooser.remember(address);
     }
   });
-};
+}
+connectButton.onclick = activateConnection;
+dialog.querySelector("form")!.onsubmit = event => { event.preventDefault(); activateConnection(); };
 document.addEventListener("visibilitychange", () => connection?.visibilityChanged(performance.now(), !document.hidden));
 window.addEventListener("pagehide", () => { cancelAnimationFrame(frame); chooser.dispose(); connection?.close(); performancePanel.dispose(); });
 

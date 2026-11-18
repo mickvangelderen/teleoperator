@@ -26,8 +26,14 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE ?? "/opt/google/chrome/chrome", headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = [];
   page.on("pageerror", error => errors.push(error.message));
-  let nearby = [];
-  await page.route("**/api/operators", route => route.fulfill({ json: nearby }));
+  await page.addInitScript(() => {
+    // Drive the browser UI independently of services on the developer's LAN.
+    window.EventSource = class {
+      constructor() { window.testDiscovery = this; this.closed = false; }
+      snapshot(endpoints) { this.onmessage({ data: JSON.stringify(endpoints) }); }
+      close() { this.closed = true; }
+    };
+  });
   await page.goto(url);
   await page.waitForFunction(() => document.querySelector("#poses").dataset.assets === "ready");
   assert.equal(await page.title(), "Teleoperator protocol");
@@ -37,17 +43,19 @@ try {
   assert.equal(await page.locator(".page-heading, .header-note, footer").count(), 0);
   assert.doesNotMatch(await page.locator("body").innerText(), /A window into your device|DEVICE OBSERVABILITY|OPERATOR \/ CONNECTION/);
   assert.equal(await page.locator("header #connect").count(), 1);
-  assert.equal(await page.locator("header #target").count(), 1);
+  const dialog = page.getByRole("dialog", { name: "Choose an operator" });
+  assert.equal(await dialog.isVisible(), true);
+  assert.equal(await dialog.getByLabel("Operator address").inputValue(), "http://127.0.0.1:1");
   assert.equal(await page.locator("header #status").textContent(), "Disconnected");
   assert.equal(await page.locator("#render-to-photon").inputValue(), "0");
   await page.keyboard.press("Tab");
-  assert.equal(await page.locator(".brand").evaluate(el => el === document.activeElement), true);
-  await page.keyboard.press("Tab");
-  assert.equal(await page.locator("#operator-list").evaluate(el => el === document.activeElement), true);
-  await page.keyboard.press("Tab");
-  assert.equal(await page.locator("#target").evaluate(el => el === document.activeElement), true);
-  await page.keyboard.press("Tab");
-  assert.equal(await page.locator("#connect").evaluate(el => el === document.activeElement), true);
+  assert.equal(await dialog.getByRole("button", { name: "Close operator picker" }).evaluate(el => el === document.activeElement), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await dialog.isVisible(), false);
+  assert.equal(await page.evaluate(() => window.testDiscovery.closed), true);
+  assert.equal(await page.locator("#choose-operator").evaluate(el => el === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  assert.equal(await dialog.isVisible(), true);
 
   // Real Session decoding/consumption and dashboard rendering with independent
   // synthetic input publications; the fixture never opens an operator connection.
@@ -86,7 +94,7 @@ try {
     Connection.prototype.close = function () { clearInterval(this.fixtureTimer); close.call(this); };
     window.restoreDashboard = () => { Connection.prototype.connect = connect; Connection.prototype.close = close; };
   });
-  await page.keyboard.press("Enter");
+  await dialog.getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(() => document.querySelector("#arrival-rate").textContent === "40.0 Hz");
   await page.waitForTimeout(2100);
   assert.equal(await page.locator("header #status").textContent(), "Connected");
@@ -141,7 +149,7 @@ try {
   for (const width of [1440, 800, 390, 320]) {
     await page.setViewportSize({ width, height: 1000 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `No horizontal overflow at ${width}`);
-    const controls = await page.locator("header .brand, header #operator-list, header #target, header #status, header #connect").evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return { x: r.x, right: r.right, y: r.y, bottom: r.bottom }; }));
+    const controls = await page.locator("header .brand, header #choose-operator, header #status, header #connect").evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return { x: r.x, right: r.right, y: r.y, bottom: r.bottom }; }));
     assert.ok(controls.every(r => r.x >= 0 && r.right <= width), `Header controls fit at ${width}`);
     const header = await page.locator("header").boundingBox(), metrics = await page.locator(".metrics").boundingBox();
     assert.ok(metrics.y - (header.y + header.height) < 75, "No unused hero spacing");
@@ -157,6 +165,7 @@ try {
   assert.match(await page.locator("#error").innerText(), /127\.0\.0\.1:1/);
   assert.equal(await page.locator("#connect").innerText(), "Retry");
   const address = "http://192.168.1.42:8082";
+  await page.getByRole("button", { name: "Choose operator" }).click();
   await page.getByLabel("Operator address").fill(address + "/");
   await page.locator("#error").waitFor({ state: "hidden" });
   const requests = ["health", "offer"].map(route => page.waitForRequest(r => r.url().endsWith("/api/" + route)));
@@ -165,18 +174,20 @@ try {
   await page.waitForFunction(() => !document.querySelector("#error").hidden);
   assert.ok((await page.locator("#error").innerText()).includes(address));
   assert.equal(await page.locator("#target").inputValue(), address);
-  nearby = [{ name: "Lab operator", address: "http://192.0.2.2:8123" }];
   await page.route("**/api/health", route => route.fulfill({ headers: { "X-Operator-Response": "1" }, json: { tracking: false } }));
   await page.reload();
   await page.waitForFunction(value => document.querySelector("#target").value === value, address);
-  const chooser = page.getByRole("combobox", { name: "Operator", exact: true });
-  await page.waitForFunction(value => Array.from(document.querySelector("#operator-list").options)
-    .some(option => option.value === value && option.textContent.includes("HTTP reachable · input unavailable")), address);
-  await chooser.selectOption(nearby[0].address);
-  assert.equal(await page.locator("#target").inputValue(), nearby[0].address);
-  await chooser.selectOption("");
-  assert.equal(await page.locator("#target").inputValue(), "");
-  assert.equal(await page.locator("#target").evaluate(el => el === document.activeElement), true);
+  await dialog.getByRole("button", { name: new RegExp(address + ".*HTTP reachable · input unavailable") }).waitFor();
+  const discovered = { name: "Lab operator", address: "http://192.0.2.2:8123" };
+  await page.evaluate(endpoint => window.testDiscovery.snapshot([endpoint]), discovered);
+  assert.equal(await dialog.getByLabel("Operator address").inputValue(), address);
+  await dialog.getByRole("button", { name: /Lab operator/ }).click();
+  assert.equal(await dialog.getByLabel("Operator address").inputValue(), discovered.address);
+  await page.evaluate(() => window.testDiscovery.snapshot([]));
+  assert.equal(await dialog.getByRole("button", { name: /Lab operator/ }).count(), 0);
+  assert.equal(await dialog.getByLabel("Operator address").inputValue(), discovered.address);
+  await dialog.getByRole("button", { name: /Use default/ }).click();
+  assert.equal(await dialog.getByLabel("Operator address").inputValue(), "http://127.0.0.1:1");
   assert.deepEqual(errors, []);
   console.log("PASS: compact header/footer cleanup, keyboard/connection/error controls, 0 ms default, grouped age/arrival headlines and raw traces, missing-data behavior, 1440/800/390/320 px layouts");
 } finally {

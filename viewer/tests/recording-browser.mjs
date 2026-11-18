@@ -20,7 +20,7 @@ export async function checkRecording(browser, url) {
       };
     });
     await page.goto(url);
-    await page.getByRole("button", { name: "Connect" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Connect" }).click();
     await page.waitForFunction(() => document.querySelector("#status").textContent === "Connected");
     await page.waitForFunction(() => window.capturedWire.filter(packet => packet.flags === 1 && packet.bytes[0] === 9).length >= 20);
     await page.getByRole("button", { name: "Disconnect" }).click();

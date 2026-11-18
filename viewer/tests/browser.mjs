@@ -37,6 +37,7 @@ try {
   await checkMultipleViewers(browser, url);
   if (process.env.EXPECT_RECORDING === "1") await checkRecording(browser, url);
   await page.goto(url);
+  await page.getByRole("dialog").getByRole("button", { name: "Close operator picker" }).click();
   await page.waitForFunction(() => document.querySelector("#poses").dataset.assets === "ready");
   assert.equal(await page.locator("#poses canvas").count(), 1);
   const beforeOrbit = await page.locator("#poses").screenshot();
@@ -172,7 +173,7 @@ try {
   await page.reload();
   await page.waitForFunction(() => document.querySelector("#graphics-status").textContent.includes("could not load"));
   assert.match(await page.locator("#graphics-status").textContent(), /could not load/);
-  assert.equal(await page.getByRole("button", { name: "Connect" }).isEnabled(), true);
+  assert.equal(await page.getByRole("dialog").getByRole("button", { name: "Connect" }).isEnabled(), true);
   assert.deepEqual(errors, []);
   console.log(
     `PASS: v1 WebRTC negotiation/capabilities, all device poses/inputs/70 joints, reliable/unreliable delivery, clock estimates, change-driven rest retention and replacement, f64/rate/selection replacement, rejection, individual joint rendering, unsubscribe/resubscribe, fresh reconnects, WebGL/orbit, mobile layout, signaling and asset failures. Captures: ${output}`,

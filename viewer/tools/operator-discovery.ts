@@ -33,23 +33,46 @@ export function operatorEndpoints(services: Pick<Service, "fqdn" | "port" | "hos
   return [...endpoints.values()].sort((a, b) => a.name.localeCompare(b.name) || a.address.localeCompare(b.address));
 }
 
-function browseInterface(options: multicastDNS.Options) {
+function browseInterface(options: multicastDNS.Options, changed: () => void) {
   const mdns = multicastDNS(options);
   let failed = false;
-  mdns.on("error", () => { failed = true; });
+  mdns.on("error", () => { failed = true; changed(); });
   const browser = new Browser(mdns, { type: "teleoperator", protocol: "tcp" });
+  browser.on("up", changed).on("down", changed).on("srv-update", changed);
   return {
-    refresh() { if (!failed) browser.update(); },
-    services() { browser.expire(); return failed ? null : browser.services; },
+    refresh() { browser.expire(); if (!failed) browser.update(); },
+    services() { return failed ? null : browser.services; },
     close() { browser.stop(); mdns.destroy(); },
   };
 }
 
 export function browseOperators() {
   const browsers = new Map<string, ReturnType<typeof browseInterface>>();
-  let queried = 0;
+  type Snapshot = OperatorEndpoint[] | null;
+  const listeners = new Set<(endpoints: Snapshot) => void>();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let previous = "";
+  let queued = false;
+
+  function snapshot(): Snapshot {
+    const results = [...browsers.values()].map(browser => browser.services()).filter(services => services !== null);
+    return results.length ? operatorEndpoints(results.flat()) : null;
+  }
+  function changed() {
+    if (queued) return;
+    queued = true;
+    // Bonjour can emit down while it is still removing expired services.
+    queueMicrotask(() => {
+      queued = false;
+      if (!listeners.size) return;
+      const endpoints = snapshot(), serialized = JSON.stringify(endpoints);
+      if (serialized === previous) return;
+      previous = serialized;
+      for (const listener of listeners) listener(endpoints);
+    });
+  }
+
   function refresh() {
-    queried = Date.now();
     const active = new Set<string>();
     for (const [name, interfaces] of Object.entries(networkInterfaces())) {
       for (const nic of interfaces ?? []) {
@@ -64,21 +87,38 @@ export function browseOperators() {
         try {
           browsers.set(iface, browseInterface(ipv6
             ? { type: "udp6", ip: "ff02::fb", bind: "::", interface: iface }
-            : { type: "udp4", bind: "0.0.0.0", interface: iface }));
+            : { type: "udp4", bind: "0.0.0.0", interface: iface }, changed));
         } catch { browsers.delete(iface); }
       }
     }
     for (const [iface, browser] of browsers) {
       if (!active.has(iface)) { browser.close(); browsers.delete(iface); }
     }
+    changed();
   }
-  refresh();
+  function close() {
+    clearInterval(timer);
+    for (const browser of browsers.values()) browser.close();
+    browsers.clear();
+    listeners.clear();
+    previous = "";
+  }
   return {
-    list() {
-      if (Date.now() - queried >= 10_000) refresh();
-      const results = [...browsers.values()].map(browser => browser.services()).filter(services => services !== null);
-      return results.length ? operatorEndpoints(results.flat()) : null;
+    snapshot,
+    get active() { return listeners.size > 0; },
+    subscribe(listener: (endpoints: Snapshot) => void) {
+      if (!listeners.size) {
+        refresh();
+        timer = setInterval(refresh, 30_000);
+        previous = JSON.stringify(snapshot());
+      }
+      listeners.add(listener);
+      listener(snapshot());
+      return () => {
+        listeners.delete(listener);
+        if (!listeners.size) close();
+      };
     },
-    close() { for (const browser of browsers.values()) browser.close(); },
+    close,
   };
 }

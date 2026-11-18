@@ -27,8 +27,22 @@ export function operatorProxy(initialAddress: string): Plugin {
       return reply(200, JSON.stringify(initialAddress), "application/json");
     }
     if (req.method === "GET" && req.url === "/api/operators") {
-      const endpoints = discovery?.list();
-      return reply(endpoints ? 200 : 503, JSON.stringify(endpoints ?? []), "application/json");
+      if (!discovery) return reply(503, "Discovery unavailable.");
+      if (req.headers.accept === "text/event-stream") {
+        res.writeHead(200, { "Content-Type": "text/event-stream", "X-Accel-Buffering": "no" });
+        const unsubscribe = discovery.subscribe(endpoints => res.write(`data: ${JSON.stringify(endpoints)}\n\n`));
+        res.once("close", unsubscribe);
+        return;
+      }
+      // A standalone snapshot gives a cold multicast query a moment to receive replies.
+      const delay = discovery.active ? 0 : 900;
+      const unsubscribe = discovery.subscribe(() => {});
+      const timer = setTimeout(() => {
+        const endpoints = discovery?.snapshot();
+        reply(endpoints ? 200 : 503, JSON.stringify(endpoints ?? []), "application/json");
+      }, delay);
+      res.once("close", () => { clearTimeout(timer); unsubscribe(); });
+      return;
     }
     const health = req.method === "GET" && req.url === "/api/health";
     const offer = req.method === "POST" && req.url === "/api/offer";

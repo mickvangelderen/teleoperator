@@ -30,7 +30,7 @@ try {
       };
     });
   });
-  await page.locator("#connect").click();
+  await page.getByRole("dialog").getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyMesh === "true");
   await page.locator("#view-angle").selectOption("front");
   await page.locator("#view-zoom").evaluate(input => { input.value = "1.5"; input.dispatchEvent(new Event("input", { bubbles: true })); });
