@@ -97,6 +97,7 @@ try {
             const counter=caps.descriptors.findIndex(d=>d.id==='/user/gamepad/input/a/click/press_count');
             // Negotiation creates pending entries before their first sample arrives.
             if(values.get(counter)?.packet){
+              if(!caps.descriptors.every((_,i)=>values.get(i)?.packet))throw Error('Reconnect did not deliver full state');
               reset=BigInt(values.get(counter).value)===0n;
               if(virtual) {
                 const enabled=caps.descriptors.findIndex(d=>d.id==='/gamepad/virtual/enabled');
@@ -116,7 +117,8 @@ try {
   const normal=await page.evaluate(async()=>{
     const {Connection}=await import('/src/connection.ts');
     const {currentValues}=await import('/src/tracking-view.ts');
-    const errors=[];let packets=0,samples=0,presses=0n,releases=0n;
+    const errors=[],buttonStates=new Set();let packets=0,samples=0,presses=0n,releases=0n,initialCounts;
+    let quietSince=0,longestQuiet=0;
     const c=new Connection(state=>{if(state.status==='Error')errors.push(state.detail);});
     try {
       await c.connect();const end=performance.now()+5500;
@@ -134,20 +136,35 @@ try {
               if(a.some((n,i)=>Math.abs(n-b[i])>0.01))throw Error('Incorrect normalized input');samples++;
             }
           }
-          presses=BigInt(byId('/user/gamepad/input/a/click/press_count')?.value??0);
-          releases=BigInt(byId('/user/gamepad/input/a/click/release_count')?.value??0);
+          const button=byId('/user/gamepad/input/a/click');
+          if(button?.packet){
+            buttonStates.add(button.value);
+            presses=BigInt(byId('/user/gamepad/input/a/click/press_count').value);
+            releases=BigInt(byId('/user/gamepad/input/a/click/release_count').value);
+            initialCounts??=[presses,releases];
+            if(button.stale)throw Error('Acknowledged idle input marked stale');
+          }
           for(const sub of c.session.active.values()){
+            const bundles=sub.request.bundles;
+            if(bundles.length!==2 || bundles[0].length || bundles[1].length!==caps.descriptors.length ||
+              sub.request.sequenceNumberFormat===null || !c.isAutomatic(sub.request.id))throw Error('Wrong raw default subscription');
             if(sub.packet?.predictedFor!=null)throw Error('Invented prediction');
-            if(sub.packet&&(!Number.isFinite(sub.acquiredAtArrival)||performance.now()-sub.acquiredAtArrival>250))throw Error('Idle input stale');
-            packets=Math.max(packets,sub.packets);
+            if(sub.packet){
+              if(sub.packets!==packets){quietSince=performance.now();packets=sub.packets;}
+              longestQuiet=Math.max(longestQuiet,performance.now()-quietSince);
+            }
           }
         }
         await new Promise(r=>setTimeout(r,25));
       }
-      return {groups:c.session.active.size,descriptors:c.session.capabilities?.descriptors.length,clock:!!c.session.clockEstimate(performance.now()),packets,samples,presses:String(presses),releases:String(releases),errors};
+      return {groups:c.session.active.size,descriptors:c.session.capabilities?.descriptors.length,clock:!!c.session.clockEstimate(performance.now()),packets,samples,longestQuiet,
+        buttonStates:[...buttonStates],presses:String(presses-initialCounts[0]),releases:String(releases-initialCounts[1]),
+        freshnessStreams:c.session.freshness(performance.now()).streams.length,errors};
     }finally{c.close();}
   });
-  assert.equal(normal.groups,1);assert.equal(normal.clock,true);assert.ok(normal.packets>100);assert.ok(normal.samples>100);assert.ok(BigInt(normal.presses)>0n);assert.ok(BigInt(normal.releases)>0n);assert.deepEqual(normal.errors,[]);
+  assert.equal(normal.groups,1);assert.equal(normal.clock,true);assert.equal(normal.freshnessStreams,0);
+  assert.ok(normal.longestQuiet>500);assert.equal(normal.buttonStates.length,2);assert.ok(normal.samples>0);
+  assert.ok(BigInt(normal.presses)>0n);assert.ok(BigInt(normal.releases)>0n);assert.deepEqual(normal.errors,[]);
   const protocol=await page.evaluate(async()=>{
     const {Session}=await import('/src/session.ts');const {timing,decodeTracking}=await import('/src/protocol.ts');
     const s=new Session(),pc=new RTCPeerConnection({iceServers:[]});
@@ -182,8 +199,27 @@ try {
       reliable.send(s.request(r));await wait(()=>s.active.get(id)?.packets>=6,'mixed bundles');if(!wire.get(id).some(p=>p.bundles[1]===null))throw Error('ACKed bundle not omitted');
       reliable.send(s.request({...r,delivery:2}));await wait(()=>s.active.get(id)?.request.delivery===2&&s.active.get(id)?.packets>=2,'replacement');
       reliable.send(s.changeSchedule(id,{...timing(50),interval:1n}));await wait(()=>!s.active.has(id),'rate rejection ends active');
+      // The scripted A button goes down and up once per four seconds. Lengthen the
+      // slot after a release so the next complete press falls between publications.
+      const buttonId=s.allocateId(),a=c.descriptors.findIndex(d=>d.id==='/user/gamepad/input/a/click');
+      const {press_count_sample,release_count_sample}=c.descriptors[a];
+      const selected=[a,press_count_sample,release_count_sample].map(descriptor=>({
+        descriptor,format:c.descriptors[descriptor].formats[0],space:0
+      }));
+      reliable.send(s.request({id:buttonId,group:0,delivery:1,...timing(60),sequenceNumberFormat:2,bundles:[[],selected]}));
+      const buttonPackets=()=>wire.get(buttonId)??[];
+      await wait(()=>buttonPackets().some(p=>p.bundles[1][0]),'A down');
+      await wait(()=>buttonPackets().at(-1).bundles[1][0]===false,'A released');
+      const released=buttonPackets().at(-1),start=buttonPackets().length;
+      const slow=timing(0.2);
+      reliable.send(s.changeSchedule(buttonId,{...slow,phase:released.timestamp%slow.interval}));
+      await wait(()=>buttonPackets().at(-1).timestamp>released.timestamp+4_500_000_000n,'slot following a complete press');
+      const after=buttonPackets().at(-1).bundles[1],before=released.bundles[1];
+      if(buttonPackets().slice(start).some(p=>p.bundles[1][0]) ||
+        Number(after[1])!==Number(before[1])+1 || Number(after[2])!==Number(before[2])+1)throw Error('Between-slot A edges lost');
+      reliable.send(s.stop(buttonId));await wait(()=>!s.stopping.has(buttonId),'stop slow slots');
       for(let i=0;i<4;i++){unreliable.send(s.requestClock(performance.now()));await pause(100);}await wait(()=>!!s.clockEstimate(performance.now()),'clock');
-      return {reports,clock:true,errors};
+      return {reports,clock:true,betweenSlots:{held:after[0],pressDelta:Number(after[1])-Number(before[1]),releaseDelta:Number(after[2])-Number(before[2])},errors};
     }finally{pc.close();s.retire();}
   });
   assert.deepEqual(protocol.errors,[]);assert.ok(protocol.reports.every(r=>r.predictedFor===null&&r.packets>=3));
@@ -195,6 +231,8 @@ try {
   assert.equal(await page.locator('#status').innerText(),'Connected');
   assert.match(await page.locator('#sample-summary').innerText(),new RegExp('^'+normal.descriptors+' samples'));
   const editor=page.locator('subscription-editor');
+  assert.match(await editor.locator('[data-bundle-index="0"] summary').innerText(),/0 bindings/);
+  assert.match(await editor.locator('[data-bundle-index="1"] summary').innerText(),new RegExp('On change[\\s\\S]*'+normal.descriptors+' bindings'));
   const stickRow='tr[data-descriptor="/user/gamepad/input/thumbstick_left"]';
   // Live samples replace rows while rendering; query and scroll the current row
   // in one browser task instead of retaining an element across layout frames.
@@ -202,6 +240,19 @@ try {
     const row=document.querySelector(selector);if(!row)return false;
     row.scrollIntoView({block:'center'});return true;
   },selector);
+  const button='/user/gamepad/input/a/click';
+  await scrollRow('tr[data-descriptor="'+button+'"]');
+  const buttonReading=async(held,minimumPresses=0,minimumReleases=0)=>{
+    const handle=await page.waitForFunction(({button,held,minimumPresses,minimumReleases})=>{
+      const read=suffix=>document.querySelector('[data-descriptor="'+button+suffix+'"] .sample-value')?.textContent;
+      const presses=parseInt(read('/press_count'),10),releases=parseInt(read('/release_count'),10);
+      if(read('')===String(held) && presses>=minimumPresses && releases>=minimumReleases)return {held,presses,releases};
+    },{button,held,minimumPresses,minimumReleases});
+    return handle.jsonValue();
+  };
+  const baseline=await buttonReading(false);
+  const down=await buttonReading(true,baseline.presses+1,baseline.releases);
+  const up=await buttonReading(false,down.presses,down.releases+1);
   await scrollRow(stickRow);
   await page.waitForFunction(selector=>{
     const row=document.querySelector(selector);const v=row?.querySelector('.sample-value')?.textContent.split(',').map(Number);
@@ -210,21 +261,21 @@ try {
   await editor.locator('[data-field="automatic"]').uncheck();
   await editor.locator('[data-field="delivery"]').selectOption('2');
   await editor.locator('[data-action="add-bundle"]').click();
-  const bundle=editor.locator('[data-bundle-index="1"]');
+  const bundle=editor.locator('[data-bundle-index="2"]');
   await bundle.locator('[data-action="catalogue"]').click();
   await bundle.locator('[data-field="search"]').fill('/user/gamepad/input/trigger_left/value');
   await bundle.locator('[data-action="add-matches"]').click();
   await editor.locator('[data-action="close-catalogue"]').click();
   await editor.locator('[data-action="apply"]').click();
   await page.waitForFunction(()=>document.querySelector('subscription-editor .subscription-message')?.textContent.includes('packets'));
-  await scrollRow('[data-bundle-index="1"] tr[data-descriptor="/user/gamepad/input/trigger_left/value"]');
+  await scrollRow('[data-bundle-index="2"] tr[data-descriptor="/user/gamepad/input/trigger_left/value"]');
   await page.waitForFunction(()=>{
-    const row=document.querySelector('[data-bundle-index="1"] tr[data-descriptor="/user/gamepad/input/trigger_left/value"]');
+    const row=document.querySelector('[data-bundle-index="2"] tr[data-descriptor="/user/gamepad/input/trigger_left/value"]');
     return row?.dataset.available==='true' && Math.abs(Number(row.querySelector('.sample-value')?.textContent)-0.25)<0.01;
   });
   assert.equal(await bundle.locator('tr').count(),3); // heading plus value and activity
   if(process.env.SCREENSHOT)await page.screenshot({path:process.env.SCREENSHOT,fullPage:true});
-  console.log('PASS gamepad current-viewer integration',JSON.stringify({normal,protocol,ui:'populated sticks/triggers, reliable replacement with on-change bundle'},(_,v)=>typeof v==='bigint'?v.toString():v));
+  console.log('PASS gamepad current-viewer integration',JSON.stringify({normal,protocol,buttonReadings:[baseline,down,up],ui:'populated sticks/triggers, reliable replacement with on-change bundle'},(_,v)=>typeof v==='bigint'?v.toString():v));
 
   }
 } finally {
@@ -242,7 +293,7 @@ async function verifyVirtual(page) {
   const report=await page.evaluate(async()=>{
     const {Connection}=await import('/src/connection.ts');
     const {currentValues,spatialFrames}=await import('/src/tracking-view.ts');
-    const c=new Connection(()=>{}),reports={};let segment,resetSeen=false,samples=0;
+    const c=new Connection(()=>{}),reports={};let segment,resetSeen=false,samples=0,retainedRaw=false;
     const requirements=['forward','back','right','left','up','down','yawRight','yawLeft','pitchUp','pitchDown','rollRight','rollLeft','neutral','paused','combined'];
     const delta={forward:[2,-1],back:[2,1],right:[0,1],left:[0,-1],up:[1,1],down:[1,-1],yawRight:[4,-1],yawLeft:[4,1],pitchUp:[3,1],pitchDown:[3,-1],rollRight:[5,-1],rollLeft:[5,1]};
     try {
@@ -255,6 +306,11 @@ async function verifyVirtual(page) {
           const get=id=>values.get(caps.descriptors.findIndex(d=>d.id===id));
           const pose=get('/gamepad/virtual/pose');
           if(pose?.packet) {
+            const bundles=pose.subscription.request.bundles;
+            const continuous=caps.descriptors.filter(d=>d.id.startsWith('/gamepad/virtual/')).map(d=>d.id);
+            if(bundles.length!==2 || bundles[0].length!==continuous.length ||
+              bundles[0].some(b=>!continuous.includes(caps.descriptors[b.descriptor].id)) ||
+              bundles[1].length!==caps.descriptors.length-continuous.length)throw Error('Wrong mixed default subscription');
             samples++;if(pose.stale)throw Error('Virtual pose stale while idle/paused');
             const desc=caps.descriptors.find(d=>d.id==='/gamepad/virtual/pose');
             if(desc.kind!==10||desc.spaces.length!==1||desc.spaces[0]!==6)throw Error('Virtual pose is not model-space kind10');
@@ -267,9 +323,17 @@ async function verifyVirtual(page) {
             }
             const spatial=spatialFrames(c.session,performance.now());
             if(spatial.space!==6||spatial.sources[0]!=='/gamepad/virtual/pose'||spatial.poses.poses[0]?.flags!==3)throw Error('Generic viewer failed to interpret virtual pose');
-            const raw=suffix=>{const v=get('/user/gamepad/input/'+suffix);if(!v?.packet||v.packet.timestamp!==pose.packet.timestamp)throw Error('Raw/pose acquisition mismatch');return v.value;};
+            const raw=suffix=>{
+              const v=get('/user/gamepad/input/'+suffix),active=get('/user/gamepad/input/'+suffix+'/active');
+              if(!v?.packet || v.stale || v.packet.timestamp>pose.packet.timestamp ||
+                active?.value!==true || active.packet.timestamp!==v.packet.timestamp)throw Error('Invalid retained raw input '+suffix);
+              if(!pose.packet.bundles[1] && v.packet.timestamp<pose.packet.timestamp)retainedRaw=true;
+              return v.value;
+            };
             const l=raw('thumbstick_left'),r=raw('thumbstick_right'),lt=raw('trigger_left/value'),rt=raw('trigger_right/value'),lb=raw('shoulder_left/click'),rb=raw('shoulder_right/click');
-            const enabled=get('/gamepad/virtual/enabled').value;
+            const motion=get('/gamepad/virtual/enabled');
+            if(motion.packet.timestamp!==pose.packet.timestamp)throw Error('Virtual motion state did not accompany pose');
+            const enabled=motion.value;
             const reset=raw('view/click');
             let label;
             const moving=l.some(x=>x!==0)||r.some(x=>x!==0)||lt!==0||rt!==0||lb||rb;
@@ -299,7 +363,8 @@ async function verifyVirtual(page) {
         await new Promise(r=>setTimeout(r,15));
       }
       if(!resetSeen||!requirements.every(key=>reports[key]))throw Error('Missing virtual coverage '+requirements.filter(key=>!reports[key]).join(','));
-      return {samples,reports,reset:true,modelSpace:true,tracked:false,predictedFor:null,rawAcquisitionsMatched:true};
+      if(!retainedRaw)throw Error('Continuous pose never advanced independently of acknowledged inputs');
+      return {samples,reports,reset:true,modelSpace:true,tracked:false,predictedFor:null,retainedRaw};
     }finally{c.close();}
   });
   await page.getByRole('button',{name:'Connect',exact:true}).click();
@@ -310,6 +375,8 @@ async function verifyVirtual(page) {
     if(!row)return false;row.scrollIntoView({block:'center'});return true;
   });
   await page.waitForFunction(()=>document.querySelector('tr[data-descriptor="/gamepad/virtual/pose"]')?.dataset.available==='true');
+  assert.equal(await page.locator('[data-bundle-index="0"] tr[data-descriptor="/gamepad/virtual/pose"]').count(),1);
+  assert.equal(await page.locator('[data-bundle-index="1"] tr[data-descriptor="/user/gamepad/input/a/click"]').count(),1);
   if(process.env.SCREENSHOT)await page.screenshot({path:process.env.SCREENSHOT,fullPage:true});
   console.log('PASS virtual gamepad current-viewer integration',JSON.stringify({...report,uiRenderedPoseCount:1}));
 }
