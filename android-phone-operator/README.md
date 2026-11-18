@@ -46,11 +46,19 @@ curl -fsSL https://dl.google.com/android/cli/latest/linux_x86_64/install.sh | ba
 
 ## Build and install
 
-With your phone connected to ADB, run this from `android-phone-operator/` to
-rebuild, install, and launch Phone Operator.
+From `android-phone-operator/`, rebuild, install, and launch Phone Operator on
+a USB-connected phone or a paired phone with **Wireless debugging** enabled.
 
 ```sh
 ./deploy.sh
+```
+
+Deploy uses a ready ADB device when available. If none is connected, it asks
+ADB to connect to the advertised Wi-Fi service at its current port. If several
+targets are listed, select one for this run with its serial or full service name.
+
+```sh
+ANDROID_SERIAL=SERIAL_OR_SERVICE_NAME ./deploy.sh
 ```
 
 To build the signed ARM64 APK on its own, use the Gradle Wrapper. The build uses
@@ -90,7 +98,8 @@ Connect the phone to ADB using either method.
      adb pair IP:PAIRING_PORT
      ```
 
-  2. **Check the connection.** On the computer, list connected devices.
+  2. **Deploy or connect manually.** Once paired, use the deploy script above.
+     For a manual connection, first list connected devices.
 
      ```sh
      adb devices -l
