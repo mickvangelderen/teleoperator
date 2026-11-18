@@ -33,9 +33,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "android-discovery"
+version = "0.1.0"
+dependencies = [
+ "jni-min-helper",
+ "log",
+ "tokio",
+]
+
+[[package]]
 name = "android-phone-operator"
 version = "0.1.0"
 dependencies = [
+ "android-discovery",
  "android_logger",
  "arcore",
  "arcore-sys",

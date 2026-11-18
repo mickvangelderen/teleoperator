@@ -118,6 +118,7 @@ fn start(mask: i32) {
         runtime.block_on(async move {
             let listener=match tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED,PORT)).await {Ok(l)=>l,Err(e)=>{*n.lock().unwrap()=format!("Server unavailable: {e}");return;}};
             n.lock().unwrap().clear();
+            let _advertisement = android_discovery::advertise("Phone Operator", listener.local_addr());
             let source=h.clone();let mut ticker_stop=rx.clone();
             let ticker=tokio::spawn(async move {
                 let mut timer=tokio::time::interval(std::time::Duration::from_millis(25));
