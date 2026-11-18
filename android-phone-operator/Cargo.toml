@@ -7,6 +7,7 @@ publish = false
 [features]
 default = []
 arcore = []
+imu-displacement = []
 
 [lib]
 name = "phone_operator"
@@ -19,6 +20,10 @@ path = "src/main.rs"
 [[bin]]
 name = "phone-operator-spatial-synthetic"
 path = "src/spatial_synthetic.rs"
+
+[[bin]]
+name = "phone-operator-displacement-synthetic"
+path = "src/displacement_synthetic.rs"
 
 [dependencies]
 async-trait = "0.1"

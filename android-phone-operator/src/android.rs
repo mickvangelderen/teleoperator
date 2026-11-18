@@ -83,10 +83,16 @@ pub extern "system" fn Java_dev_xroperator_phone_MainActivity_nativeStart(
         return;
     }
     let previous = current.stopping.take();
-    #[cfg(not(feature = "arcore"))]
+    #[cfg(not(any(feature = "arcore", feature = "imu-displacement")))]
     let hub = Hub::new(
         std::array::from_fn(|i| mask & (1 << i) != 0),
         "Android SensorManager (physical phone)",
+    );
+    #[cfg(all(feature = "imu-displacement", not(feature = "arcore")))]
+    let hub = Hub::displacement_at(
+        std::array::from_fn(|i| mask & (1 << i) != 0),
+        "IMU displacement estimate (uncorrected dead reckoning)",
+        phone::now(),
     );
     #[cfg(feature = "arcore")]
     let hub = Hub::spatial_at(

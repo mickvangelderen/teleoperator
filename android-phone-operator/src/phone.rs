@@ -1,4 +1,7 @@
-//! Phone-only source: Android BOOTTIME timestamps, no translation or prediction.
+//! Phone source policies: Android BOOTTIME acquisition timestamps, no prediction.
+#[cfg(test)]
+#[path = "displacement_tests.rs"]
+mod displacement_tests;
 use crate::protocol::{
     self, Capabilities, Descriptor, EncodedAcquisition, PublicationState, Request, Value,
 };
@@ -84,6 +87,7 @@ struct Demand {
 }
 struct State {
     spatial: Option<crate::spatial::SpatialState>,
+    displacement: Option<crate::displacement::Estimator>,
     selected: Hand,
     held: bool,
     foreground: bool,
@@ -286,11 +290,34 @@ impl State {
                 self.releases[self.selected as usize].wrapping_add(1);
         }
         self.held = false;
+        if let Some(d) = &mut self.displacement {
+            d.end();
+        }
     }
     fn values(&self, group: usize, at: u64) -> Vec<Value> {
         let mut values = Vec::new();
         for hand in 0..2 {
             if group == 0 {
+                if let Some(d) = &self.displacement {
+                    let estimate = d.estimate.filter(|e| {
+                        self.held
+                            && self.selected as usize == hand
+                            && self.foreground
+                            && self.focused
+                            && self.good[0]
+                            && self.good[1]
+                            && e.at >= self.hold_started
+                            && at.saturating_sub(e.at) <= STALE_NS
+                    });
+                    let pose = estimate.map_or(crate::spatial::Pose::IDENTITY, |e| e.pose);
+                    let valid = estimate.is_some();
+                    values.push(Value::Numbers(
+                        [pose.position.to_vec(), pose.orientation.to_vec()].concat(),
+                    ));
+                    // Numerically usable dead reckoning is not physically tracked position.
+                    values.extend([valid, valid, false, valid].map(Value::Bit));
+                    continue;
+                }
                 let valid =
                     self.active(hand, 0, at) && self.orientation.is_some() && self.heading_set;
                 let q = if valid {
@@ -408,13 +435,22 @@ impl Hub {
         Self::at(available, source, now())
     }
     pub fn at(available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
-        Self::with_mode(available, source, at, false)
+        Self::with_mode(available, source, at, false, false)
     }
     pub fn spatial_at(mut available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
         available[0] = true;
-        Self::with_mode(available, source, at, true)
+        Self::with_mode(available, source, at, true, false)
     }
-    fn with_mode(available: [bool; 3], source: &'static str, at: u64, spatial: bool) -> Arc<Self> {
+    pub fn displacement_at(available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
+        Self::with_mode(available, source, at, false, true)
+    }
+    fn with_mode(
+        available: [bool; 3],
+        source: &'static str,
+        at: u64,
+        spatial: bool,
+        displacement: bool,
+    ) -> Arc<Self> {
         let mut c = catalog(available);
         if spatial {
             for d in &mut c.descriptors {
@@ -424,10 +460,19 @@ impl Hub {
                 }
             }
         }
+        if displacement {
+            for d in &mut c.descriptors {
+                if d.kind == 10 {
+                    d.name = d.name.replace("orientation", "IMU displacement estimate");
+                    d.description = "Uncorrected IMU displacement estimate, NOT tracked position. Each hold assumes zero velocity/displacement at its first aligned acceleration after press. Rotate acceleration from phone axes into fixed local heading/Y-up, subtract9.80665m/s² gravity, integrate actual dt; no damping/deadband/bias correction. Orientation is SLERP at acceleration time with bracketing samples <=25ms each side; acquired_at is that acceleration timestamp. Gaps>50ms/skew/loss cancel hold. Position_valid means finite estimate; position_tracked=false. Grip +X phone right,+Y out-screen,-Z phone top. No prediction.".into();
+                }
+            }
+        }
         let c = Arc::new(c);
         let (updates, _) = watch::channel(0);
         let mut state = State {
             spatial: spatial.then(Default::default),
+            displacement: displacement.then(Default::default),
             selected: Hand::Left,
             held: false,
             foreground: false,
@@ -478,6 +523,11 @@ impl Hub {
     pub fn action(&self, action: Action, at: u64) {
         let mut s = self.state.lock().unwrap();
         let at = s.transition_time(at);
+        if matches!(action, Action::Resume)
+            && let Some(d) = &mut s.displacement
+        {
+            d.resume(at);
+        }
         if let Some(spatial) = &mut s.spatial {
             match action {
                 Action::Pause
@@ -502,11 +552,23 @@ impl Hub {
                 s.selected = hand;
             }
             Action::Hold => {
-                if !s.held && s.foreground && s.focused && s.fresh(0, at) && s.heading_set {
+                if !s.held
+                    && s.foreground
+                    && s.focused
+                    && s.fresh(0, at)
+                    && s.heading_set
+                    && s.displacement
+                        .as_ref()
+                        .is_none_or(|d| s.fresh(1, at) && d.ready(at))
+                {
                     s.held = true;
                     s.hold_started = at;
                     let hand = s.selected as usize;
                     s.presses[hand] = s.presses[hand].wrapping_add(1);
+                    let heading = s.heading;
+                    if let Some(d) = &mut s.displacement {
+                        d.begin(at, heading);
+                    }
                 }
             }
             Action::Release | Action::Cancel => s.cancel(),
@@ -554,6 +616,10 @@ impl Hub {
             return;
         }
         let mut s = self.state.lock().unwrap();
+        if s.displacement.is_some() {
+            self.displacement_sensor(&mut s, kind, timestamp, values, received);
+            return;
+        }
         // The AR app never substitutes IMU orientation for a spatial pose.
         if kind == 0 && s.spatial.is_some() {
             return;
@@ -601,9 +667,119 @@ impl Hub {
         }
         self.updates.send_replace(s.serial);
     }
+    fn displacement_sensor(
+        &self,
+        s: &mut State,
+        kind: usize,
+        timestamp: u64,
+        values: [f64; 4],
+        received: u64,
+    ) {
+        if !s.foreground
+            || !s.available[kind]
+            || !s.displacement.as_ref().unwrap().in_epoch(timestamp)
+        {
+            return;
+        }
+        if s.last[kind] == Some(timestamp) {
+            return;
+        } // Duplicate: no new sample/freshness.
+        let q = if kind == 0 {
+            android_to_tracking(values)
+        } else {
+            None
+        };
+        let error = if timestamp > received {
+            Some("Future IMU timestamp")
+        } else if s.last[kind].is_some_and(|t| timestamp < t) {
+            Some("Out-of-order IMU timestamp")
+        } else if received - timestamp > STALE_NS {
+            Some("Stale IMU source")
+        } else if (kind == 0 && q.is_none())
+            || (kind != 0
+                && values[..3]
+                    .iter()
+                    .any(|v| !v.is_finite() || v.abs() > f32::MAX as f64))
+        {
+            Some("Invalid IMU source value")
+        } else if kind < 2
+            && s.held
+            && s.last[kind].is_some_and(|t| timestamp - t > crate::displacement::MAX_GAP_NS)
+        {
+            Some("Required IMU source gap exceeds 50 ms")
+        } else {
+            None
+        };
+        if let Some(reason) = error {
+            s.good[kind] = false;
+            if kind < 2 {
+                s.cancel();
+                s.displacement.as_mut().unwrap().invalidate(reason);
+                s.publish_all(received, &self.capabilities);
+            } else {
+                s.publish(2, s.transition_time(received), &self.capabilities);
+            }
+            self.updates.send_replace(s.serial);
+            return;
+        }
+        s.last[kind] = Some(timestamp);
+        s.good[kind] = true;
+        let result = if kind == 0 {
+            s.orientation = q;
+            if !s.heading_set
+                && let Some(h) = q.and_then(heading_inverse)
+            {
+                s.heading = h;
+                s.heading_set = true;
+            }
+            s.displacement
+                .as_mut()
+                .unwrap()
+                .orientation(timestamp, q.unwrap(), received)
+        } else {
+            s.raw[kind - 1].copy_from_slice(&values[..3]);
+            if kind == 1 {
+                s.displacement
+                    .as_mut()
+                    .unwrap()
+                    .acceleration(timestamp, s.raw[0], received)
+            } else {
+                Ok(None)
+            }
+        };
+        match result {
+            Ok(estimate) => {
+                // A late sensor still refreshes source availability. Only its
+                // publication is skipped if a newer UI placeholder already won.
+                if kind != 0 && timestamp >= s.snapshots[kind].timestamp {
+                    s.publish(kind, timestamp, &self.capabilities);
+                }
+                if let Some(e) = estimate
+                    && e.at >= s.snapshots[0].timestamp
+                {
+                    s.publish(0, e.at, &self.capabilities);
+                }
+            }
+            Err(reason) => {
+                s.cancel();
+                s.displacement.as_mut().unwrap().invalidate(reason);
+                s.publish_all(received, &self.capabilities);
+            }
+        }
+        self.updates.send_replace(s.serial);
+    }
     pub fn tick(&self, at: u64) {
         let mut s = self.state.lock().unwrap();
         let at = s.transition_time(at);
+        if s.displacement.as_ref().is_some_and(|d| d.expired(at)) {
+            s.cancel();
+            s.displacement
+                .as_mut()
+                .unwrap()
+                .invalidate("Aligned IMU source stalled; new hold required");
+            s.publish_all(at, &self.capabilities);
+            self.updates.send_replace(s.serial);
+        }
         let stale: [bool; 3] = std::array::from_fn(|i| s.good[i] && !s.fresh(i, at));
         if stale.iter().any(|v| *v) {
             for (i, stale) in stale.iter().enumerate() {
@@ -611,11 +787,14 @@ impl Hub {
                     s.good[i] = false;
                 }
             }
-            if stale[0] {
+            if stale[0] || (stale[1] && s.displacement.is_some()) {
                 if let Some(spatial) = &mut s.spatial {
                     spatial.invalidate("Camera frame stalled — recenter required");
                 }
                 s.cancel();
+                if let Some(d) = &mut s.displacement {
+                    d.invalidate("Required IMU source stale; new hold required");
+                }
                 s.publish_all(at, &self.capabilities);
             } else {
                 for (i, stale) in stale.iter().enumerate() {
@@ -629,6 +808,16 @@ impl Hub {
     }
     pub fn status(&self, at: u64) -> String {
         let s = self.state.lock().unwrap();
+        if let Some(d) = &s.displacement {
+            return format!(
+                "{:?} hand · {}\nIMU displacement estimate — position NOT TRACKED\n{}\nPosition (m): {:?}\nVelocity estimate (m/s): {:?}\nEach hold starts at zero displacement/velocity on first aligned sample.\nGravity:9.80665m/s² · heading fixed during hold\nNo damping, deadband or drift correction. No prediction.\nAlignment: orientation brackets acceleration within25ms each side. Gaps>50ms cancel.\nAccelerometer/orientation loss cancels hold; press again after recovery.",
+                s.selected,
+                if s.held { "HELD" } else { "INACTIVE" },
+                d.status,
+                d.estimate.map(|e| e.pose.position),
+                d.estimate.map(|e| e.velocity)
+            );
+        }
         if let Some(spatial) = &s.spatial {
             return format!(
                 "{:?} hand · {}\n{}\nOrigin: {} · camera pose: {}\nSensor-origin position (m): {:?}\nGrip quaternion xyzw: {:?}\n{}\nNo prediction. Raw IMU available as advertised.\nKeep rear camera unobstructed. Recenter upright, then hold.\nExperimental local reference; not a fixed robot frame.",
