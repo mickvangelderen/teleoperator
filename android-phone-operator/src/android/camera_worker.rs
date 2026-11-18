@@ -1,0 +1,236 @@
+//! The activity owns cancellation. All camera calls, including potentially slow
+//! session destruction, run under one process-wide lock on background threads.
+use crate::{
+    phone::{self, Hub},
+    spatial::{self, Frame, Pose},
+};
+use arcore::{
+    Anchor, LightEstimationMode, PlaneFindingMode, Session, TextureUpdateMode, TrackingState,
+};
+use jni::{
+    JNIEnv, JavaVM,
+    objects::{GlobalRef, JObject},
+};
+use std::{
+    error::Error,
+    sync::{Arc, Mutex},
+    thread,
+};
+
+static CAMERA: Mutex<()> = Mutex::new(());
+
+#[derive(Default)]
+struct State {
+    stopped: bool,
+    failure: Option<String>,
+}
+
+pub(super) struct CameraWorker {
+    state: Arc<Mutex<State>>,
+}
+
+impl CameraWorker {
+    pub(super) fn start(vm: JavaVM, context: GlobalRef, hub: Arc<Hub>) -> Self {
+        let state = Arc::new(Mutex::new(State::default()));
+        let worker = state.clone();
+        let spawned = thread::Builder::new()
+            .name("ARCore camera".into())
+            .spawn(move || {
+                let _camera = CAMERA.lock().unwrap();
+                if worker.lock().unwrap().stopped {
+                    return;
+                }
+                let result = run(&vm, &context, &hub, &worker);
+                if let Err(error) = result {
+                    let mut state = worker.lock().unwrap();
+                    if !state.stopped {
+                        log::warn!("ARCore camera failed: {error}");
+                        state.failure = Some(error.to_string());
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            state.lock().unwrap().failure = Some(format!("Could not start camera worker: {error}"));
+        }
+        Self { state }
+    }
+
+    pub(super) fn failure(&self) -> Option<String> {
+        self.state.lock().unwrap().failure.clone()
+    }
+}
+
+impl Drop for CameraWorker {
+    fn drop(&mut self) {
+        // Synchronize only with publication. Once this returns the old worker
+        // cannot publish into the next mode or activity, even during teardown.
+        self.state.lock().unwrap().stopped = true;
+    }
+}
+
+fn run(
+    vm: &JavaVM,
+    context: &GlobalRef,
+    hub: &Hub,
+    worker: &Mutex<State>,
+) -> Result<(), Box<dyn Error>> {
+    let mut env = vm.attach_current_thread_as_daemon()?;
+    let mut session = Session::new(&mut env, context.as_obj())?;
+    let mut config = session.config()?;
+    config.set_plane_finding_mode(PlaneFindingMode::Disabled);
+    config.set_light_estimation_mode(LightEstimationMode::Disabled);
+    config.set_texture_update_mode(TextureUpdateMode::ExposeHardwareBuffer);
+    config.apply()?;
+    let camera_id = session.camera_id()?;
+    match realtime_camera(&mut env, context.as_obj(), &camera_id) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(format!(
+                "Camera {camera_id} timestamps cannot be aligned with phone sensors"
+            )
+            .into());
+        }
+        Err(error) => {
+            // A framework exception belongs to this attached worker. Clear it
+            // before ARCore calls back into the VM during session destruction.
+            if env.exception_check()? {
+                env.exception_describe()?;
+                env.exception_clear()?;
+            }
+            return Err(
+                format!("Could not read timestamp source for camera {camera_id}: {error}").into(),
+            );
+        }
+    }
+    if worker.lock().unwrap().stopped || !hub.spatial_context().1 {
+        return Ok(());
+    }
+    session.resume()?;
+    track(&mut session, hub, worker)?;
+    session.pause()?;
+    Ok(())
+}
+
+/// Read Camera2's static characteristic for the exact camera selected by ARCore.
+fn realtime_camera(
+    env: &mut JNIEnv<'_>,
+    context: &JObject<'_>,
+    id: &str,
+) -> jni::errors::Result<bool> {
+    let service = env.new_string("camera")?;
+    let manager = env
+        .call_method(
+            context,
+            "getSystemService",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            &[(&service).into()],
+        )?
+        .l()?;
+    let id = env.new_string(id)?;
+    let characteristics = env
+        .call_method(
+            manager,
+            "getCameraCharacteristics",
+            "(Ljava/lang/String;)Landroid/hardware/camera2/CameraCharacteristics;",
+            &[(&id).into()],
+        )?
+        .l()?;
+    let class = env.find_class("android/hardware/camera2/CameraCharacteristics")?;
+    let key = env
+        .get_static_field(
+            &class,
+            "SENSOR_INFO_TIMESTAMP_SOURCE",
+            "Landroid/hardware/camera2/CameraCharacteristics$Key;",
+        )?
+        .l()?;
+    let source = env
+        .call_method(
+            characteristics,
+            "get",
+            "(Landroid/hardware/camera2/CameraCharacteristics$Key;)Ljava/lang/Object;",
+            &[(&key).into()],
+        )?
+        .l()?;
+    if source.is_null() {
+        return Ok(false);
+    }
+    let value = env.call_method(source, "intValue", "()I", &[])?.i()?;
+    Ok(value
+        == env
+            .get_static_field(class, "SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME", "I")?
+            .i()?)
+}
+
+fn phone_pose(pose: arcore::Pose) -> Pose {
+    Pose {
+        position: pose.translation.map(f64::from),
+        orientation: pose.rotation.map(f64::from),
+    }
+}
+
+fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> arcore::Result<()> {
+    let mut anchor: Option<Anchor> = None;
+    let mut anchor_generation = None;
+    let mut last_timestamp = 0;
+    while !worker.lock().unwrap().stopped {
+        let (generation, active, recenter) = hub.spatial_context();
+        if !active {
+            break;
+        }
+        if anchor_generation != Some(generation) {
+            anchor = None;
+            anchor_generation = Some(generation);
+        }
+
+        let query_started = phone::now();
+        let frame = session.update()?;
+        let timestamp = frame.timestamp_ns();
+        let metadata_timestamp = frame.android_camera_timestamp_ns()?;
+        let tracking = frame.tracking_state()? == TrackingState::Tracking;
+        let sensor = if tracking {
+            phone_pose(frame.android_sensor_pose())
+        } else {
+            Pose::IDENTITY
+        };
+        let age = phone::now().checked_sub(timestamp as u64);
+        let fresh = timestamp > last_timestamp
+            && metadata_timestamp == Some(timestamp)
+            && age.is_some_and(|ns| ns <= phone::STALE_NS);
+        last_timestamp = last_timestamp.max(timestamp);
+        let mut created_origin = false;
+        if recenter
+            && anchor.is_none()
+            && tracking
+            && fresh
+            && let Some(origin) = spatial::origin_pose(sensor)
+        {
+            anchor = Some(session.create_anchor(arcore::Pose {
+                translation: origin.position.map(|v| v as f32),
+                rotation: origin.orientation.map(|v| v as f32),
+            })?);
+            created_origin = true;
+        }
+        let origin = anchor
+            .as_ref()
+            .filter(|a| a.tracking_state() == TrackingState::Tracking)
+            .map(|a| phone_pose(a.pose()));
+
+        let state = worker.lock().unwrap();
+        if state.stopped {
+            break;
+        }
+        hub.spatial_frame(Frame {
+            generation,
+            timestamp,
+            metadata_timestamp,
+            realtime: true,
+            query_started,
+            query_finished: phone::now(),
+            tracking,
+            sensor,
+            anchor: origin,
+            created_origin,
+        });
+    }
+    Ok(())
+}
