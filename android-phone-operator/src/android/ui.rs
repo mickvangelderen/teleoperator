@@ -230,16 +230,6 @@ impl Ui {
                 Ok(())
             },
         )?;
-        let title = resources.id(env, "string", "notice_title")?;
-        let notice = resources.id(env, "string", "ar_notice")?;
-        let disclosure = view(env, "disclosure")?;
-        ui.listen(
-            env,
-            "android/view/View$OnClickListener",
-            &disclosure,
-            "setOnClickListener",
-            move |env, _| with_ui(|ui| show_notice(env, &ui.activity, title, notice)),
-        )?;
         let hold = JniProxy::build(
             env,
             None,
@@ -533,60 +523,6 @@ fn set_text(env: &mut JNIEnv, view: &GlobalRef, value: &str) -> Result<()> {
         "setText",
         "(Ljava/lang/CharSequence;)V",
         &[(&text).into()],
-    )?;
-    Ok(())
-}
-
-fn show_notice(env: &mut JNIEnv, activity: &GlobalRef, title: i32, notice: i32) -> Result<()> {
-    let builder = env.new_object(
-        "android/app/AlertDialog$Builder",
-        "(Landroid/content/Context;)V",
-        &[activity.as_obj().into()],
-    )?;
-    env.call_method(
-        &builder,
-        "setTitle",
-        "(I)Landroid/app/AlertDialog$Builder;",
-        &[title.into()],
-    )?;
-    env.call_method(
-        &builder,
-        "setMessage",
-        "(I)Landroid/app/AlertDialog$Builder;",
-        &[notice.into()],
-    )?;
-    let ok = env.get_static_field("android/R$string", "ok", "I")?.i()?;
-    env.call_method(
-        &builder,
-        "setPositiveButton",
-        "(ILandroid/content/DialogInterface$OnClickListener;)Landroid/app/AlertDialog$Builder;",
-        &[ok.into(), (&JObject::null()).into()],
-    )?;
-    let dialog = env
-        .call_method(builder, "show", "()Landroid/app/AlertDialog;", &[])?
-        .l()?;
-    let id = env.get_static_field("android/R$id", "message", "I")?.i()?;
-    let message = env
-        .call_method(
-            dialog,
-            "findViewById",
-            "(I)Landroid/view/View;",
-            &[id.into()],
-        )?
-        .l()?;
-    let links = env
-        .call_static_method(
-            "android/text/method/LinkMovementMethod",
-            "getInstance",
-            "()Landroid/text/method/MovementMethod;",
-            &[],
-        )?
-        .l()?;
-    env.call_method(
-        message,
-        "setMovementMethod",
-        "(Landroid/text/method/MovementMethod;)V",
-        &[(&links).into()],
     )?;
     Ok(())
 }

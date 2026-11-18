@@ -63,8 +63,6 @@
                 <Button android:id="@+id/retry" style="@style/TextAction" android:layout_width="wrap_content"
                     android:layout_height="wrap_content" android:text="@string/retry" android:visibility="gone" />
             </LinearLayout>
-            <Button android:id="@+id/disclosure" style="@style/TextAction" android:layout_width="match_parent"
-                android:layout_height="wrap_content" android:text="@string/notice_title" />
         </LinearLayout>
     </ScrollView>
 </FrameLayout>
