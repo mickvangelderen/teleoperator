@@ -18,7 +18,7 @@ wifi_services() {
 
 target=${ANDROID_SERIAL:-}
 if [[ -z $target ]]; then
-    target=$(adb devices | awk '$2 == "device" { print $1 }')
+    target=$(adb devices | awk '$2 == "device" && $1 !~ /^emulator-[0-9]+$/ { print $1 }')
     if [[ -z $target ]]; then target=$(wifi_services); fi
     if [[ -z $target ]]; then
         echo 'No ready ADB device or Wi-Fi connection service. Check USB or enable Wireless debugging on the paired phone.' >&2
