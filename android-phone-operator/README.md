@@ -46,8 +46,15 @@ curl -fsSL https://dl.google.com/android/cli/latest/linux_x86_64/install.sh | ba
 
 ## Build and install
 
-From `android-phone-operator/`, build the signed ARM64 APK. The build uses the
-SDK reported by `android info sdk` and asks the CLI to install any missing
+With your phone connected to ADB, run this from `android-phone-operator/` to
+rebuild, install, and launch Phone Operator.
+
+```sh
+./deploy.sh
+```
+
+To build the signed ARM64 APK on its own, use the Gradle Wrapper. The build uses
+the SDK reported by `android info sdk` and asks the CLI to install any missing
 packages there. The wrapper downloads Gradle and the build dependencies on first use.
 
 ```sh
