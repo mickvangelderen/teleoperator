@@ -51,7 +51,7 @@ export async function checkVisualizationChoices(page) {
 }
 
 export async function checkXRVisualization(page) {
-  const workspace = page.locator(".workspace"), picker = page.getByLabel("Visualization", { exact: true });
+  const workspace = page.locator(".workspace"), picker = page.getByRole("combobox", { name: "Visualization", exact: true });
   await page.waitForFunction(() => document.querySelector(".workspace").dataset.view === "spatial");
   await picker.selectOption("values");
   const head = workspace.locator('.observed-sample:has(> [data-sample-id="/user/head/input/pose"])');
