@@ -273,7 +273,18 @@ try {
     const row=document.querySelector('[data-bundle-index="2"] tr[data-descriptor="/user/gamepad/input/trigger_left/value"]');
     return row?.dataset.available==='true' && Math.abs(Number(row.querySelector('.sample-value')?.textContent)-0.25)<0.01;
   });
-  assert.equal(await bundle.locator('tr').count(),3); // heading plus value and activity
+  const picker = page.getByLabel('Visualization', {exact:true});
+  await picker.selectOption('values');
+  const inspector = page.locator('#sample-inspector');
+  const accepted = inspector.locator('.inspect-selector select');
+  const bundleKey = await accepted.locator('option').filter({hasText:'Bundle 2'}).getAttribute('value');
+  await accepted.selectOption(bundleKey);
+  const observed = inspector.locator('.observed-sample');
+  await observed.locator('[data-sample-id$="/trigger_left/value/active"] .sample-value').filter({hasText:'true'}).waitFor();
+  assert.equal(await observed.count(), 1);
+  assert.ok(Math.abs(Number(await observed.locator('[data-sample-id$="/trigger_left/value"] .sample-value').innerText()) - 0.25) < 0.01);
+  await picker.selectOption('auto');
+  await page.locator('.gamepad [data-control="a/click"][data-edge]').waitFor();
   if(process.env.SCREENSHOT)await page.screenshot({path:process.env.SCREENSHOT,fullPage:true});
   console.log('PASS gamepad current-viewer integration',JSON.stringify({normal,protocol,buttonReadings:[baseline,down,up],ui:'populated sticks/triggers, reliable replacement with on-change bundle'},(_,v)=>typeof v==='bigint'?v.toString():v));
 
@@ -369,6 +380,7 @@ async function verifyVirtual(page) {
   });
   await page.getByRole('button',{name:'Connect',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
+  await page.getByLabel('Visualization', {exact:true}).selectOption('spatial');
   await page.waitForFunction(()=>document.querySelector('[data-pose-count="1"]'));
   await page.waitForFunction(()=>{
     const row=document.querySelector('tr[data-descriptor="/gamepad/virtual/pose"]');
