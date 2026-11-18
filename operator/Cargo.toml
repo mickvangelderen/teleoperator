@@ -27,6 +27,9 @@ webrtc = "0.21.1"
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 
+[target.'cfg(not(target_os = "android"))'.dependencies]
+desktop-discovery = { path = "../desktop-discovery" }
+
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 libc = "0.2"
 

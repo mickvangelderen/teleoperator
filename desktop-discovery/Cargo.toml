@@ -1,0 +1,12 @@
+[package]
+name = "desktop-discovery"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+hostname = "0.4"
+if-addrs = "0.15"
+mdns-sd = { version = "0.22", default-features = false }
+socket2 = "0.6"
+tokio = { version = "1", features = ["net"] }
