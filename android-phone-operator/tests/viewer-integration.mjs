@@ -104,8 +104,8 @@ async function run(mode) {
             }
             if(active.length>1)throw Error('Both hands active');
             const view = spatialFrames(c.session, performance.now());
-            const count = mode === 'orientation' ? 0 : active.length;
-            if (view.sources.length !== count || view.poses.poses.some(p=>p.flags !== (mode === 'spatial' ? 15 : 7)))
+            const flags = mode === 'orientation' ? 5 : mode === 'spatial' ? 15 : 7;
+            if (view.sources.length !== active.length || view.poses.poses.some(p=>p.flags !== flags))
               throw Error('Viewer pose/quality mismatch');
             if(active.length)seen.add(active[0]);else seen.add('inactive');
             for(const sub of c.session.active.values()){if(sub.packet?.predictedFor!=null)throw Error('Invented prediction');packets=Math.max(packets,sub.packets);}
@@ -159,7 +159,9 @@ async function run(mode) {
     // Exercise the unchanged production UI, using its ordinary connect action.
     await page.getByRole('button',{name:'Connect',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
-    await page.waitForFunction(count=>document.querySelector('#poses')?.dataset.poseCount===count, mode === 'orientation' ? '0' : '1');
+    await page.waitForFunction(()=>document.querySelector('#poses')?.dataset.poseCount==='1');
+    if (mode === 'orientation')
+      await page.waitForFunction(()=>document.querySelector('#poses')?.dataset.poseCount==='0');
     // The current editor displays one acquisition group's subscription at a time.
     await page.locator('subscription-editor [data-action="select"][data-group="0"]').first().click();
     for(const hand of ['left','right']) {
