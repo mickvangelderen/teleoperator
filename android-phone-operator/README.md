@@ -27,11 +27,8 @@ cargo binstall cargo-ndk
 
 ### APK packaging
 
-Install [CMake 4.5 or newer](https://cmake.org/download/) and put its `cpack`
-command on your PATH. The phone app is written in Rust. CPack uses a host JDK
-to package Google's ARCore library and sign the APK.
-
-We tested the build with JDK 25, available on Ubuntu through APT.
+The Gradle Wrapper needs a host JDK. We tested the build with JDK 25,
+available on Ubuntu through APT.
 
 ```sh
 apt install openjdk-25-jdk
@@ -51,10 +48,10 @@ curl -fsSL https://dl.google.com/android/cli/latest/linux_x86_64/install.sh | ba
 
 From `android-phone-operator/`, build the signed ARM64 APK. The build uses the
 SDK reported by `android info sdk` and asks the CLI to install any missing
-packages there. The first build also downloads the ARCore SDK.
+packages there. The wrapper downloads Gradle and the build dependencies on first use.
 
 ```sh
-cpack --config apk.cmake
+./gradlew assembleDebug
 ```
 
 If your shell cannot find `adb`, run `export PATH="$(android info sdk)/platform-tools:$PATH"`.
@@ -71,7 +68,7 @@ Connect the phone to ADB using either method.
 Once `adb devices -l` lists the phone as `device`, install or update the APK.
 
 ```sh
-adb install -r build/phone-operator-debug.apk
+adb install -r build/android/outputs/apk/debug/phone-operator-debug.apk
 ```
 
 ## First use

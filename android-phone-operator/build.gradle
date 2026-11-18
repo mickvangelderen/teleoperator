@@ -1,0 +1,82 @@
+plugins {
+    id 'com.android.application' version '9.4.1'
+}
+
+// Keep older developer signing keys outside Gradle's clean directory.
+layout.buildDirectory.set(layout.projectDirectory.dir('build/android'))
+def rustLibs = layout.buildDirectory.dir('rustJniLibs').get().asFile
+def abi = 'arm64-v8a'
+def ndkOverride = providers.environmentVariable('ANDROID_NDK_HOME').orNull
+
+android {
+    namespace = 'dev.xroperator.phone'
+    compileSdk = 36
+    buildToolsVersion = '36.1.0'
+    if (ndkOverride) {
+        ndkPath = ndkOverride
+        def properties = new Properties()
+        file("${ndkOverride}/source.properties").withInputStream { properties.load(it) }
+        ndkVersion = properties.getProperty('Pkg.Revision')
+    } else {
+        ndkVersion = '29.0.14206865'
+    }
+    defaultConfig {
+        applicationId = 'dev.xroperator.phone.experimental'
+        minSdk = 32
+        targetSdk = android.compileSdk
+        versionCode = 3
+        versionName = '0.3.0'
+        ndk { abiFilters abi }
+    }
+    signingConfigs {
+        debug {
+            def previousKey = providers.environmentVariable('PHONE_DEBUG_KEYSTORE').orNull
+            if (previousKey != null) storeFile = file(previousKey)
+            else if (file('build/debug.keystore').exists()) storeFile = file('build/debug.keystore')
+        }
+    }
+    sourceSets.main {
+        manifest.srcFile 'AndroidManifest.xml'
+        res.srcDirs = ['res']
+        jniLibs.srcDir rustLibs
+    }
+}
+
+// sdkDirectory also honors an explicit sdk.dir in the developer's local.properties.
+def sdkDir = androidComponents.sdkComponents.sdkDirectory.get().asFile
+def packages = ["platforms/android-${android.compileSdk}", "build-tools/${android.buildToolsVersion}"]
+if (!ndkOverride) packages.add("ndk/${android.ndkVersion}")
+def missing = packages.findAll { !new File(sdkDir, "${it}/package.xml").isFile() }
+if (!new File(sdkDir, 'platform-tools/package.xml').isFile()) missing.add('platform-tools@37.0.1')
+if (missing) {
+    logger.lifecycle("Installing missing Android SDK packages: ${missing.join(', ')}")
+    providers.exec {
+        commandLine 'android', "--sdk=${sdkDir}", 'sdk', '--ignore-outdated-xmls', 'install', *missing
+    }.result.get()
+}
+
+configurations { arcoreNative }
+def arcoreVersion = '1.57.0'
+def arcoreSdk = "com.google.ar:core:${arcoreVersion}"
+dependencies {
+    implementation arcoreSdk
+    arcoreNative "${arcoreSdk}@aar"
+}
+
+// Cargo links the very same SDK library that the Android plugin packages.
+def arcoreDir = layout.buildDirectory.dir("arcore/${arcoreVersion}").get().asFile
+def unpackArcore = tasks.register('unpackArcore', Sync) {
+    from zipTree(configurations.arcoreNative.elements.map { it.first().asFile })
+    include "jni/${abi}/libarcore_sdk_c.so"
+    into arcoreDir
+}
+def ndkDir = androidComponents.sdkComponents.ndkDirectory
+def nativeApi = android.defaultConfig.minSdk
+def cargoBuild = tasks.register('cargoBuild', Exec) {
+    dependsOn unpackArcore
+    // Cargo handles incremental builds, including changes to the Rust/NDK toolchain.
+    environment 'ANDROID_NDK_HOME', ndkDir.get().asFile.absolutePath
+    commandLine 'cargo', 'ndk', '-t', abi, '--platform', nativeApi.toString(),
+        '-o', rustLibs, 'rustc', '--locked', '--release', '--lib', '--', "-Lnative=${arcoreDir}/jni/${abi}"
+}
+tasks.named('preBuild') { dependsOn cargoBuild }
