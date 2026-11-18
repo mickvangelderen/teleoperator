@@ -10,14 +10,38 @@ set(CPACK_PACKAGE_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/build")
 set(CPACK_APK_MANIFEST "${CMAKE_CURRENT_LIST_DIR}/AndroidManifest.xml")
 set(CPACK_APK_RESOURCE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/res")
 set(CPACK_APK_MIN_SDK_VERSION 32)
-set(CPACK_APK_TARGET_SDK_VERSION 36)
 set(CPACK_APK_COMPILE_SDK_VERSION 36)
+set(CPACK_APK_TARGET_SDK_VERSION "${CPACK_APK_COMPILE_SDK_VERSION}")
 set(CPACK_APK_BUILD_TOOLS_VERSION 36.1.0)
-if(NOT DEFINED ENV{ANDROID_HOME})
-  set(ENV{ANDROID_HOME} "$ENV{HOME}/Android/Sdk")
-endif()
+
+execute_process(COMMAND android info sdk
+  OUTPUT_VARIABLE CPACK_APK_SDK_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE
+  COMMAND_ERROR_IS_FATAL ANY)
+set(ENV{ANDROID_HOME} "${CPACK_APK_SDK_ROOT}")
+set(sdk_packages "platforms/android-${CPACK_APK_COMPILE_SDK_VERSION}"
+                 "build-tools/${CPACK_APK_BUILD_TOOLS_VERSION}")
 if(NOT DEFINED ENV{ANDROID_NDK_HOME})
-  set(ENV{ANDROID_NDK_HOME} "$ENV{ANDROID_HOME}/ndk/29.0.14206865")
+  set(ndk_package "ndk/29.0.14206865")
+  list(APPEND sdk_packages "${ndk_package}")
+  set(ENV{ANDROID_NDK_HOME} "${CPACK_APK_SDK_ROOT}/${ndk_package}")
+endif()
+set(CPACK_APK_NDK_ROOT "$ENV{ANDROID_NDK_HOME}")
+
+# Even a no-op SDK install contacts the repository. Use the manager's local
+# package records to request only what is missing from this installation.
+foreach(package IN LISTS sdk_packages)
+  if(NOT EXISTS "${CPACK_APK_SDK_ROOT}/${package}/package.xml")
+    list(APPEND missing_packages "${package}")
+  endif()
+endforeach()
+# Platform tools occupy a single shared slot. Keep an existing adb version.
+if(NOT EXISTS "${CPACK_APK_SDK_ROOT}/platform-tools/package.xml")
+  list(APPEND missing_packages platform-tools@37.0.1)
+endif()
+if(missing_packages)
+  execute_process(COMMAND android "--sdk=${CPACK_APK_SDK_ROOT}" sdk
+                  --ignore-outdated-xmls install ${missing_packages}
+    COMMAND_ERROR_IS_FATAL ANY)
 endif()
 
 # Link against the same AAR that CPack merges, including its Maven dependencies.

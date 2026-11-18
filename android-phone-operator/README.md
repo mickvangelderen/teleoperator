@@ -39,7 +39,7 @@ apt install openjdk-25-jdk
 
 ### Android SDK
 
-Download the [android-cli](https://developer.android.com/tools/agents/android-cli/download) to manage android skds.
+Install the [Android CLI](https://developer.android.com/tools/agents/android-cli/download) to manage the shared Android SDK.
 
 > Historical note: [sdkmanager](https://developer.android.com/tools/sdkmanager) is deprecated.
 
@@ -47,21 +47,11 @@ Download the [android-cli](https://developer.android.com/tools/agents/android-cl
 curl -fsSL https://dl.google.com/android/cli/latest/linux_x86_64/install.sh | bash
 ```
 
-Then install the components we need:
-
-```sh
-android sdk \
-    install platforms/android-36 \
-    build-tools/36.1.0 \
-    ndk/29.0.14206865 \
-    platform-tools
-```
-
 ## Build and install
 
-From `android-phone-operator/`, build the signed ARM64 APK. The first build
-downloads the ARCore SDK. Set `ANDROID_HOME` only if your SDK is outside
-the default Linux location (`~/Android/Sdk`).
+From `android-phone-operator/`, build the signed ARM64 APK. The build uses the
+SDK reported by `android info sdk` and asks the CLI to install any missing
+packages there. The first build also downloads the ARCore SDK.
 
 ```sh
 cpack --config apk.cmake
