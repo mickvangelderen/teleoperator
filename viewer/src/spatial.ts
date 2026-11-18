@@ -1,7 +1,7 @@
 import {
-  ACESFilmicToneMapping, AxesHelper, Box3, BufferGeometry, Color, Float32BufferAttribute,
+  ACESFilmicToneMapping, AxesHelper, Box3, BufferGeometry, Color, ConeGeometry, Float32BufferAttribute,
   GridHelper, Group, HemisphereLight, Line, LineBasicMaterial, LineSegments,
-  Mesh, MeshStandardMaterial, PerspectiveCamera, PMREMGenerator, Scene,
+  Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, PMREMGenerator, Scene,
   SphereGeometry, Vector3, WebGLRenderer, REVISION, Points, PointsMaterial,
 } from "three";
 import type { Material, Object3D } from "three";
@@ -10,6 +10,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 import { BodyModel } from "./body-model";
 import type { PoseFrame, JointHierarchy, BodyMeshFrame } from "./body-model";
+import type { StandalonePose } from "./tracking-view";
 import { profiler } from "./performance";
 import { RollingRate } from "./statistics";
 
@@ -30,7 +31,7 @@ export class SpatialView {
   private framed = 0;
   private view = "iso";
   private zoom = 1;
-  private poses = new Map<string, { group: Group; shape: Group; marker?: Mesh }>();
+  private poses = new Map<string, ReturnType<typeof poseObject>>();
   private body?: BodyModel;
   private meshEnabled = true;
   private bodyPoints = new Points(new BufferGeometry(), new PointsMaterial({ vertexColors: true, size: 0.018, sizeAttenuation: true, depthTest: false }));
@@ -48,7 +49,7 @@ export class SpatialView {
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.scene.background = new Color(0xf0f3ef);
     this.surface.append(this.renderer.domElement);
-    this.renderer.domElement.setAttribute("aria-label", "3D view of received headset, controller and body tracking. Joints: green tracked, orange untracked, grey unknown or rest poses. Red means live data is late. Drag to orbit; scroll to zoom.");
+    this.renderer.domElement.setAttribute("aria-label", "3D view of received headset, controller and body tracking. The dot shows position quality and the shape shows orientation quality. Green means tracked, orange valid but untracked, grey unknown tracking, and red invalid or stale. Drag to orbit; scroll to zoom.");
     this.renderer.domElement.setAttribute("role", "img");
     this.renderer.domElement.tabIndex = 0;
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -72,15 +73,9 @@ export class SpatialView {
     this.bodyPoints.geometry.setDrawRange(0, 0);
     this.scene.add(this.bodyPoints);
     for (const name of ["head", "left/aim", "left/grip", "right/aim", "right/grip"]) {
-      const color = name.startsWith("left") ? 0xb45f2d : name.startsWith("right") ? 0x476cac : 0x286b4c;
-      const group = new Group(), shape = new Group();
-      const marker = new Mesh(new SphereGeometry(0.008, 8, 6), new MeshStandardMaterial({ color }));
-      group.add(shape, marker);
-      if (name.endsWith("aim")) shape.add(new Line(new BufferGeometry().setFromPoints([new Vector3(), new Vector3(0, 0, -0.35)]), new LineBasicMaterial({ color })));
-      else shape.add(new AxesHelper(name === "head" ? 0.12 : 0.07));
-      group.visible = false;
-      this.poses.set(name, { group, shape, marker });
-      this.scene.add(group);
+      const object = poseObject(name, true);
+      this.poses.set(name, object);
+      this.scene.add(object.group);
     }
     this.observer = new ResizeObserver(() => {
       const { clientWidth: width, clientHeight: height } = surface;
@@ -126,7 +121,7 @@ export class SpatialView {
     if (this.disposed) return;
     const failed = results.filter(r => r.status === "rejected");
     this.surface.dataset.assets = failed.length ? "error" : "ready";
-    this.status(failed.length ? "3D assets could not load. Reload to retry." : "Meta models · drag to orbit · scroll to zoom");
+    this.status(failed.length ? "3D assets could not load. Reload to retry." : "Dot: position · Shape: orientation · Green: tracked · Orange: untracked · Grey: tracking unknown · Red: invalid or stale");
     this.stateDirty = true;
     this.invalidate();
   }
@@ -188,7 +183,7 @@ export class SpatialView {
 
   reframe() { this.framed = 0; this.invalidate(); }
 
-  update(sample: PoseFrame | null, sources: string[], late: boolean, body: PoseFrame | null = null, skeleton?: JointHierarchy, bodyMesh?: BodyMeshFrame) {
+  update(sample: { poses: StandalonePose[] } | null, sources: string[], late: boolean, body: PoseFrame | null = null, skeleton?: JointHierarchy, bodyMesh?: BodyMeshFrame) {
     const previous = this.latest;
     if (sample === previous[0] && sources.length === previous[1].length && sources.every((source, i) => source === previous[1][i]) && late === previous[2] && body === previous[3] && skeleton === previous[4] && bodyMesh === previous[5]) return;
     this.latest = [sample, sources, late, body, skeleton, bodyMesh];
@@ -201,25 +196,28 @@ export class SpatialView {
     let count = 0;
     for (const name of sources) {
       if (this.poses.has(name)) continue;
-      const group = new Group(), shape = new Group();
-      shape.add(new AxesHelper(0.07)); group.add(shape); this.scene.add(group); this.poses.set(name, { group, shape });
+      const object = poseObject(name);
+      this.scene.add(object.group);
+      this.poses.set(name, object);
     }
     for (const [name, object] of this.poses) {
       const pose = sample?.poses[sources.indexOf(name)];
-      object.group.visible = !!pose && !!(pose.flags & 3) && pose.active !== false;
-      if (!pose || !object.group.visible) continue;
+      object.group.visible = !!pose;
+      if (!pose) {
+        if (!object.builtIn) {
+          this.scene.remove(object.group); dispose(object.group); this.poses.delete(name);
+        }
+        continue;
+      }
       count++;
-      const positionValid = !!(pose.flags & 2);
-      if (positionValid) object.group.position.fromArray(pose.position);
-      else object.group.position.set(0, 0, 0);
-      if (object.marker) object.marker.visible = positionValid;
-      object.shape.visible = !!(pose.flags & 1);
-      if (object.shape.visible) object.group.quaternion.fromArray(pose.orientation);
-      tintLate(object.group, late);
+      object.group.position.fromArray(pose.position);
+      object.group.quaternion.fromArray(pose.orientation);
+      object.marker.material.color.copy(jointColor(pose.positionTracked, pose.stale || !(pose.flags & 2)));
+      tint(object.shape, jointColor(pose.orientationTracked, pose.stale || !(pose.flags & 1)));
     }
     this.surface.dataset.poseCount = String(count);
     this.body?.update(this.meshEnabled ? bodyMesh?.sample ?? null : null, bodyMesh?.skeleton);
-    if (this.body) tintLate(this.body.root, late);
+    if (this.body) tint(this.body.root, late ? trackingColors.late : undefined);
     this.surface.dataset.bodyMesh = String(!!this.body?.root.visible);
     // Connectivity and joint count come from the advertised skeleton.
     const visible = body?.active ? body.poses.filter(p => p.flags & 2) : [];
@@ -259,8 +257,9 @@ export class SpatialView {
     this.jointPositions.needsUpdate = true;
     this.jointColors.array.set(colors); this.jointColors.needsUpdate = true;
     this.joints.geometry.setDrawRange(0, lines.length / 3);
-    const frameLevel = body?.active && body.poses.some(p => p.flags & 2) ? 2 : count ? 1 : 0;
-    if (!sample && !body) this.framed = 0;
+    const frameLevel = body?.active && body.poses.some(p => p.flags & 2) ? 3
+      : sample?.poses.some(p => p.flags & 2) ? 2 : count ? 1 : 0;
+    if (!frameLevel) this.framed = 0;
     // Frame newly available tracking once; leave subsequent orbit/pan under user control.
     if (frameLevel > this.framed) {
       this.framed = frameLevel;
@@ -275,6 +274,26 @@ export class SpatialView {
     this.environment?.dispose(); dispose(this.scene); this.renderer.dispose();
     this.renderer.domElement.remove();
   }
+}
+
+function poseObject(name: string, builtIn = false) {
+  const group = new Group(), shape = new Group();
+  if (builtIn && name.endsWith("/aim")) {
+    shape.add(new Line(new BufferGeometry().setFromPoints([new Vector3(), new Vector3(0, 0, -0.35)]), new LineBasicMaterial()));
+  } else if (builtIn) {
+    shape.add(new AxesHelper(name === "head" ? 0.12 : 0.07));
+  } else {
+    // A triangular pointer shows both the forward direction and roll.
+    const pointer = new Mesh(new ConeGeometry(0.035, 0.14, 3), new MeshStandardMaterial({ flatShading: true }));
+    pointer.rotation.x = -Math.PI / 2;
+    pointer.position.z = -0.07;
+    shape.add(pointer);
+  }
+  const marker = new Mesh(new SphereGeometry(0.012, 12, 8), new MeshBasicMaterial({ depthTest: false, depthWrite: false, toneMapped: false }));
+  marker.renderOrder = 2; // Keep position quality readable through the model.
+  group.add(shape, marker);
+  group.visible = false;
+  return { group, shape, marker, builtIn };
 }
 
 export function alignTouchPlusToGrip(model: Object3D) {
@@ -295,14 +314,14 @@ function materials(object: Object3D, visit: (material: Material) => void) {
   });
 }
 const originalColors = new WeakMap<Material, { color: Color; vertexColors: boolean }>();
-function tintLate(object: Object3D, late: boolean) {
+function tint(object: Object3D, color?: Color) {
   materials(object, material => {
     const colored = material as MeshStandardMaterial;
     if (!colored.color) return;
     if (!originalColors.has(material)) originalColors.set(material, { color: colored.color.clone(), vertexColors: colored.vertexColors });
     const original = originalColors.get(material)!;
-    colored.color.copy(late ? trackingColors.late : original.color);
-    const vertexColors = late ? false : original.vertexColors;
+    colored.color.copy(color ?? original.color);
+    const vertexColors = color ? false : original.vertexColors;
     if (colored.vertexColors !== vertexColors) { colored.vertexColors = vertexColors; colored.needsUpdate = true; }
   });
 }

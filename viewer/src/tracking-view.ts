@@ -46,7 +46,13 @@ export function currentValues(session: Session | undefined, now: number) {
   return values;
 }
 const missingPose = (): Pose => ({ position: [0, 0, 0], orientation: [0, 0, 0, 1], flags: 0, active: false });
-type LocatedPose = { pose: Pose; space: number };
+export type StandalonePose = Pose & {
+  subscription: Subscription; space: number; stale: boolean;
+  positionTracked?: boolean; orientationTracked?: boolean;
+};
+// Standalone display references follow the selected acquisition even when another view is open.
+const lastStandalone = new WeakMap<Session, Map<number, StandalonePose>>();
+type LocatedPose = { pose: Pose; space: number; positionTracked?: boolean; orientationTracked?: boolean };
 const meshMappings = new WeakMap<Capabilities, (number[] | undefined)[]>();
 function bodyJointMappings(c: Capabilities) {
   const cached = meshMappings.get(c);
@@ -63,8 +69,8 @@ function bodyJointMappings(c: Capabilities) {
   if (Object.isFrozen(c)) meshMappings.set(c, mappings);
   return mappings;
 }
-export function spatialFrames(session: Session | undefined, now: number, rest = false) {
-  const poses: Pose[] = [], sources: string[] = [], body: PoseFrame = { poses: [], active: false }, hierarchy: JointHierarchy = { joints: [] };
+export function spatialFrames(session: Session | undefined, now: number, rest = false, lateGenerations: ReadonlySet<number> = new Set()) {
+  const poses: StandalonePose[] = [], sources: string[] = [], body: PoseFrame = { poses: [], active: false }, hierarchy: JointHierarchy = { joints: [] };
   let bodyMesh: BodyMeshFrame | undefined;
   let mappedSkeletons = 0;
   const current = currentValues(session, now), c = session?.capabilities, spaces = new Set<number>();
@@ -100,18 +106,24 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
       }
     }
   }
-  const located = (index: number): LocatedPose | undefined => {
-    const d = c!.descriptors[index], value = read(index), sample = current.get(index);
+  const located = (index: number, includeStale = false): LocatedPose | undefined => {
+    const d = c!.descriptors[index], sample = current.get(index);
+    const value = includeStale ? sample?.value : read(index);
     if (!sample || !Array.isArray(value) || outdated.has(d.group)) return;
-    const quality = (index: number | null | undefined) => index == null || current.get(index)?.packet?.timestamp !== sample.packet?.timestamp ? null : read(index);
-    let flags = 0;
-    for (const [field, bit, fallback] of [["position_valid_sample", 2, true], ["orientation_valid_sample", 1, true], ["position_tracked_sample", 8, false], ["orientation_tracked_sample", 4, false]] as const) {
-      if (d[field] == null ? fallback : quality(d[field]) === true) flags |= bit;
-    }
-    const tracking = [quality(d.position_tracked_sample), quality(d.orientation_tracked_sample)];
+    const quality = (index: number | null | undefined) => {
+      const companion = index == null ? undefined : current.get(index);
+      if (!companion || companion.packet?.timestamp !== sample.packet?.timestamp ||
+          (companion.stale && !(includeStale && sample.stale))) return;
+      return typeof companion.value === "boolean" ? companion.value : undefined;
+    };
+    const positionValid = d.position_valid_sample == null || quality(d.position_valid_sample) === true;
+    const orientationValid = d.orientation_valid_sample == null || quality(d.orientation_valid_sample) === true;
+    const positionTracked = quality(d.position_tracked_sample), orientationTracked = quality(d.orientation_tracked_sample);
+    const flags = (positionValid ? 2 : 0) | (orientationValid ? 1 : 0) | (positionTracked ? 8 : 0) | (orientationTracked ? 4 : 0);
+    const tracking = [positionTracked, orientationTracked];
     // Missing tracking samples (including rest poses) are unknown, not a reported tracking loss.
     const tracked = tracking.includes(false) ? false : tracking.every(v => v === true) ? true : undefined;
-    return { pose: { position: value.slice(0, 3), orientation: value.slice(3), flags, active: flags !== 0, tracked }, space: bindings(sample.subscription.request)[sample.selection].space };
+    return { positionTracked, orientationTracked, pose: { position: value.slice(0, 3), orientation: value.slice(3), flags, active: flags !== 0, tracked }, space: bindings(sample.subscription.request)[sample.selection].space };
   };
   const skeletonSamples = new Set<number>();
   c?.skeletons.forEach((skeleton, skeletonIndex) => {
@@ -172,13 +184,29 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
       if (restSpaces.size === 1) bodyMesh = { sample: { active: true, poses: body.poses.slice(offset) }, skeleton: { joints } };
     }
   });
-  if (!rest) for (const [index] of current) {
+  const references = new Map<number, StandalonePose>();
+  const previous = session && lastStandalone.get(session);
+  for (const [index, sample] of current) {
     const d = c!.descriptors[index];
-    if (d.kind !== 10 || skeletonSamples.has(index)) continue;
-    const result = located(index);
-    if (!result || result.space === 5 || !(result.pose.flags & 3)) continue;
-    poses.push(result.pose); sources.push(poseSources.get(d.id) ?? d.id); spaces.add(result.space);
+    if (d.kind !== 10 || skeletonSamples.has(index) || outdated.has(d.group)) continue;
+    const { subscription, selection } = sample;
+    const result = located(index, true);
+    const space = result?.space ?? bindings(subscription.request)[selection].space;
+    if (space === 5) continue;
+    const last = previous?.get(index);
+    const reference = last?.subscription === subscription && last.space === space ? last : undefined;
+    const pose = result?.pose ?? missingPose();
+    const display = { ...pose, subscription, space,
+      position: pose.flags & 2 ? pose.position : reference?.position ?? [0, 0, 0],
+      orientation: pose.flags & 1 ? pose.orientation : reference?.orientation ?? [0, 0, 0, 1],
+      positionTracked: result?.positionTracked, orientationTracked: result?.orientationTracked,
+      stale: sample.stale || lateGenerations.has(subscription.generation) };
+    references.set(index, display);
+    if (!rest) {
+      poses.push(display); sources.push(poseSources.get(d.id) ?? d.id); spaces.add(space);
+    }
   }
+  if (session) lastStandalone.set(session, references);
   const confidenceIndices = new Set(c?.skeletons.flatMap(s => s.joints.flatMap(j => {
     const index = c.descriptors[j.pose_sample].confidence_sample;
     return index == null ? [] : [index];

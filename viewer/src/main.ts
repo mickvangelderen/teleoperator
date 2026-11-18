@@ -71,6 +71,7 @@ let recording: Recorder | undefined;
 let current = initialState();
 let spatial: SpatialView | undefined;
 let spatialKey = "";
+let spatialSession: Session | undefined;
 let trackingView = spatialFrames(undefined, 0);
 let mountedSession: Session | undefined;
 let subscriptionEditor: SubscriptionEditor | undefined;
@@ -93,10 +94,12 @@ const animate = (frameTime: number) => {
   const rest = element<HTMLSelectElement>("skeleton-view").value === "rest";
   const subscriptions = [...(session?.active.values() ?? [])];
   const overlappingGroups = new Set(subscriptions.map(s => s.request.group)).size < subscriptions.length;
-  const key = `${rest}:${overlappingGroups ? session?.consumptionTime : ""}:` + subscriptions.map(s => `${s.generation}:${s.version}:` + s.bundles.map((_, i) => { const p = selectedBundle(s, i)?.packet; return `${p?.timestamp}:${p?.predictedFor}:${staleBundle(s, i, now)}`; }).join(",")).join(";");
-  if (key !== spatialKey) {
+  const lateGenerations = new Set(current.freshness.streams.filter(stream => stream.status === "Late").map(stream => stream.generation));
+  const key = `${[...lateGenerations]}:${rest}:${overlappingGroups ? session?.consumptionTime : ""}:` + subscriptions.map(s => `${s.generation}:${s.version}:` + s.bundles.map((_, i) => { const p = selectedBundle(s, i)?.packet; return `${p?.timestamp}:${p?.predictedFor}:${staleBundle(s, i, now)}`; }).join(",")).join(";");
+  if (session !== spatialSession || key !== spatialKey) {
+    spatialSession = session;
     spatialKey = key;
-    trackingView = spatialFrames(session, now, rest);
+    trackingView = spatialFrames(session, now, rest, lateGenerations);
   }
   const activeView = visualization.update(session, trackingView.values, now);
   if (activeView === "spatial") spatial?.update(trackingView.poses, trackingView.sources, !rest && current.freshness.status === "Late", trackingView.body, trackingView.hierarchy, trackingView.bodyMesh);
@@ -192,7 +195,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   const visibleJoints = view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0;
   setAttribute(element("empty-state"), "hidden", visiblePoses && !view.mixedSpaces ? "" : null);
   text("workspace-title", view.mixedSpaces ? "Mixed reference spaces" : live ? "No current poses" : busy ? "Connecting to operator…" : state.status === "Error" ? "Operator disconnected" : "Ready to connect");
-  text("workspace-note", view.mixedSpaces ? "Choose the same reference space for pose samples to display them together. Numerical values remain available below." : live ? "Select pose samples and start publication. Select the associated validity samples to display pose components. Inactive and stale poses are hidden." : "Connect to inspect the device’s tracking data.");
+  text("workspace-note", view.mixedSpaces ? "Choose the same reference space for pose samples to display them together. Numerical values remain available below." : live ? "Select pose samples and start publication. Select the associated validity and tracking samples to see component quality." : "Connect to inspect the device’s tracking data.");
   const bodyQuality = `${visibleJoints} current body joints · ${view.mixedSpaces ? "mixed spaces; overlay hidden" : view.space ? view.space < 0 ? "skeleton rest frame" : spaceNames[view.space] : "no current frame"} · ${view.outdated.size ? "rest revision pending" : view.rest ? "advertised rest poses" : `${view.trackedJoints} reported tracked${view.confidence === undefined ? "" : ` · confidence ${(100 * view.confidence).toFixed(0)}%`}`}`;
   text("body-quality", bodyQuality);
   setAttribute(element("body-quality"), "title", bodyQuality);
