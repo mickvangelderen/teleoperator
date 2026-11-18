@@ -370,14 +370,22 @@ async fn offer(
     if offer.sdp_type != RTCSdpType::Offer {
         return Err((StatusCode::BAD_REQUEST, "Expected an SDP offer".into()));
     }
-    let hub = server
-        .source
-        .current()
-        .filter(|h| !*h.retired.borrow())
-        .ok_or((
+    let hub = server.source.current().ok_or_else(|| {
+        let health = server.source.status();
+        let reason = health["backend"]["status"]
+            .as_str()
+            .unwrap_or("Waiting for gamepad discovery");
+        (
             StatusCode::SERVICE_UNAVAILABLE,
-            "No selected gamepad; inspect /health or run --list".into(),
-        ))?;
+            format!("No selected gamepad. {reason}"),
+        )
+    })?;
+    if *hub.retired.borrow() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Gamepad capabilities changed. Reconnect to discover current samples.".into(),
+        ));
+    }
     let permit = server.slots.clone().try_acquire_owned().map_err(|_| {
         (
             StatusCode::SERVICE_UNAVAILABLE,

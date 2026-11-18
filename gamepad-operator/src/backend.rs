@@ -792,7 +792,14 @@ pub fn run_sdl(
                         }
                         Err(e) => status = e,
                     },
-                    Ok(None) => {}
+                    Ok(None) => {
+                        if let Some(id) = selection.locked.as_ref().or(selection.requested.as_ref())
+                        {
+                            status = format!(
+                                "Waiting for gamepad {id}. Run --list to check the current device IDs"
+                            );
+                        }
+                    }
                     Err(e) => status = e,
                 }
             }

@@ -36,9 +36,11 @@ for arguments in [['--unknown'], ['--listen', 'invalid'], ['--synthetic-lifecycl
 inventory = json.loads(subprocess.check_output([BINARY, '--list'], timeout=5))
 print('Physical inventory:', json.dumps(inventory))
 
-for synthetic, virtual in [(False, False), (True, False), (True, True)]:
+for arguments in [[], ['--device', 'missing-test-device'], ['--synthetic'], ['--synthetic', '--virtual-pose']]:
+    synthetic = '--synthetic' in arguments
+    virtual = '--virtual-pose' in arguments
     child = subprocess.Popen(
-        [BINARY, '--listen', '127.0.0.1:0', '--run-for', '15', *(['--synthetic'] if synthetic else []), *(['--virtual-pose'] if virtual else [])],
+        [BINARY, '--listen', '127.0.0.1:0', '--run-for', '15', *arguments],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
@@ -67,9 +69,12 @@ for synthetic, virtual in [(False, False), (True, False), (True, True)]:
         if synthetic:
             assert health['selected']['device']['synthetic'] is True
             assert request(port, '/offer', {'type': 'offer', 'sdp': ''})[0] == 400
-        elif not any(item['eligible'] for item in inventory):
+        elif '--device' in arguments or not any(item['eligible'] for item in inventory):
             assert health['selected'] is None
-            assert request(port, '/offer', {'type': 'offer', 'sdp': ''})[0] == 503
+            status, body = request(port, '/offer', {'type': 'offer', 'sdp': ''})
+            assert status == 503 and health['backend']['status'] in body.decode()
+            if '--device' in arguments:
+                assert 'missing-test-device' in body.decode()
         print('HTTP status:', json.dumps(health))
     finally:
         child.terminate()
@@ -80,6 +85,7 @@ for synthetic, virtual in [(False, False), (True, False), (True, True)]:
             child.communicate()
             raise AssertionError('Owned server failed clean shutdown')
         assert child.returncode == 0, errors
+        assert f'XR_OPERATOR_URL=http://127.0.0.1:{port} pnpm dev' in errors
         print('Reaped owned process', child.pid)
 
 print('PASS CLI/HTTP status, validation, origin and shutdown checks')

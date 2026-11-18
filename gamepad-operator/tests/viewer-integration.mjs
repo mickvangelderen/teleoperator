@@ -189,7 +189,11 @@ try {
   assert.deepEqual(protocol.errors,[]);assert.ok(protocol.reports.every(r=>r.predictedFor===null&&r.packets>=3));
   // Exercise production controls, including adding an acknowledged bundle and applying replacement.
   await page.getByRole('button',{name:'Connect',exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
+  // The editor rebuilds its pending rows when the default subscription is accepted.
+  // Wait for the live table before scrolling its independently scrollable viewport.
+  await page.waitForFunction(()=>document.querySelector('subscription-editor .subscription-message')?.textContent.includes('packets'));
+  assert.equal(await page.locator('#status').innerText(),'Connected');
+  assert.match(await page.locator('#sample-summary').innerText(),new RegExp('^'+normal.descriptors+' samples'));
   const editor=page.locator('subscription-editor');
   const stickRow='tr[data-descriptor="/user/gamepad/input/thumbstick_left"]';
   // Live samples replace rows while rendering; query and scroll the current row

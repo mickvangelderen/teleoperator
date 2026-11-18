@@ -93,11 +93,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stop = Arc::new(AtomicBool::new(false));
     let (shutdown, rx) = tokio::sync::watch::channel(false);
     let listener = runtime.block_on(tokio::net::TcpListener::bind(args.listen))?;
+    let address = listener.local_addr()?;
     println!(
-        "Gamepad Operator {} http://{}",
+        "Gamepad Operator {} http://{address}",
         if args.synthetic { "SYNTHETIC" } else { "SDL2" },
-        listener.local_addr()?
     );
+    let mut viewer_target = address;
+    if address.ip().is_unspecified() {
+        viewer_target.set_ip(if address.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    eprintln!("From the viewer directory, run: XR_OPERATOR_URL=http://{viewer_target} pnpm dev");
     let serving_stop = stop.clone();
     let serving_source = source.clone();
     let serving = runtime.spawn(async move {
