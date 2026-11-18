@@ -28,11 +28,11 @@ pub(super) struct Tracking {
 
 impl Tracking {
     pub fn new(source: i32, mask: i32, flags: u8, hub: Arc<Hub>) -> Self {
-        let mut tracking = Self {
+        Self {
             source,
             has_rotation: mask & 1 != 0,
             hub,
-            message: String::new(),
+            message: Self::sensor_source(source).1.into(),
             retry_visible: false,
             asked_permission: flags & 1 != 0,
             asked_install: flags & 2 != 0,
@@ -40,19 +40,26 @@ impl Tracking {
             install_enabled: false,
             failed: false,
             next_check: None,
-        };
-        tracking.sensors();
-        tracking
+        }
     }
-    fn sensors(&mut self) {
-        let (mode, message) = if self.source == 2 {
+    fn sensor_source(source: i32) -> (TrackingMode, &'static str) {
+        if source == 2 {
             (
                 TrackingMode::Displacement,
                 "Using estimated IMU displacement",
             )
         } else {
             (TrackingMode::Orientation, "Using phone orientation")
-        };
+        }
+    }
+    pub fn resume(&mut self) {
+        let (mode, _) = Self::sensor_source(self.source);
+        self.hub
+            .set_tracking_mode(mode, self.has_rotation, phone::now());
+        self.check_soon();
+    }
+    fn sensors(&mut self) {
+        let (mode, message) = Self::sensor_source(self.source);
         self.hub
             .set_tracking_mode(mode, self.has_rotation, phone::now());
         self.message = message.into();

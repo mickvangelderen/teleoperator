@@ -6,15 +6,32 @@ use jni::{
     objects::{GlobalRef, JObject},
 };
 use ndk_sys::ANativeActivity;
-use std::{cell::RefCell, ffi::c_void, ptr, sync::OnceLock};
+use std::{cell::Cell, cell::RefCell, collections::HashMap, ffi::c_void, ptr, sync::OnceLock};
 
-thread_local! { static UI: RefCell<Option<Ui>> = const { RefCell::new(None) }; }
+// An explicit launch and a launcher tap can briefly leave two NativeActivities alive.
+// Each owns its Views and their callbacks. Only the resumed owner drives the shared Hub.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct ActivityId(usize);
+thread_local! {
+    static VIEWS: RefCell<HashMap<ActivityId, Ui>> = RefCell::default();
+    static ACTIVE: Cell<Option<ActivityId>> = const { Cell::new(None) };
+}
 
-pub(super) fn with_ui(f: impl FnOnce(&mut Ui) -> Result<()>) -> Result<()> {
-    UI.with_borrow_mut(|ui| match ui {
-        Some(ui) => f(ui),
-        None => Ok(()),
-    })
+impl ActivityId {
+    fn with_ui(self, f: impl FnOnce(&mut Ui) -> Result<()>) -> Result<()> {
+        VIEWS.with_borrow_mut(|views| match views.get_mut(&self) {
+            Some(ui) => f(ui),
+            None => Ok(()),
+        })
+    }
+
+    pub(super) fn with_active_ui(self, f: impl FnOnce(&mut Ui) -> Result<()>) -> Result<()> {
+        if ACTIVE.get() == Some(self) {
+            self.with_ui(f)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 fn dispatch(native: *mut ANativeActivity, run: impl FnOnce(&mut JNIEnv, &JObject) -> Result<()>) {
@@ -73,29 +90,45 @@ pub unsafe extern "C" fn ANativeActivity_onCreate(
             }
             let _ = APPLICATION.set(application);
         }
-        let ui = Ui::create(env, activity, flags)?;
-        UI.with_borrow_mut(|slot| *slot = Some(ui));
+        let owner = ActivityId(native as usize);
+        let ui = Ui::create(env, activity, flags, owner)?;
+        VIEWS.with_borrow_mut(|views| views.insert(owner, ui));
         Ok(())
     });
 }
 
 unsafe extern "C" fn resume(native: *mut ANativeActivity) {
-    dispatch(native, |env, _| with_ui(|ui| ui.resume(env)));
-}
-unsafe extern "C" fn pause(native: *mut ANativeActivity) {
-    dispatch(native, |env, _| with_ui(|ui| ui.pause(env)));
-}
-unsafe extern "C" fn focus(_native: *mut ANativeActivity, focused: i32) {
-    UI.with_borrow_mut(|ui| {
-        if let Some(ui) = ui {
-            ui.focus(focused != 0);
+    let owner = ActivityId(native as usize);
+    dispatch(native, |env, _| {
+        let previous = ACTIVE.replace(Some(owner));
+        if previous != Some(owner) {
+            if let Some(previous) = previous {
+                previous.with_ui(|ui| ui.pause(env))?;
+            }
+            owner.with_ui(|ui| ui.resume(env))?;
         }
+        Ok(())
     });
 }
-unsafe extern "C" fn save(_native: *mut ANativeActivity, size: *mut usize) -> *mut c_void {
+unsafe extern "C" fn pause(native: *mut ANativeActivity) {
+    let owner = ActivityId(native as usize);
+    if ACTIVE.get() == Some(owner) {
+        ACTIVE.set(None);
+        dispatch(native, |env, _| owner.with_ui(|ui| ui.pause(env)));
+    }
+}
+unsafe extern "C" fn focus(native: *mut ANativeActivity, focused: i32) {
+    dispatch(native, |_, _| {
+        ActivityId(native as usize).with_ui(|ui| {
+            ui.focus(focused != 0);
+            Ok(())
+        })
+    });
+}
+unsafe extern "C" fn save(native: *mut ANativeActivity, size: *mut usize) -> *mut c_void {
     // Android copies the bytes and calls free() on the returned buffer.
-    let flags = UI.with_borrow(|ui| {
-        ui.as_ref().map(|ui| {
+    let flags = VIEWS.with_borrow(|views| {
+        views.get(&ActivityId(native as usize)).map(|ui| {
             u8::from(ui.tracking.asked_permission) | (u8::from(ui.tracking.asked_install) << 1)
         })
     });
@@ -116,15 +149,19 @@ unsafe extern "C" fn save(_native: *mut ANativeActivity, size: *mut usize) -> *m
 }
 unsafe extern "C" fn destroy(native: *mut ANativeActivity) {
     dispatch(native, |env, activity| {
-        if let Some(ui) = UI.with_borrow_mut(Option::take) {
-            ui.detach(env)?;
+        let owner = ActivityId(native as usize);
+        if ACTIVE.get() == Some(owner) {
+            ACTIVE.set(None);
         }
-        if !env
-            .call_method(activity, "isChangingConfigurations", "()Z", &[])?
-            .z()?
+        let ui = VIEWS.with_borrow_mut(|views| views.remove(&owner));
+        let cleanup = ui.map_or(Ok(()), |mut ui| ui.detach(env));
+        if VIEWS.with_borrow(HashMap::is_empty)
+            && !env
+                .call_method(activity, "isChangingConfigurations", "()Z", &[])?
+                .z()?
         {
             super::stop();
         }
-        Ok(())
+        cleanup
     });
 }

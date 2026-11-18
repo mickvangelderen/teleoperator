@@ -48,7 +48,10 @@ if [[ -n $service ]] && ! ready; then connect_phone; fi
 printf 'Deploying to %s\n' "$target"
 adb -s "$target" install -r build/android/outputs/apk/debug/phone-operator-debug.apk
 
-launch() { adb -s "$target" shell am start -n dev.xroperator.phone.experimental/dev.xroperator.phone.MainActivity; }
+launch() {
+    adb -s "$target" shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
+        -n dev.xroperator.phone.experimental/dev.xroperator.phone.MainActivity
+}
 if launch; then exit 0; else result=$?; fi
 if [[ -z $service ]] || ready; then exit "$result"; fi
 connect_phone

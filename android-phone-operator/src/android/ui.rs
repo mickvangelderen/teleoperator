@@ -1,5 +1,5 @@
 //! Framework Views, inflated and updated on the Activity's main looper.
-use super::{activity::with_ui, camera::Tracking, sensors::Sensors};
+use super::{activity::ActivityId, camera::Tracking, sensors::Sensors};
 use crate::phone::{self, Action, Hand, HandsetStatus, Hub, Motion, TrackingMode};
 use jni::{
     JNIEnv,
@@ -17,6 +17,7 @@ use std::{
 };
 
 pub(super) struct Ui {
+    owner: ActivityId,
     activity: GlobalRef,
     prefs: GlobalRef,
     pub sensors: Sensors,
@@ -64,7 +65,12 @@ impl Resources {
 }
 
 impl Ui {
-    pub fn create(env: &mut JNIEnv, activity: &JObject, saved_flags: u8) -> Result<Self> {
+    pub fn create(
+        env: &mut JNIEnv,
+        activity: &JObject,
+        saved_flags: u8,
+        owner: ActivityId,
+    ) -> Result<Self> {
         let window = env
             .call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?
             .l()?;
@@ -137,6 +143,7 @@ impl Ui {
         let hub = super::hub();
         let tracking = Tracking::new(source, sensors.mask(), saved_flags, hub.clone());
         let mut ui = Self {
+            owner,
             activity: env.new_global_ref(activity)?,
             prefs: env.new_global_ref(prefs)?,
             sensors,
@@ -155,8 +162,8 @@ impl Ui {
             last_address: String::new(),
             next_address_check: Instant::now(),
             listeners: Vec::new(),
-            refresh: JniProxy::build(env, None, ["java/lang/Runnable"], |env, _, _| {
-                with_ui(|ui| ui.refresh(env))?;
+            refresh: JniProxy::build(env, None, ["java/lang/Runnable"], move |env, _, _| {
+                owner.with_active_ui(|ui| ui.refresh(env))?;
                 JniProxy::void(env)
             })?,
             resumed: false,
@@ -167,10 +174,10 @@ impl Ui {
             "android/widget/AdapterView$OnItemSelectedListener",
             &spinner,
             "setOnItemSelectedListener",
-            |env, args| {
+            |ui, env, args| {
                 if let [_, _, position, _] = args {
                     let source = env.call_method(*position, "intValue", "()I", &[])?.i()?;
-                    with_ui(|ui| ui.select(env, source))?;
+                    ui.select(env, source)?;
                 }
                 Ok(())
             },
@@ -185,12 +192,10 @@ impl Ui {
                 "android/view/View$OnClickListener",
                 &v,
                 "setOnClickListener",
-                move |env, _| {
-                    with_ui(|ui| {
-                        ui.contact = false;
-                        ui.action(action);
-                        ui.render_controls(env)
-                    })
+                move |ui, env, _| {
+                    ui.contact = false;
+                    ui.action(action);
+                    ui.render_controls(env)
                 },
             )?;
         }
@@ -199,7 +204,7 @@ impl Ui {
             "android/view/View$OnClickListener",
             &ui.retry.clone(),
             "setOnClickListener",
-            |env, _| with_ui(|ui| ui.tracking.retry(env, ui.activity.as_obj())),
+            |ui, env, _| ui.tracking.retry(env, ui.activity.as_obj()),
         )?;
         let drawer = view(env, "drawer")?;
         let panel = view(env, "settings_panel")?;
@@ -215,11 +220,9 @@ impl Ui {
                 "android/view/View$OnClickListener",
                 &button,
                 "setOnClickListener",
-                move |env, _| {
-                    with_ui(|ui| {
-                        ui.cancel_contact();
-                        ui.render_controls(env)
-                    })?;
+                move |ui, env, _| {
+                    ui.cancel_contact();
+                    ui.render_controls(env)?;
                     env.call_method(
                         &drawer,
                         method,
@@ -234,9 +237,9 @@ impl Ui {
             env,
             None,
             ["android/view/View$OnTouchListener"],
-            |env, _, args| {
+            move |env, _, args| {
                 if let [view, event] = args {
-                    with_ui(|ui| ui.touch(env, view, event))?;
+                    owner.with_active_ui(|ui| ui.touch(env, view, event))?;
                 }
                 true.new_jobject(env)
             },
@@ -256,10 +259,11 @@ impl Ui {
         interface: &str,
         view: &GlobalRef,
         setter: &str,
-        callback: impl Fn(&mut JNIEnv, &[&JObject]) -> Result<()> + Send + Sync + 'static,
+        callback: impl Fn(&mut Ui, &mut JNIEnv, &[&JObject]) -> Result<()> + Send + Sync + 'static,
     ) -> Result<()> {
+        let owner = self.owner;
         let listener = JniProxy::build(env, None, [interface], move |env, _, args| {
-            callback(env, args)?;
+            owner.with_active_ui(|ui| callback(ui, env, args))?;
             JniProxy::void(env)
         })?;
         env.call_method(
@@ -271,7 +275,10 @@ impl Ui {
         self.listeners.push(listener);
         Ok(())
     }
-    pub fn detach(&self, env: &mut JNIEnv) -> Result<()> {
+    pub fn detach(&mut self, env: &mut JNIEnv) -> Result<()> {
+        if self.resumed {
+            self.pause(env)?;
+        }
         // Detachment can deliver a final ACTION_CANCEL after Activity.onDestroy.
         // Remove the boolean-returning proxy while its handler is still alive.
         env.call_method(
@@ -370,7 +377,8 @@ impl Ui {
     pub fn resume(&mut self, env: &mut JNIEnv) -> Result<()> {
         self.resumed = true;
         self.action(Action::Resume);
-        self.tracking.check_soon();
+        self.action(Action::Focus(self.focused));
+        self.tracking.resume();
         self.sensors.resume(env, self.hub.clone())?;
         self.refresh(env)
     }
@@ -390,6 +398,9 @@ impl Ui {
     }
     pub fn focus(&mut self, focused: bool) {
         self.focused = focused;
+        if !self.resumed {
+            return;
+        }
         self.action(Action::Focus(focused));
         if focused {
             self.tracking.check_soon();
