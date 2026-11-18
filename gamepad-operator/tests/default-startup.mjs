@@ -63,7 +63,7 @@ try {
   assert.equal(info.selected.device.synthetic, synthetic);
 
   const offer = page.waitForResponse(r => r.url().endsWith('/api/offer'));
-  await page.locator('#connect').click();
+  await page.getByRole('dialog').getByRole('button', {name: 'Connect', exact: true}).click();
   const answer = await offer;
   const offered = await answer.request().headerValue('X-Operator-Address');
   assert.ok(owned.includes(offered), `Unexpected signaling target ${offered}`);

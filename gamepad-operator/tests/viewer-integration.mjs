@@ -48,6 +48,7 @@ try {
   browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE||'/opt/google/chrome/chrome',headless:true});
   const page=await browser.newPage({viewport:{width:1400,height:1000}});
   await page.goto(url);
+  await page.getByRole('dialog').getByLabel('Operator address').fill(`http://127.0.0.1:${serverPort}`);
   if(process.env.VIRTUAL && !process.env.LIFECYCLE) {
     await verifyVirtual(page);
   } else if(process.env.LIFECYCLE) {
@@ -224,7 +225,7 @@ try {
   });
   assert.deepEqual(protocol.errors,[]);assert.ok(protocol.reports.every(r=>r.predictedFor===null&&r.packets>=3));
   // Exercise production controls, including adding an acknowledged bundle and applying replacement.
-  await page.getByRole('button',{name:'Connect',exact:true}).click();
+  await page.getByRole('dialog').getByRole('button',{name:'Connect',exact:true}).click();
   // The editor rebuilds its pending rows when the default subscription is accepted.
   // Wait for the live table before scrolling its independently scrollable viewport.
   await page.waitForFunction(()=>document.querySelector('subscription-editor .subscription-message')?.textContent.includes('packets'));
@@ -378,7 +379,7 @@ async function verifyVirtual(page) {
       return {samples,reports,reset:true,modelSpace:true,tracked:false,predictedFor:null,retainedRaw};
     }finally{c.close();}
   });
-  await page.getByRole('button',{name:'Connect',exact:true}).click();
+  await page.getByRole('dialog').getByRole('button',{name:'Connect',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
   await page.getByRole('combobox', {name:'Visualization', exact:true}).selectOption('spatial');
   await page.waitForFunction(()=>document.querySelector('[data-pose-count="1"]'));
