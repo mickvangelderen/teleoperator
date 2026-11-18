@@ -769,7 +769,7 @@ pub fn run_sdl(
             next_scan = Instant::now() + Duration::from_secs(1);
             let items = sdl.list()?;
             let mut status = if open.is_some() {
-                "Selected gamepad connected".to_string()
+                "Gamepad input device open".to_string()
             } else {
                 "No accessible gamepad selected; attach one and use --list".to_string()
             };
