@@ -17,3 +17,24 @@ test("unknown-layout gamepad inputs go on change without moving unrelated sample
   assert.deepEqual(indices(1), [[4]]);
   assert.deepEqual(indices(1, true), [[], [4]]);
 });
+
+test("SDL Guide and its companions go on change with or without a continuous virtual pose", () => {
+  const guide = "/gamepad/input/guide/click";
+  const raw: Descriptor[] = [
+    sample("/gamepad/connected"), sample("/gamepad/activity"),
+    { ...sample(guide), kind: 2, press_count_sample: 4, release_count_sample: 5 },
+    sample(guide + "/active"),
+    { ...sample(guide + "/press_count"), kind: 3, formats: [2, 3, 4, 5] },
+    { ...sample(guide + "/release_count"), kind: 4, formats: [2, 3, 4, 5] },
+  ];
+  const pose = "/gamepad/virtual/pose";
+  const continuous: Descriptor[] = [
+    { ...sample(pose), kind: 10, formats: [10], spaces: [6], position_valid_sample: 7 },
+    { ...sample(pose + "/position_valid"), kind: 12 }, sample("/gamepad/virtual/enabled"),
+  ];
+  for (const extra of [[], continuous]) {
+    const c: Capabilities = { groups: [100], skeletons: [], descriptors: [...raw, ...extra] };
+    const bundles = defaultBundles(c, 0, false).map(b => b.map(s => c.descriptors[s.descriptor].id));
+    assert.deepEqual(bundles, [extra.map(d => d.id), raw.map(d => d.id)]);
+  }
+});

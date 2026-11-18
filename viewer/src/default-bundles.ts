@@ -1,6 +1,7 @@
 import { preferredFormat, type Capabilities, type Selection } from "./protocol";
 
-const gamepadControl = (id: string) => id.startsWith("/user/gamepad/input/") || id.startsWith("/gamepad/raw/");
+const gamepadControl = (id: string) =>
+  id.startsWith("/user/gamepad/input/") || id.startsWith("/gamepad/input/") || id.startsWith("/gamepad/raw/");
 
 export function isGamepadGroup(c: Capabilities, group: number) {
   const samples = c.descriptors.filter(d => d.group === group);
