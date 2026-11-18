@@ -176,7 +176,7 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
     const d = c!.descriptors[index];
     if (d.kind !== 10 || skeletonSamples.has(index)) continue;
     const result = located(index);
-    if (!result || result.space === 5 || !(result.pose.flags & 2)) continue;
+    if (!result || result.space === 5 || !(result.pose.flags & 3)) continue;
     poses.push(result.pose); sources.push(poseSources.get(d.id) ?? d.id); spaces.add(result.space);
   }
   const confidenceIndices = new Set(c?.skeletons.flatMap(s => s.joints.flatMap(j => {

@@ -30,7 +30,7 @@ export class SpatialView {
   private framed = 0;
   private view = "iso";
   private zoom = 1;
-  private poses = new Map<string, { group: Group; shape: Group }>();
+  private poses = new Map<string, { group: Group; shape: Group; marker?: Mesh }>();
   private body?: BodyModel;
   private meshEnabled = true;
   private bodyPoints = new Points(new BufferGeometry(), new PointsMaterial({ vertexColors: true, size: 0.018, sizeAttenuation: true, depthTest: false }));
@@ -79,7 +79,7 @@ export class SpatialView {
       if (name.endsWith("aim")) shape.add(new Line(new BufferGeometry().setFromPoints([new Vector3(), new Vector3(0, 0, -0.35)]), new LineBasicMaterial({ color })));
       else shape.add(new AxesHelper(name === "head" ? 0.12 : 0.07));
       group.visible = false;
-      this.poses.set(name, { group, shape });
+      this.poses.set(name, { group, shape, marker });
       this.scene.add(group);
     }
     this.observer = new ResizeObserver(() => {
@@ -160,10 +160,13 @@ export class SpatialView {
 
   setView(view: string, zoom: number) {
     this.view = view; this.zoom = zoom;
-    const [sample, , , body] = this.latest;
-    const points = [...(sample?.poses ?? []), ...(body?.active ? body.poses : [])]
+    const [, , , body] = this.latest;
+    const points = (body?.active ? body.poses : [])
       .filter(p => (p.flags & 2) && p.active !== false)
       .map(p => new Vector3(...p.position));
+    for (const { group } of this.poses.values()) {
+      if (group.visible) points.push(group.position);
+    }
     const bounds = new Box3().setFromPoints(points);
     this.controls.target.set(0, 1.3, 0);
     let distance = 2.4;
@@ -203,10 +206,13 @@ export class SpatialView {
     }
     for (const [name, object] of this.poses) {
       const pose = sample?.poses[sources.indexOf(name)];
-      object.group.visible = !!pose && !!(pose.flags & 2) && pose.active !== false;
+      object.group.visible = !!pose && !!(pose.flags & 3) && pose.active !== false;
       if (!pose || !object.group.visible) continue;
       count++;
-      object.group.position.fromArray(pose.position);
+      const positionValid = !!(pose.flags & 2);
+      if (positionValid) object.group.position.fromArray(pose.position);
+      else object.group.position.set(0, 0, 0);
+      if (object.marker) object.marker.visible = positionValid;
       object.shape.visible = !!(pose.flags & 1);
       if (object.shape.visible) object.group.quaternion.fromArray(pose.orientation);
       tintLate(object.group, late);

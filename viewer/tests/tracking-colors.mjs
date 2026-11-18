@@ -36,11 +36,17 @@ export async function checkTrackingColors(page, output) {
       const recovered = { points: colors(view.bodyPoints), lines: colors(view.joints), materials: materials() };
       sample.poses[0].flags = 2; apply(false);
       const orientationInvalid = { visible: view.poses.get("head").group.visible, shape: view.poses.get("head").shape.visible };
-      sample.poses[0].flags = 1; apply(true);
-      const positionInvalid = view.poses.get("head").group.visible;
+      sample.poses[0].flags = 1;
+      sample.poses[0].orientation = [0, 1, 0, 0];
+      apply(true);
+      const { group, shape, marker } = view.poses.get("head");
+      const orientationOnly = { visible: group.visible && shape.visible, position: group.position.toArray(),
+        orientation: group.quaternion.toArray(), marker: marker.visible };
+      sample.poses[0].flags = 0; apply(false);
+      const invalidVisible = group.visible;
       const large = { active: true, poses: Array.from({ length: 120 }, (_, i) => ({ ...body.poses[0], position: [i * .01, 1, 0] })) };
       apply(true, large, { joints: large.poses.map((_, id) => ({ id, parent: id ? id - 1 : -1 })) });
-      return { normal, late, recovered, orientationInvalid, positionInvalid, large: { points: colors(view.bodyPoints), lines: colors(view.joints) } };
+      return { normal, late, recovered, orientationInvalid, orientationOnly, invalidVisible, large: { points: colors(view.bodyPoints), lines: colors(view.joints) } };
     } finally { view.update(...previous); view.renderFrame(); }
   });
   assert.deepEqual(result.normal.points, ["286b4c", "c87520", "78847d", "286b4c"], "Invalid positions disappear; orientation-only invalidity preserves the position marker");
@@ -50,7 +56,8 @@ export async function checkTrackingColors(page, output) {
   assert.ok(result.late.materials.length > 2 && result.late.materials.every(([color, vertexColors]) => color === "c44235" && !vertexColors));
   assert.deepEqual(result.recovered, result.normal, "Recovery restores joint colors and original model/axis materials");
   assert.deepEqual(result.orientationInvalid, { visible: true, shape: false });
-  assert.equal(result.positionInvalid, false);
+  assert.deepEqual(result.orientationOnly, { visible: true, position: [0, 0, 0], orientation: [0, 1, 0, 0], marker: false });
+  assert.equal(result.invalidVisible, false);
   assert.deepEqual(result.large.points, Array(120).fill("c44235"));
   assert.deepEqual(result.large.lines, Array(238).fill("c44235"));
 
