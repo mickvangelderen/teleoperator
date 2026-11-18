@@ -69,8 +69,15 @@ Connect the phone to ADB using either method.
 
   1. **Pair once per computer.** If the computer is already paired, skip to step 2.
      Tap **Pair device with pairing code** to display the six-digit code. Leave that
-     dialog open. In the computer's terminal, substitute the IP and pairing port
-     shown in the dialog, then enter the six-digit code when prompted.
+     dialog open. If it shows an mDNS hostname, list the services on the computer.
+
+     ```sh
+     adb mdns services
+     ```
+
+     For `IP:PAIRING_PORT`, use the IP and port in the dialog or copy them
+     from the phone's `_adb-tls-pairing._tcp` row. Enter the six-digit code in
+     the terminal when prompted.
 
      ```sh
      adb pair IP:PAIRING_PORT
@@ -83,7 +90,8 @@ Connect the phone to ADB using either method.
      ```
 
      If the phone is missing, return to the main **Wireless debugging** screen.
-     Use the **IP address & port** shown there in the following command.
+     Use the **IP address & port** shown there, or copy the IP and port from
+     the phone's `_adb-tls-connect._tcp` row in the mDNS service list.
 
      ```sh
      adb connect IP:CONNECTION_PORT
