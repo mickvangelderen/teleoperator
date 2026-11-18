@@ -1,3 +1,4 @@
+import { phoneControlsOnly } from "./phone-controls";
 import { Session } from "./session";
 import { preferredFormat, restGroup, timing, MAX_CLIENT_MESSAGE } from "./protocol";
 import type { Request } from "./protocol";
@@ -149,7 +150,8 @@ export class Connection {
                 c.groups.forEach((max, group) => {
                   const samples = c.descriptors.flatMap((d, descriptor) => d.group === group ? [{ descriptor, format: preferredFormat(d), space: d.spaces[0] ?? 0 }] : []);
                   const rest = restGroup(c, group);
-                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, ...timing(Math.min(max, 60)), sequenceNumberFormat: rest ? 2 : null, bundles: rest ? [[], samples] : [samples] }, !rest);
+                  const onChange = rest || phoneControlsOnly(samples.map(s => c.descriptors[s.descriptor]));
+                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, ...timing(Math.min(max, 60)), sequenceNumberFormat: onChange ? 2 : null, bundles: onChange ? [[], samples] : [samples] }, !rest);
                 });
               }
             }
