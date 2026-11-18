@@ -24,7 +24,7 @@ export async function checkFreshness(page, output) {
   await page.mouse.move(0, 0);
   assert.equal(await page.locator("#arrival-chart-tooltip").isVisible(), false);
   const colors = await page.evaluate(() => ({
-    controls: [...document.querySelectorAll(".subscription-group")].map(e => e.style.getPropertyValue("--group-color")),
+    controls: [...document.querySelectorAll(".subscription-list [data-action=select]")].map(e => e.style.getPropertyValue("--group-color")),
     arrival: [...document.querySelectorAll(".arrival-actual-line")].map(e => e.getAttribute("stroke")),
     freshness: [...document.querySelectorAll(".freshness-age-line")].map(e => e.getAttribute("stroke")),
   }));

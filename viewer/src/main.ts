@@ -10,8 +10,7 @@ import { profiler } from "./performance";
 import { mountPerformancePanel } from "./performance-view";
 import { panelHeader } from "./ui/panel";
 import { MetricDisplay } from "./ui/metric-display";
-import { PublicationGroup } from "./ui/publication-group";
-import type { Request } from "./protocol";
+import { SubscriptionEditor } from "./ui/subscription-editor";
 import { Recorder } from "./recording";
 import { setAttribute, setText } from "./dom";
 import { TwoSecondMedian } from "./statistics";
@@ -50,7 +49,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="viewport"><div id="poses"></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Ready to connect</h3><p id="workspace-note">Connect to inspect the device’s tracking data.</p></div></div>
       <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Meta upper-body skin, when matching live and rest poses are available"><input id="show-body-mesh" type="checkbox" checked> Body mesh</label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="0" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><div class="prediction-timing" aria-label="Prediction timing"><span id="prediction-offset-label">Prediction timing</span><span id="requested-prediction-offset" title="Requested offset from the publication slot to the desired device target. This does not establish actual prediction.">Requested: unavailable</span><span id="measured-prediction-offset" title="Actual device target minus acquisition time (predicted_for − acquired_at), when the source reports a target. Publication time is not supplied, so this is not measured publication-to-consumption delay.">Device target − acquisition: unavailable</span></div><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
     </section>
-    <section class="panel subscriptions-panel"><span id="sample-summary" class="tag">No capabilities</span><p id="publication-status" class="publication-status status-message" role="status"></p><div id="subscriptions" class="subscriptions"><p>Connect to discover selectable samples.</p></div></section>
+    <section class="panel subscriptions-panel"><span id="sample-summary" class="tag">No capabilities</span><div id="subscriptions"><p class="subscriptions-empty">Connect to discover selectable samples.</p></div></section>
     <section class="panel performance-panel" id="performance" aria-label="Performance profiling"></section>
   </main>`;
 
@@ -60,7 +59,7 @@ const text = (id: string, value: string) => {
   setText(element(id), value);
 };
 document.querySelector(".workspace")!.prepend(panelHeader("Tracking workspace"));
-document.querySelector(".subscriptions-panel")!.prepend(panelHeader("Samples & publication", element("sample-summary")));
+document.querySelector(".subscriptions-panel")!.prepend(panelHeader("Subscriptions", element("sample-summary")));
 text("target", __OPERATOR_TARGET__);
 let connection: Connection | null = null;
 let recording: Recorder | undefined;
@@ -69,8 +68,7 @@ let spatial: SpatialView | undefined;
 let spatialKey = "";
 let trackingView = spatialFrames(undefined, 0);
 let mountedSession: Session | undefined;
-const publicationGroups: PublicationGroup[] = [];
-let publicationError: string | undefined;
+let subscriptionEditor: SubscriptionEditor | undefined;
 let graphicsStatus = "Loading 3D view…";
 const setGraphicsStatus = (message: string) => { graphicsStatus = message; };
 const groupMetrics = new GroupMetrics();
@@ -143,13 +141,10 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   text("error", state.detail);
   const session = state.session;
   if (mountedSession && mountedSession !== session) {
-    mountedSession = undefined; publicationGroups.length = 0;
-    publicationError = undefined;
+    mountedSession = undefined; subscriptionEditor = undefined;
     element("subscriptions").replaceChildren(document.createTextNode("Connect to discover selectable samples."));
     text("sample-summary", "No capabilities");
   }
-  text("publication-status", publicationError ?? state.detail);
-  setAttribute(element("publication-status"), "data-tone", publicationError ? "error" : null);
   if (session?.capabilities && mountedSession !== session) mountCapabilities(session);
   const subscriptions = [...session?.active.values() ?? []];
   const received = subscriptions.filter(s => s.arrivedAt !== undefined);
@@ -178,7 +173,6 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   text("prediction-offset-label", timing ? `Prediction timing · Group ${timing.request.group}` : "Prediction timing");
   text("requested-prediction-offset", schedule ? `Requested: ${(Number(schedule.predictionOffset) / 1e6).toFixed(1)} ms` : "Requested: unavailable");
   text("measured-prediction-offset", prediction?.predictedFor == null ? "Device target − acquisition: unavailable" : `Device target − acquisition: ${(Number(prediction.predictedFor - prediction.timestamp) / 1e6).toFixed(1)} ms`);
-  const values = view.values;
   const visiblePoses = view.poses.poses.length + (view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0);
   const visibleJoints = view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0;
   setAttribute(element("empty-state"), "hidden", visiblePoses && !view.mixedSpaces ? "" : null);
@@ -187,40 +181,18 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   const bodyQuality = `${visibleJoints} current body joints · ${view.mixedSpaces ? "mixed spaces; overlay hidden" : view.space ? view.space < 0 ? "skeleton rest frame" : spaceNames[view.space] : "no current frame"} · ${view.outdated.size ? "rest revision pending" : view.rest ? "advertised rest poses" : `${view.trackedJoints} reported tracked${view.confidence === undefined ? "" : ` · confidence ${(100 * view.confidence).toFixed(0)}%`}`}`;
   text("body-quality", bodyQuality);
   setAttribute(element("body-quality"), "title", bodyQuality);
-  publicationGroups.forEach((component, group) => {
-    const active = subscriptions.find(s => s.request.group === group);
-    const pending = [...session?.pending.values() ?? []].some(r => r.group === group);
-    component.update(active, pending, values, active ? connection?.isAutomatic(active.request.id) : false);
-  });
+  subscriptionEditor?.update(now);
 }
 
 function mountCapabilities(session: Session) {
   mountedSession = session;
-  publicationGroups.length = 0;
   const capabilities = session.capabilities!, container = element("subscriptions");
   container.replaceChildren();
   text("sample-summary", `${capabilities.descriptors.length} samples · ${capabilities.groups.length} acquisition groups`);
-  capabilities.groups.forEach((_, group) => {
-    const component = new PublicationGroup();
-    component.configure(capabilities, group);
-    publicationGroups.push(component);
-    container.append(component);
-  });
+  subscriptionEditor = new SubscriptionEditor();
+  subscriptionEditor.configure(connection!);
+  container.append(subscriptionEditor);
 }
-
-element("subscriptions").addEventListener("publication-request", event => {
-  publicationError = undefined;
-  try {
-    const { automaticTiming, ...request } = (event as CustomEvent<Request & { automaticTiming: boolean }>).detail;
-    connection?.publish(request, automaticTiming);
-  }
-  catch (error) { publicationError = `Selection rejected: ${String(error)}`; }
-});
-element("subscriptions").addEventListener("publication-stop", event => {
-  publicationError = undefined;
-  connection?.unsubscribe((event as CustomEvent<number>).detail);
-});
-element("subscriptions").addEventListener("publication-error", event => { publicationError = (event as CustomEvent<string>).detail; });
 
 element("connect").onclick = () => {
   if (

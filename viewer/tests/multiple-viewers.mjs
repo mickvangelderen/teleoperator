@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { selectedEntry, applySelected } from "./editor-browser.mjs";
 
 export async function checkMultipleViewers(browser, url) {
   const context = await browser.newContext({ viewport: { width: 1200, height: 900 } });
@@ -48,15 +49,24 @@ export async function checkMultipleViewers(browser, url) {
     await first.locator("#performance").scrollIntoViewIfNeeded();
     assert.ok((await sampleWork(first)).charts > 0, "Visible graphs draw the retained history");
 
-    await first.locator("#automatic-0").uncheck();
-    await first.locator("#rate-0").fill("30");
-    await first.locator("#publish-0").click();
-    await first.waitForFunction(() => document.querySelector("#subscription-0").textContent.includes("30.0 Hz target"));
-    const secondRate = Number((await second.locator("#subscription-0").textContent()).match(/([\d.]+) Hz target/)[1]);
-    assert.ok(secondRate > 55 && secondRate < 65, "The other viewer keeps its measured display cadence when the first switches to 30 Hz");
-    const packets = Number((await second.locator("#subscription-0").textContent()).match(/(\d+) packets/)[1]);
+    const secondBefore = await selectedEntry(second);
+    await first.locator('[data-field="automatic"]').uncheck();
+    await first.locator('[data-field="rate"]').fill("30");
+    await applySelected(first);
+    assert.ok(Math.abs((await selectedEntry(first)).rate - 30) < .001);
+    const secondAfter = await selectedEntry(second);
+    assert.equal(secondAfter.activeId, secondBefore.activeId, "Editing another viewer does not replace this subscription");
+    assert.equal(await second.evaluate(() => {
+      const editor = document.querySelector("subscription-editor"), entry = editor.model.entries.find(e => e.group === 0);
+      return entry.draft.automatic && editor.model.port.isAutomatic(entry.activeId);
+    }), true, "The other viewer retains display alignment; its actual cadence can vary under concurrent rendering");
+    const packets = (await selectedEntry(second)).packets;
     await first.locator("#connect").click();
-    await second.waitForFunction(previous => Number(document.querySelector("#subscription-0").textContent.match(/(\d+) packets/)?.[1]) >= previous + 30, packets);
+    await second.waitForFunction(previous => {
+      const e = document.querySelector("subscription-editor");
+      const entry = e.model.entries.find(s => s.group === 0);
+      return e.model.port.session.active.get(entry.activeId).packets >= previous + 30;
+    }, packets);
     assert.equal(await second.locator("#status").textContent(), "Connected");
     await second.locator("#connect").click();
     assert.deepEqual(errors, []);

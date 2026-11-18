@@ -96,7 +96,7 @@ export async function checkAutomaticPublicationTiming(page) {
   });
   try {
     await page.waitForFunction(() => window.publicationTimingCheck.connection?.session.active.size > 0);
-    assert.equal(await page.locator("#automatic-0").isChecked(), true);
+    assert.equal(await page.locator('subscription-editor [data-field="automatic"]').isChecked(), true);
     const initial = await page.evaluate(() => {
       const c = window.publicationTimingCheck.connection;
       return [...c.session.active.values()].find(s => s.request.group === 0).request.id;
@@ -106,17 +106,18 @@ export async function checkAutomaticPublicationTiming(page) {
     const automated = await page.evaluate(id => window.publicationTimingCheck.updates.findLast(u => u.id === id), initial);
     assert.equal(automated.id, initial, "Display delay changes use UpdateSchedule rather than replacement");
     assert.ok(Math.abs(Number(automated.interval) / 1e6 - automated.frameCadence) < 0.1, "Requested slots follow the observed browser cadence");
-    await page.locator("#automatic-0").uncheck();
-    await page.locator("#phase-0").fill("2");
-    await page.locator("#delay-0").fill("5");
-    await page.locator("#publish-0").click();
+    await page.locator('subscription-editor [data-field="automatic"]').uncheck();
+    await page.locator('.subscription-timing summary').click();
+    await page.locator('subscription-editor [data-field="phase"]').fill("2");
+    await page.locator('subscription-editor [data-field="predictionOffset"]').fill("5");
+    await page.locator('subscription-editor [data-action="apply"]').click();
     await page.waitForFunction(id => window.publicationTimingCheck.updates.findLast(u => u.id === id)?.delay === 5, initial);
     const manualCount = await page.evaluate(id => window.publicationTimingCheck.updates.filter(u => u.id === id).length, initial);
     await page.locator("#render-to-photon").fill("0");
     await page.waitForTimeout(1200);
     assert.equal(await page.evaluate(id => window.publicationTimingCheck.updates.filter(u => u.id === id).length, initial), manualCount, "Automatic updates respect manual control");
-    await page.locator("#automatic-0").check();
-    await page.locator("#publish-0").click();
+    await page.locator('subscription-editor [data-field="automatic"]').check();
+    await page.locator('subscription-editor [data-action="apply"]').click();
     await page.waitForFunction(id => window.publicationTimingCheck.connection.isAutomatic(id), initial);
     await page.locator("#render-to-photon").fill("20");
     await page.waitForFunction(id => { const update = window.publicationTimingCheck.updates.findLast(u => u.id === id); return update?.delay >= 23 && update.delay < 50; }, initial);

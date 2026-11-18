@@ -46,40 +46,50 @@ try {
   await select.focus();
   assert.notEqual(await select.evaluate(el => getComputedStyle(el).outlineStyle), "none");
 
-  // Group selection is local; presentation updates preserve focus and draft values.
-  await page.locator("publication-group").first().getByRole("button", { name: "Clear selection" }).click();
-  assert.equal(await page.locator("publication-group").first().locator('[data-descriptor] input[type="checkbox"]:checked').count(), 0);
-  assert.equal(await page.locator("publication-group").nth(1).locator('[data-descriptor] input[type="checkbox"]:checked').count(), 2);
-  await page.locator("publication-group").first().getByRole("button", { name: "Select all" }).click();
-  assert.equal(await page.locator("#automatic-0").isChecked(), true);
-  assert.equal(await page.locator("#rate-0").getAttribute("readonly"), "");
-  assert.equal(await page.locator("#phase-0").getAttribute("readonly"), "");
-  await page.locator("#automatic-0").uncheck();
-  await page.locator("#rate-0").fill("42");
-  await page.locator("publication-group").first().locator('select[aria-label="Format for Pose"]').selectOption("11");
-  await page.locator("#rate-0").focus();
+  // Native controls retain focused drafts while live presentation refreshes.
+  const editor = page.locator("subscription-editor");
+  await editor.locator('[data-action="clear-bundle"]').click();
+  assert.equal(await editor.locator("[data-binding-key]").count(), 0);
+  await editor.locator('[data-action="select"][data-group="1"]').click();
+  assert.equal(await editor.locator("[data-binding-key]").count(), 2);
+  await editor.locator('[data-action="select"][data-group="0"]').click();
+  await editor.locator('[data-action="discard"]').click();
+  assert.equal(await editor.locator("[data-binding-key]").count(), 2);
+  assert.equal(await editor.locator('[data-field="automatic"]').isChecked(), true);
+  assert.equal(await editor.locator('[data-field="rate"]').getAttribute("readonly"), "");
+  await editor.locator('[data-field="automatic"]').uncheck();
+  await editor.locator('[data-field="rate"]').fill("42");
+  await editor.locator('select[aria-label="Format for Pose"]').selectOption("11");
+  await editor.locator('[data-field="rate"]').focus();
   const retained = await page.evaluate(() => {
-    const group = window.componentsFixture.groups[0], nodes = [...group.querySelectorAll("*")], focus = document.activeElement;
-    for (let i = 0; i < 10; i++) group.update(undefined, false, new Map());
-    return document.activeElement === focus && nodes.every((node, i) => node === group.querySelectorAll("*")[i]);
+    const editor = window.componentsFixture.editor, nodes = [...editor.querySelectorAll("*")], focus = document.activeElement;
+    for (let i = 0; i < 10; i++) editor.update(performance.now());
+    return document.activeElement === focus && nodes.every((node, i) => node === editor.querySelectorAll("*")[i]);
   });
   assert.equal(retained, true);
-  assert.equal(await page.locator("#rate-0").inputValue(), "42");
-  await page.locator("#publish-0").click();
+  assert.equal(await editor.locator('[data-field="rate"]').inputValue(), "42");
+  await editor.locator(".subscription-timing summary").click();
+  await editor.locator('[data-field="phase"]').fill("-1");
+  assert.equal(await editor.locator('[data-action="apply"]').isDisabled(), true);
+  assert.match(await editor.locator(".subscription-message").textContent(), /non-negative/);
+  await editor.locator('[data-field="delivery"]').selectOption("2");
+  assert.equal(await editor.locator('[data-action="apply"]').isDisabled(), true, "Editing another control cannot bypass an invalid timing field");
+  await editor.locator('[data-field="delivery"]').selectOption("1");
+  await editor.locator('[data-field="phase"]').fill("0");
+  await editor.locator('[data-action="add-bundle"]').click();
+  await editor.locator('[data-action="apply"]').click();
   assert.deepEqual(await page.evaluate(() => {
     const request = window.componentsFixture.requests.at(-1);
-    return { group: request.group, interval: String(request.interval), samples: request.bundles[0] };
-  }), { group: 0, interval: "23809524", samples: [{ descriptor: 0, format: 11, space: 1 }, { descriptor: 1, format: 1, space: 0 }] });
-  await page.locator("#phase-0").fill("-1");
-  await page.locator("#publish-0").click();
-  assert.equal(await page.evaluate(() => window.componentsFixture.requests.length), 1);
-  assert.match(await page.evaluate(() => window.componentsFixture.errors[0]), /Invalid duration/);
-  await page.locator("#phase-0").fill("0");
-  await page.locator("#schedule-0").selectOption("onChange");
-  assert.equal(await page.locator("#rate-0").isVisible(), true);
-  await page.locator("#publish-0").click();
-  assert.equal(await page.evaluate(() => window.componentsFixture.requests.at(-1).bundles[0].length), 0);
-  assert.equal(await page.evaluate(() => window.componentsFixture.requests.at(-1).sequenceNumberFormat), 2);
+    return { group: request.group, interval: String(request.interval), samples: request.bundles[0], sequence: request.sequenceNumberFormat, bundles: request.bundles.length };
+  }), { group: 0, interval: "23809524", samples: [{ descriptor: 0, format: 11, space: 1 }, { descriptor: 1, format: 1, space: 0 }], sequence: 2, bundles: 2 });
+  await page.evaluate(() => {
+    const state = window.componentsFixture, entry = state.editor.model.entries[0];
+    state.session.receive({ tag: 6, id: entry.pendingId, reason: "Fixture rejection" });
+    state.editor.update(performance.now());
+  });
+  assert.match(await editor.locator(".subscription-message").textContent(), /Fixture rejection/);
+  assert.equal(await editor.locator('select[aria-label="Format for Pose"]').inputValue(), "11");
+  await editor.locator('[data-action="discard"]').click();
 
   // Theme values reach HTML, SVG and Canvas, and missing samples break lines.
   const themed = await page.evaluate(() => {
@@ -92,7 +102,7 @@ try {
     ctx.lineTo = function (...args) { lines++; return lineTo.apply(this, args); };
     try { graph.update(series, 10000, 10000); } finally { ctx.moveTo = moveTo; ctx.lineTo = lineTo; }
     return {
-      control: getComputedStyle(document.querySelector("#rate-0")).borderColor,
+      control: getComputedStyle(document.querySelector('subscription-editor [data-field="rate"]')).borderColor,
       svg: getComputedStyle(document.querySelector("#example-chart path")).stroke,
       table: getComputedStyle(document.querySelector("#example-example th")).color,
       canvas: ctx.strokeStyle, moves, lines,

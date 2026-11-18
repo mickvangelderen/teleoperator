@@ -1,7 +1,10 @@
 import "../src/style.css";
 import "../src/performance-view.css";
 import { MetricDisplay } from "../src/ui/metric-display";
-import { PublicationGroup } from "../src/ui/publication-group";
+import { SubscriptionEditor } from "../src/ui/subscription-editor";
+import { Session } from "../src/session";
+import { timing, preferredFormat } from "../src/protocol";
+import type { SubscriptionPort } from "../src/subscription-editor";
 import { MetricSummaryTable } from "../src/ui/metric-summary-table";
 import { TimeSeriesGraph } from "../src/ui/time-series-graph";
 import { panelHeader } from "../src/ui/panel";
@@ -42,16 +45,21 @@ const capabilities: Capabilities = {
     { id: `button-${group}`, name: "Button", description: "Example button", kind: 2, formats: [1], group, spaces: [] },
   ]),
 };
-const requests: Request[] = [], errors: string[] = [];
-const groups = capabilities.groups.map((_, group) => {
-  const component = new PublicationGroup();
-  component.configure(capabilities, group);
-  component.update(undefined, false, new Map());
-  fixture.append(component);
-  return component;
+const requests: Request[] = [], session = new Session(), automatic = new Set<number>();
+session.receive({ tag: 2, version: 1 }); session.receive({ tag: 3, capabilities });
+capabilities.groups.forEach((_, group) => {
+  const id = session.allocateId(); automatic.add(id);
+  session.request({ id, group, delivery: 1, ...timing(60), sequenceNumberFormat: null,
+    bundles: [capabilities.descriptors.flatMap((d, descriptor) => d.group === group ? [{ descriptor, format: preferredFormat(d), space: d.spaces[0] ?? 0 }] : [])] });
+  session.receive({ tag: 5, id });
 });
-fixture.addEventListener("publication-request", event => requests.push((event as CustomEvent<Request>).detail));
-fixture.addEventListener("publication-error", event => errors.push((event as CustomEvent<string>).detail));
+const port: SubscriptionPort = { session, isAutomatic: id => automatic.has(id),
+  publish(request, align) {
+    const id = session.allocateId(); request = { ...request, id }; requests.push(request);
+    if (align) automatic.add(id);
+    session.request(request); return { kind: "pending", id };
+  }, unsubscribe(id) { session.stop(id); } };
+const editor = new SubscriptionEditor(); editor.configure(port); fixture.append(editor);
 const layout = document.createElement("section"); layout.className = "panel timing-layout";
 const graph = new TimeSeriesGraph(), summary = new MetricSummaryTable();
 graph.configure("example-detail", "Example timings", "ms", 40);
@@ -61,6 +69,6 @@ const series = [{ key: "example", color: groupColor(0), samples: [{ at: 0, value
 summary.update(series);
 layout.append(graph, summary); fixture.append(layout);
 graph.update(series, 10000, 10000);
-const state = { metric, chart, groups, requests, errors, graph, summary, series };
+const state = { metric, chart, editor, requests, session, graph, summary, series };
 declare global { interface Window { componentsFixture: typeof state } }
 window.componentsFixture = state;

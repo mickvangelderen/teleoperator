@@ -37,9 +37,7 @@ main { max-width: 1570px; margin: auto; padding: var(--space-6) var(--space-10);
 .prediction-timing > span, #body-quality { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #render-to-photon { width: 76px; }
 .performance-panel, .subscriptions-panel { margin-top: var(--space-6); }
-.subscriptions { padding: var(--space-5); }
-.subscription-group + .subscription-group { margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--line); }
-.publication-status { margin: var(--space-4) var(--space-5) 0; }
+.subscriptions-empty { padding: var(--space-5); }
 @media (min-width: 801px) and (max-width: 1200px) {
   .metrics { grid-template-columns: repeat(3, 1fr); gap: var(--space-5) 0; }
   .metric:nth-child(3n) { border: 0; }

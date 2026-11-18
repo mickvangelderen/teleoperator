@@ -21,6 +21,7 @@ export class Session {
   readonly active = new Map<number, Subscription>();
   readonly pending = new Map<number, Request>();
   readonly stopping = new Set<number>();
+  readonly outcomes = new Map<number, { status: "accepted" | "rejected" | "ended"; reason?: string }>();
   readonly revisions = new Map<number, { value: bigint; bits: number; timestamp: bigint; changedAt?: bigint }>();
   private nextGeneration = 1; // Local metric identity; never transmitted.
   private nextId = 1;
@@ -35,7 +36,7 @@ export class Session {
   start() { return offer(); }
   retire() {
     this.phase = "closed"; this.capabilities = undefined;
-    this.active.clear(); this.pending.clear(); this.stopping.clear();
+    this.active.clear(); this.pending.clear(); this.stopping.clear(); this.outcomes.clear();
     this.revisions.clear();
     this.clockRequests.clear(); this.clockObservations = [];
     this.softwareClock = new SoftwareClock(); this.acknowledgments = []; this.consumptionTime = undefined;
@@ -44,6 +45,7 @@ export class Session {
     if (this.phase !== "ready" || !this.capabilities || this.pending.has(request.id) || this.stopping.has(request.id)) throw new Error("Subscription request is not currently allowed");
     const r = { ...request, bundles: request.bundles.map(b => b.map(s => ({ ...s }))) };
     validateRequest(this.capabilities, r);
+    this.outcomes.delete(r.id);
     this.acknowledgments = this.acknowledgments.filter(a => a.id !== r.id);
     this.pending.set(r.id, r); return subscribe(r);
   }
@@ -182,19 +184,26 @@ export class Session {
         const request = this.pending.get(message.id);
         if (!request) throw new Error("Unexpected subscription acceptance");
         this.pending.delete(message.id);
+        this.outcome(message.id, "accepted");
         this.active.set(message.id, { request, bundles: request.bundles.map(() => undefined), version: 0, generation: this.nextGeneration++, counters: new Map(), deltas: new Map(), arrivals: [], packets: 0, bytes: 0, freshness: new FreshnessBaseline() });
         this.detail = `Subscription ${message.id} accepted`; break;
       }
       case 6:
         if (!this.pending.delete(message.id)) throw new Error("Unexpected subscription rejection");
+        this.outcome(message.id, "rejected", message.reason);
         this.detail = `Subscription ${message.id} rejected${message.reason === undefined ? "" : `: ${message.reason}`}`; break;
       case 8: {
         this.active.delete(message.id); this.stopping.delete(message.id);
+        this.outcome(message.id, "ended", message.reason);
         this.acknowledgments = this.acknowledgments.filter(a => a.id !== message.id);
         this.detail = `Subscription ${message.id} ended: ${message.reason}`; break;
       }
       default: throw new Error("Server message in invalid session phase");
     }
+  }
+  private outcome(id: number, status: "accepted" | "rejected" | "ended", reason?: string) {
+    this.outcomes.delete(id); this.outcomes.set(id, { status, reason });
+    if (this.outcomes.size > 128) this.outcomes.delete(this.outcomes.keys().next().value!);
   }
   tracking(bytes: Uint8Array, arrivedAt: number, delivery = 1): Packet | null {
     if (bytes.length < 20 || !this.capabilities || this.phase !== "ready") { this.discarded++; return null; }

@@ -25,6 +25,7 @@ export const initialState = (): State => ({
 });
 
 export const MAX_UNRELIABLE_BACKLOG = 4096; // Small ACK/probe backlog; never queue protocol messages locally.
+export type PublishResult = { kind: "pending" | "timing"; id: number } | { kind: "error"; reason: string };
 let nextConnectionId = 1;
 export class Connection {
   private readonly id = nextConnectionId++;
@@ -255,7 +256,7 @@ export class Connection {
       const { id, group } = sub.request;
       const schedule = sub.request;
       if (!this.automatic.has(id) || this.session.stopping.has(id)
-        || [...this.session.pending.values()].some(p => p.group === group)
+        || [...this.replacements].some(([pending, previous]) => previous === id && this.session.pending.has(pending))
         || now - (this.scheduleUpdates.get(id) ?? -Infinity) < SCHEDULE_UPDATE_INTERVAL_MS) continue;
       const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clockEstimate(now), this.session.networkLatency(now), this.session.capabilities!.groups[group], this.session.sampleArrivalDelay(id, now));
       if (!next) continue;
@@ -271,29 +272,32 @@ export class Connection {
     if (visible && this.session.phase === "ready") this.probeClock();
   }
 
-  publish(request: Request, automaticTiming = false) {
+  publish(request: Request, automaticTiming = false, previousId?: number): PublishResult {
     let bytes: Uint8Array;
     try {
-      const previous = [...this.session.active.values()].find(s => s.request.group === request.group);
-      if ([...this.session.pending.values()].some(r => r.group === request.group)) throw new Error("A publication request is already pending");
+      const previous = previousId === undefined ? undefined : this.session.active.get(previousId);
+      if (previousId !== undefined && (!previous || previous.request.group !== request.group)) throw new Error("The subscription to replace is no longer active");
+      if (previousId !== undefined && [...this.replacements].some(([id, old]) => old === previousId && this.session.pending.has(id))) throw new Error("A replacement is already pending for this subscription");
       const now = performance.now();
       if (automaticTiming) request = { ...request, ...this.timing.schedule(request, now, this.renderToPhotonMs, this.session.clockEstimate(now), this.session.networkLatency(now), this.session.capabilities?.groups[request.group]) };
       if (previous && previous.request.delivery === request.delivery && previous.request.sequenceNumberFormat === request.sequenceNumberFormat
         && JSON.stringify(previous.request.bundles) === JSON.stringify(request.bundles)) {
         bytes = this.session.changeSchedule(previous.request.id, request);
-        if (!this.send(bytes)) return;
+        if (!this.send(bytes)) return { kind: "error", reason: this.state.detail };
         if (automaticTiming) this.automatic.add(previous.request.id); else this.automatic.delete(previous.request.id);
         this.scheduleUpdates.delete(previous.request.id);
-        this.state.detail = `Subscription ${previous.request.id} timing updated`; this.emit();
-        return;
+        this.state.detail = `Subscription ${previous.request.id} timing sent; no confirmation`; this.emit();
+        return { kind: "timing", id: previous.request.id };
       }
       request = { ...request, id: this.session.allocateId() };
       bytes = this.session.request(request);
       if (automaticTiming) this.automatic.add(request.id);
       if (previous) this.replacements.set(request.id, previous.request.id);
     }
-    catch (error) { this.state.detail = `Selection not sent: ${String(error)}. Choose a smaller or supported selection.`; this.emit(); return; }
-    if (this.send(bytes)) { this.state.detail = `Subscription ${request.id} requested…`; this.emit(); }
+    catch (error) { this.state.detail = `Selection not sent: ${String(error)}`; this.emit(); return { kind: "error", reason: this.state.detail }; }
+    if (!this.send(bytes)) return { kind: "error", reason: this.state.detail };
+    this.state.detail = `Subscription ${request.id} requested…`; this.emit();
+    return { kind: "pending", id: request.id };
   }
   unsubscribe(id: number) {
     let bytes: Uint8Array;

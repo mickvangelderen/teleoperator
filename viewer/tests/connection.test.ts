@@ -172,7 +172,7 @@ test("automatic updates encode display refresh rate and its changes without exce
         setClock(c.session, { ...c.session.clockEstimate(2200)!, at: 2200 });
         timingFrames(c, 2200, 20, 20, 1000 / 144);
         assert.equal(decodeSchedule(updates().at(-1)!).interval, maxRate === 200 ? 6_944_445n : 11_111_112n);
-        c.publish({ ...request, ...timing(30) });
+        c.publish({ ...request, ...timing(30) }, false, 1);
         const manualCount = updates().length;
         timingFrames(c, 2400, 20, 150, 10);
         assert.equal(updates().length, manualCount, "Manual rate remains under user control");
@@ -223,22 +223,22 @@ test("manual timing remains untouched and pending replacements cannot receive up
     c.publish(request); c.session.receive({ tag: 5, id: 1 });
     timingFrames(c, 1000);
     assert.equal(updates().length, 0, "Explicit schedules remain manual");
-    c.publish({ ...request, ...timing(30) }, true);
+    c.publish({ ...request, ...timing(30) }, true, 1);
     assert.equal(c.isAutomatic(1), true);
     const before = updates().length;
-    c.publish({ ...request, delivery: 2 }, true);
+    c.publish({ ...request, delivery: 2 }, true, 1);
     timingFrames(c, 1216.6666667, 60);
     assert.equal(updates().length, before, "Do not race a replacement selection with schedule changes");
     const pending = [...c.session.pending.keys()][0];
     c.session.receive({ tag: 6, id: pending, reason: "test rejection" });
     timingFrames(c, 1433.3333333, 60);
     assert.ok(updates().length > before, "Rejected replacement leaves old automatic subscription active");
-    c.publish({ ...request, sequenceNumberFormat: 2, bundles: [[], ...request.bundles] }, true);
+    c.publish({ ...request, sequenceNumberFormat: 2, bundles: [[], ...request.bundles] }, true, 1);
     const onChangeCount = updates().length;
     timingFrames(c, 1650, 60, 100);
     assert.equal(updates().length, onChangeCount);
     c.session.receive({ tag: 6, id: [...c.session.pending.keys()][0], reason: "test rejection" });
-    c.publish({ ...request, ...timing(60, 1_000_000n, 7_000_000n) });
+    c.publish({ ...request, ...timing(60, 1_000_000n, 7_000_000n) }, false, 1);
     assert.equal(c.isAutomatic(1), false);
     const manual = updates().length;
     timingFrames(c, 3316.6666667, 0);
@@ -286,10 +286,10 @@ test("accepted and rejected replacements retain timing ownership only for live s
     const receive = (tag: number, id: number) => Peer.latest.control.onmessage!({ data: Uint8Array.of(tag, id, 0, 0, 0).buffer });
     Peer.latest.control.onmessage!({ data: Uint8Array.of(8, 99, 0, 0, 0, 1, 0, 0, 0, 97).buffer });
     receive(5, 1);
-    c.publish({ ...request, delivery: 2 }, true);
+    c.publish({ ...request, delivery: 2 }, true, 1);
     Peer.latest.control.onmessage!({ data: Uint8Array.of(6, 2, 0, 0, 0, 0).buffer });
     assert.equal(c.isAutomatic(1), true); assert.equal(c.isAutomatic(2), false);
-    c.publish({ ...request, delivery: 2 }, true);
+    c.publish({ ...request, delivery: 2 }, true, 1);
     receive(5, 3);
     assert.equal(c.session.active.has(1), false); assert.equal(c.session.active.has(3), true);
     assert.equal(c.isAutomatic(1), false); assert.equal(c.isAutomatic(3), true);
@@ -326,4 +326,36 @@ test("ACKs share a bounded unreliable backlog with probes and preserve replaceme
     assert.equal(new DataView(channel.sent.at(-1)!.buffer).getUint32(5,true),6,"No suppressed ACK is replayed");
     assert.deepEqual(c.session.takeAcknowledgments(),[]);
   }finally{c.close();Object.assign(globalThis,{RTCPeerConnection:original});}
+});
+
+test("same-group subscriptions have independent timing ownership and targeted replacements", async context => {
+  context.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  context.mock.method(performance, "now", () => 1000);
+  context.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ type: "answer", sdp: "test" })));
+  const original = globalThis.RTCPeerConnection;
+  Object.assign(globalThis, { RTCPeerConnection: Peer });
+  const c = new Connection(() => {});
+  try {
+    await c.connect();
+    c.session.receive({ tag: 2, version: 1 }); c.session.receive({ tag: 3, capabilities: caps() });
+    const receive = (tag: number, id: number) => Peer.latest.control.onmessage!({ data: Uint8Array.of(tag, id, 0, 0, 0).buffer });
+    Peer.latest.control.onmessage!({ data: Uint8Array.of(8, 99, 0, 0, 0, 1, 0, 0, 0, 97).buffer });
+    receive(5, 1);
+    assert.deepEqual(c.publish(request, true), { kind: "pending", id: 2 });
+    receive(5, 2);
+    assert.equal(c.session.active.size, 2);
+    assert.deepEqual(c.publish({ ...request, delivery: 2 }, true, 1), { kind: "pending", id: 3 });
+    setClock(c.session, { offset: 1_000_000_000n, delay: 10_000_000n, at: 1000 });
+    timingFrames(c, 1000);
+    assert.ok(updates().length > 0);
+    assert.ok(updates().every(bytes => decodeSchedule(bytes).id === 2), "Only the replaced subscription pauses automatic updates");
+    receive(5, 3);
+    assert.deepEqual([...c.session.active.keys()].sort(), [2, 3], "Acceptance stops the explicitly replaced id only");
+    assert.equal(c.isAutomatic(2), true); assert.equal(c.isAutomatic(3), true);
+    const second = c.session.active.get(2);
+    assert.deepEqual(c.publish({ ...request, ...timing(30) }, false, 3), { kind: "pending", id: 4 }, "Changing back to the unreliable channel replaces id 3");
+    Peer.latest.control.onmessage!({ data: Uint8Array.of(6, 4, 0, 0, 0, 0).buffer });
+    assert.equal(c.session.active.get(2), second); assert.equal(c.session.active.has(3), true);
+    c.unsubscribe(3); assert.equal(c.session.active.get(2), second);
+  } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
 });

@@ -1,0 +1,86 @@
+subscription-editor { display: block; min-width: 0; }
+.subscription-layout { display: grid; grid-template-columns: 180px minmax(0, 1fr); }
+.subscription-navigation { padding: var(--space-4); border-right: 1px solid var(--line); }
+.subscription-list { display: grid; gap: var(--space-2); }
+.subscription-list button { text-align: left; border-color: transparent; background: transparent; padding: var(--space-3); }
+.subscription-list button[aria-pressed="true"] { background: var(--success-surface); border-color: var(--line); }
+.subscription-list button > span { display: block; color: var(--text); font-size: var(--text-control); }
+.subscription-list small { display: block; margin-top: var(--space-1); font-size: var(--text-sm); font-weight: 400; color: var(--text-muted); }
+.subscription-list [data-error] { color: var(--error); }
+.new-subscription { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--line); display: grid; gap: var(--space-2); }
+.new-subscription label { display: grid; gap: var(--space-2); color: var(--text-muted); font-size: var(--text-sm); }
+.new-subscription select { max-width: 100%; }
+.subscription-detail { min-width: 0; padding: var(--space-5); }
+.subscription-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-3); }
+.subscription-heading h3 { margin: 0; font-size: 15px; font-weight: 550; }
+.subscription-heading h3 span { font-size: var(--text-control); color: var(--text-muted); font-weight: 400; }
+.subscription-actions { display: flex; gap: var(--space-2); }
+.subscription-actions .primary { min-width: 72px; }
+.subscription-message { margin-top: var(--space-2); }
+.subscription-settings { padding: var(--space-4) 0; margin: 0 0 var(--space-3); border: 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.subscription-settings input[type="number"] { width: 90px; }
+.subscription-timing { margin-top: var(--space-3); font-size: var(--text-control); color: var(--text-muted); }
+.subscription-timing summary { cursor: pointer; width: fit-content; }
+.subscription-timing .control-row { margin-top: var(--space-3); }
+.sample-bundle { border: 1px solid var(--line); border-radius: var(--radius-control); margin-top: var(--space-3); overflow: clip; }
+.sample-bundle summary { padding: var(--space-3); cursor: pointer; background: var(--surface-subtle); font-size: var(--text-control); font-weight: 550; }
+.sample-bundle summary small { margin-left: var(--space-3); font-size: var(--text-sm); color: var(--text-muted); font-weight: 400; }
+.bundle-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--line); }
+.bundle-order { display: flex; gap: var(--space-2); margin-left: auto; }
+.bundle-add { margin-top: var(--space-3); }
+.bundle-empty { padding: var(--space-4); font-size: var(--text-control); color: var(--text-muted); }
+.binding-scroll { max-height: 420px; overflow: auto; contain: content; }
+.binding-table { table-layout: fixed; white-space: normal; }
+.binding-table th { position: sticky; top: 0; z-index: 1; }
+.binding-table th:nth-child(1) { width: 27%; }
+.binding-table th:nth-child(2) { width: auto; }
+.binding-table th:nth-child(3) { width: 80px; }
+.binding-table th:nth-child(4) { width: 88px; }
+.binding-table th:nth-child(5) { width: 104px; }
+.binding-table td { vertical-align: middle; }
+.binding-name { overflow-wrap: anywhere; color: var(--text); }
+.binding-current .sample-value { display: block; color: var(--text); overflow-wrap: anywhere; font-size: var(--text-control); }
+.binding-state { display: block; margin-top: 2px; font-size: var(--text-sm); color: var(--text-muted); }
+.binding-table tr[data-available="false"] .sample-value { color: var(--text-muted); }
+.binding-table select { max-width: 100%; width: 100%; }
+.binding-order { white-space: nowrap; }
+.binding-order button { padding-inline: 6px; min-width: 26px; margin-right: 2px; }
+.binding-no-space { color: var(--text-muted); }
+.sample-catalogue { padding: var(--space-3); background: var(--surface-subtle); border-block: 1px solid var(--line); }
+.catalogue-controls { display: flex; align-items: end; flex-wrap: wrap; gap: var(--space-2); }
+.catalogue-controls label { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-control); color: var(--text-muted); }
+.catalogue-controls label:first-child { display: grid; flex: 1; min-width: 140px; }
+.catalogue-controls input[type="search"] { width: 100%; min-width: 0; }
+.catalogue-results { max-height: 260px; overflow: auto; margin-top: var(--space-2); }
+.catalogue-result { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding-block: var(--space-2); border-bottom: 1px solid var(--line); font-size: var(--text-control); }
+.catalogue-result span { min-width: 0; overflow-wrap: anywhere; }
+.catalogue-result small { display: block; color: var(--text-muted); font-size: var(--text-sm); }
+.catalogue-result button { flex-shrink: 0; }
+@media (max-width: 1100px) {
+  .subscription-layout { grid-template-columns: 150px minmax(0, 1fr); }
+  .subscription-detail, .subscription-navigation { padding: var(--space-3); }
+  .binding-table th:nth-child(1) { width: 23%; }
+}
+@media (max-width: 800px) {
+  .subscription-layout { grid-template-columns: 1fr; }
+  .subscription-navigation { border-right: 0; border-bottom: 1px solid var(--line); }
+  .subscription-list { grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); }
+  .new-subscription { margin-top: var(--space-2); padding-top: var(--space-2); display: flex; flex-wrap: wrap; align-items: end; }
+  .new-subscription label { min-width: 0; }
+  .new-subscription select { width: 100%; }
+  .binding-table, .binding-table tbody { display: block; }
+  .binding-table thead { display: none; }
+  .binding-table tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; border-bottom: 1px solid var(--line); padding: var(--space-2); gap: var(--space-2); }
+  .binding-table td { padding: 0; border: 0; min-width: 0; }
+  .binding-name, .binding-current { grid-column: 1 / -1; }
+  .binding-state { display: inline; margin-left: var(--space-2); }
+  .binding-current .sample-value { display: inline; }
+  .subscription-actions { flex-wrap: wrap; }
+}
+@media (pointer: coarse) {
+  subscription-editor button, subscription-editor select, subscription-editor input:not([type="checkbox"]) { min-height: 44px; }
+  subscription-editor input:not([type="checkbox"]), subscription-editor select { font-size: 16px; }
+  .binding-order button { min-width: 44px; margin-right: 4px; }
+  .binding-table tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .binding-order { grid-column: 1 / -1; text-align: right; }
+}

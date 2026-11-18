@@ -51,7 +51,6 @@ test("sparse publications retain original values, times and freshness; duplicate
   assert.equal(s.active.get(1)!.bundles[1], original);
   assert.equal(currentValues(s,401).get(1)!.packet!.timestamp,100n);
   assert.equal(currentValues(s,601).get(1)!.stale,false, "Retained state stays current through ongoing publications");
-  assert.equal(currentValues(s,601).get(1)!.retained,true);
   assert.equal(currentValues(s,901).get(1)!.stale,true, "A continuous stream falling silent loses liveness");
   assert.equal(currentValues(s,601).get(2)!.stale,false);
   s.takeAcknowledgments();
@@ -124,7 +123,7 @@ test("on-change pose silence retains geometry and original acquisition metadata 
   s.tracking(packet,100);assert.equal(s.takeAcknowledgments().length,1);
   const original=s.active.get(1)!.bundles[1];
   const value=currentValues(s,60_000).get(0)!;
-  assert.equal(value.retained,true);assert.equal(value.stale,false);assert.equal(value.packet!.timestamp,100n);
+  assert.equal(value.stale,false);assert.equal(value.packet!.timestamp,100n);
   assert.equal(s.active.get(1)!.bundles[1],original);
   assert.equal(spatialFrames(s,60_000).poses.poses.length,1);
   assert.equal(s.freshness(60_000).status,"Inactive","Intentional silence does not establish live acquisition freshness");

@@ -20,7 +20,7 @@ export const staleBundle = (s: Subscription, index: number, now: number, retaine
   const progress = index === 0 ? b.acquiredAtArrival : s.acquiredAtArrival;
   return progress === undefined || now - progress > Math.max(500, 3000 / publicationRate(s.request));
 };
-export type CurrentValue = { value: Value | null; stale: boolean; retained: boolean; subscription: Subscription; selection: number; packet?: Packet };
+export type CurrentValue = { value: Value | null; stale: boolean; subscription: Subscription; selection: number; packet?: Packet };
 export function currentValues(session: Session | undefined, now: number) {
   const values = new Map<number, CurrentValue>();
   const distance = (packet: Packet | undefined) => {
@@ -38,7 +38,7 @@ export function currentValues(session: Session | undefined, now: number) {
         const error = distance(packet), previousError = distance(old?.packet);
         const closer = error !== undefined && previousError !== undefined && error !== previousError
           ? error < previousError : (packet?.timestamp ?? -1n) > (old?.packet?.timestamp ?? -1n);
-        if (!old || closer) values.set(sample.descriptor, { value: received?.values[within] ?? null, stale: staleBundle(s, index, now, retainedDefinition), retained: index > 0, subscription: s, selection: i, packet });
+        if (!old || closer) values.set(sample.descriptor, { value: received?.values[within] ?? null, stale: staleBundle(s, index, now, retainedDefinition), subscription: s, selection: i, packet });
         i++;
       });
     });
