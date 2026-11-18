@@ -25,10 +25,11 @@ We use [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) to concoct android compi
 cargo binstall cargo-ndk
 ```
 
-### Java SDK
+### APK packaging
 
-Install a JDK. The included Gradle wrapper downloads Gradle 9.9.1 on first use.
-This version of Gradle runs on Java 17–27. [Gradle compatibility matrix](https://docs.gradle.org/9.9.1/userguide/compatibility.html)
+Install [CMake 4.5 or newer](https://cmake.org/download/) and put its `cpack`
+command on your PATH. The phone app is written in Rust. CPack uses a host JDK
+to package Google's ARCore library and sign the APK.
 
 We tested the build with JDK 25, available on Ubuntu through APT.
 
@@ -66,11 +67,10 @@ export ANDROID_HOME="$HOME/Android/Sdk"
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 ```
 
-Gradle calls `cargo ndk` to build the Rust library, compiles the Java activity
-that handles the phone UI, sensors, and ARCore, and packages both into a signed APK.
+Build the signed ARM64 APK. The first build downloads the ARCore SDK.
 
 ```sh
-./gradlew assembleDebug
+cpack --config apk.cmake
 ```
 
 Connect the phone to ADB using either method.
@@ -82,13 +82,11 @@ Connect the phone to ADB using either method.
   If the paired phone is missing from `adb devices -l`, run `adb connect IP:CONNECTION_PORT`
   using the address on the main **Wireless debugging** screen.
 
-Once `adb devices -l` lists the phone as `device`, install the APK.
+Once `adb devices -l` lists the phone as `device`, install or update the APK.
 
 ```sh
-adb install -r build/android/outputs/apk/debug/phone-operator-debug.apk
+adb install -r build/phone-operator-debug.apk
 ```
-
-For subsequent edits, `./gradlew installDebug` builds and installs in one step.
 
 ## First use
 
