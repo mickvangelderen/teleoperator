@@ -1,0 +1,3026 @@
+{
+  "protocol_version": 1,
+  "requirements_commit": "da17cd684a906ca77ab66aa90912ccdb8ea0d017",
+  "purpose": "Static protocol v1 wire expectations shared by independent Rust, TypeScript and Python checks.",
+  "integer_representation": "u64 times, durations and all publication sequence numbers use decimal strings; optional values use null; omitted bundles use null; floats compare after format rounding.",
+  "capabilities": {
+    "device": {
+      "sample_groups": [
+        {
+          "max_sample_rate_hz": 200.0
+        },
+        {
+          "max_sample_rate_hz": 90.0
+        }
+      ],
+      "sample_descriptors": [
+        {
+          "id": "/sample/0",
+          "name": "",
+          "description": "",
+          "kind": 2,
+          "supported_formats": [
+            1
+          ],
+          "group": 0,
+          "press_count_sample": 1,
+          "release_count_sample": 2
+        },
+        {
+          "id": "/sample/1",
+          "name": "",
+          "description": "",
+          "kind": 3,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/2",
+          "name": "",
+          "description": "",
+          "kind": 4,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/3",
+          "name": "",
+          "description": "",
+          "kind": 8,
+          "supported_formats": [
+            10,
+            11,
+            12,
+            13
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/4",
+          "name": "",
+          "description": "",
+          "kind": 5,
+          "supported_formats": [
+            1
+          ],
+          "group": 0,
+          "touch_count_sample": 5,
+          "untouch_count_sample": 6
+        },
+        {
+          "id": "/sample/5",
+          "name": "",
+          "description": "",
+          "kind": 6,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/6",
+          "name": "",
+          "description": "",
+          "kind": 7,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0
+        },
+        {
+          "id": "﻿/pose/左",
+          "name": "Left pose 🖐",
+          "description": "",
+          "kind": 10,
+          "supported_formats": [
+            10,
+            11
+          ],
+          "group": 0,
+          "supported_spaces": [
+            2,
+            5,
+            6
+          ],
+          "position_valid_sample": 8,
+          "orientation_valid_sample": 9,
+          "position_tracked_sample": 10,
+          "orientation_tracked_sample": 11,
+          "confidence_sample": 12
+        },
+        {
+          "id": "/sample/8",
+          "name": "",
+          "description": "",
+          "kind": 12,
+          "supported_formats": [
+            1
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/9",
+          "name": "",
+          "description": "",
+          "kind": 13,
+          "supported_formats": [
+            1
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/10",
+          "name": "",
+          "description": "",
+          "kind": 14,
+          "supported_formats": [
+            1
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/11",
+          "name": "",
+          "description": "",
+          "kind": 15,
+          "supported_formats": [
+            1
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/12",
+          "name": "",
+          "description": "",
+          "kind": 16,
+          "supported_formats": [
+            10,
+            11,
+            12,
+            13
+          ],
+          "group": 0
+        },
+        {
+          "id": "/sample/13",
+          "name": "",
+          "description": "",
+          "kind": 10,
+          "supported_formats": [
+            10,
+            11
+          ],
+          "group": 1,
+          "supported_spaces": [
+            5,
+            6
+          ],
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": null
+        },
+        {
+          "id": "/sample/14",
+          "name": "",
+          "description": "",
+          "kind": 11,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 0,
+          "revision_of": 1
+        },
+        {
+          "id": "/sample/15",
+          "name": "",
+          "description": "",
+          "kind": 11,
+          "supported_formats": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "group": 1,
+          "revision_of": 1
+        },
+        {
+          "id": "/sample/16",
+          "name": "",
+          "description": "",
+          "kind": 10,
+          "supported_formats": [
+            10,
+            11
+          ],
+          "group": 0,
+          "supported_spaces": [
+            2,
+            5,
+            6
+          ],
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": 12
+        },
+        {
+          "id": "/sample/17",
+          "name": "",
+          "description": "",
+          "kind": 10,
+          "supported_formats": [
+            10,
+            11
+          ],
+          "group": 1,
+          "supported_spaces": [
+            5,
+            6
+          ],
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": null
+        }
+      ],
+      "skeletons": [
+        {
+          "joints": [
+            {
+              "parent": 0,
+              "pose_sample": 7,
+              "rest_pose_sample": 13
+            },
+            {
+              "parent": 0,
+              "pose_sample": 16,
+              "rest_pose_sample": 17
+            }
+          ]
+        }
+      ]
+    },
+    "compact_inputs": {
+      "sample_groups": [
+        {
+          "max_sample_rate_hz": 200.0
+        }
+      ],
+      "sample_descriptors": [
+        {
+          "description": "",
+          "group": 0,
+          "id": "0",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "1",
+          "kind": 3,
+          "name": "",
+          "supported_formats": [
+            2
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "2",
+          "kind": 8,
+          "name": "",
+          "supported_formats": [
+            12
+          ]
+        }
+      ],
+      "skeletons": []
+    },
+    "poses": {
+      "sample_groups": [
+        {
+          "max_sample_rate_hz": 200.0
+        }
+      ],
+      "sample_descriptors": [
+        {
+          "description": "Position and orientation",
+          "group": 0,
+          "id": "/pose/左",
+          "kind": 10,
+          "name": "Left pose 🖐",
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": null,
+          "supported_formats": [
+            10
+          ],
+          "supported_spaces": [
+            2
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "1",
+          "kind": 10,
+          "name": "",
+          "position_valid_sample": null,
+          "orientation_valid_sample": null,
+          "position_tracked_sample": null,
+          "orientation_tracked_sample": null,
+          "confidence_sample": null,
+          "supported_formats": [
+            11
+          ],
+          "supported_spaces": [
+            2
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "2",
+          "kind": 9,
+          "name": "",
+          "supported_formats": [
+            14
+          ]
+        }
+      ],
+      "skeletons": []
+    },
+    "booleans": {
+      "sample_groups": [
+        {
+          "max_sample_rate_hz": 200.0
+        }
+      ],
+      "sample_descriptors": [
+        {
+          "description": "",
+          "group": 0,
+          "id": "0",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "1",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "2",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "3",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "4",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "5",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "6",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "7",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "8",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        },
+        {
+          "description": "",
+          "group": 0,
+          "id": "9",
+          "kind": 2,
+          "name": "",
+          "press_count_sample": null,
+          "release_count_sample": null,
+          "supported_formats": [
+            1
+          ]
+        }
+      ],
+      "skeletons": []
+    }
+  },
+  "requests": {
+    "inputs": {
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 7,
+        "channel": 1,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "5000000",
+        "prediction_offset": "25000000",
+        "sequence_number_format": null,
+        "bundles": [
+          [
+            {
+              "descriptor": 0,
+              "format": 1
+            },
+            {
+              "descriptor": 1,
+              "format": 2
+            },
+            {
+              "descriptor": 3,
+              "format": 12
+            }
+          ]
+        ]
+      }
+    },
+    "quality": {
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 8,
+        "channel": 1,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "0",
+        "prediction_offset": "0",
+        "sequence_number_format": 1,
+        "bundles": [
+          [],
+          [
+            {
+              "descriptor": 7,
+              "format": 10,
+              "reference_space": 2
+            },
+            {
+              "descriptor": 8,
+              "format": 1
+            },
+            {
+              "descriptor": 9,
+              "format": 1
+            },
+            {
+              "descriptor": 12,
+              "format": 12
+            },
+            {
+              "descriptor": 14,
+              "format": 4
+            }
+          ]
+        ]
+      }
+    },
+    "rest": {
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 9,
+        "channel": 2,
+        "group": 1,
+        "interval": "16666667",
+        "phase": "0",
+        "prediction_offset": "0",
+        "sequence_number_format": 2,
+        "bundles": [
+          [],
+          [
+            {
+              "descriptor": 13,
+              "format": 10,
+              "reference_space": 5
+            },
+            {
+              "descriptor": 17,
+              "format": 11,
+              "reference_space": 5
+            },
+            {
+              "descriptor": 15,
+              "format": 4
+            }
+          ]
+        ]
+      }
+    },
+    "model_periodic": {
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 10,
+        "channel": 2,
+        "group": 1,
+        "interval": "20000000",
+        "phase": "25000000",
+        "prediction_offset": "0",
+        "sequence_number_format": 3,
+        "bundles": [
+          [
+            {
+              "descriptor": 13,
+              "format": 10,
+              "reference_space": 6
+            },
+            {
+              "descriptor": 17,
+              "format": 11,
+              "reference_space": 6
+            },
+            {
+              "descriptor": 15,
+              "format": 4
+            }
+          ]
+        ]
+      }
+    },
+    "compact_inputs": {
+      "capabilities": "compact_inputs",
+      "value": {
+        "subscription_id": 7,
+        "channel": 1,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "0",
+        "prediction_offset": "0",
+        "sequence_number_format": null,
+        "bundles": [
+          [
+            {
+              "descriptor": 0,
+              "format": 1
+            },
+            {
+              "descriptor": 1,
+              "format": 2
+            },
+            {
+              "descriptor": 2,
+              "format": 12
+            }
+          ]
+        ]
+      }
+    },
+    "poses": {
+      "capabilities": "poses",
+      "value": {
+        "subscription_id": 7,
+        "channel": 1,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "0",
+        "prediction_offset": "0",
+        "sequence_number_format": null,
+        "bundles": [
+          [
+            {
+              "descriptor": 0,
+              "format": 10,
+              "reference_space": 2
+            },
+            {
+              "descriptor": 1,
+              "format": 11,
+              "reference_space": 2
+            },
+            {
+              "descriptor": 2,
+              "format": 14
+            }
+          ]
+        ]
+      }
+    },
+    "booleans": {
+      "capabilities": "booleans",
+      "value": {
+        "subscription_id": 7,
+        "channel": 1,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "0",
+        "prediction_offset": "0",
+        "sequence_number_format": null,
+        "bundles": [
+          [
+            {
+              "descriptor": 0,
+              "format": 1
+            },
+            {
+              "descriptor": 1,
+              "format": 1
+            },
+            {
+              "descriptor": 2,
+              "format": 1
+            },
+            {
+              "descriptor": 3,
+              "format": 1
+            },
+            {
+              "descriptor": 4,
+              "format": 1
+            },
+            {
+              "descriptor": 5,
+              "format": 1
+            },
+            {
+              "descriptor": 6,
+              "format": 1
+            },
+            {
+              "descriptor": 7,
+              "format": 1
+            },
+            {
+              "descriptor": 8,
+              "format": 1
+            },
+            {
+              "descriptor": 9,
+              "format": 1
+            }
+          ]
+        ]
+      }
+    },
+    "mixed": {
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 11,
+        "channel": 1,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "5000000",
+        "prediction_offset": "25000000",
+        "sequence_number_format": 1,
+        "bundles": [
+          [
+            {
+              "descriptor": 0,
+              "format": 1
+            },
+            {
+              "descriptor": 1,
+              "format": 2
+            }
+          ],
+          [
+            {
+              "descriptor": 4,
+              "format": 1
+            },
+            {
+              "descriptor": 3,
+              "format": 12
+            }
+          ],
+          [
+            {
+              "descriptor": 8,
+              "format": 1
+            },
+            {
+              "descriptor": 2,
+              "format": 3
+            }
+          ]
+        ]
+      }
+    },
+    "mixed_reliable": {
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 11,
+        "channel": 2,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "5000000",
+        "prediction_offset": "25000000",
+        "sequence_number_format": 1,
+        "bundles": [
+          [
+            {
+              "descriptor": 0,
+              "format": 1
+            },
+            {
+              "descriptor": 1,
+              "format": 2
+            }
+          ],
+          [
+            {
+              "descriptor": 4,
+              "format": 1
+            },
+            {
+              "descriptor": 3,
+              "format": 12
+            }
+          ],
+          [
+            {
+              "descriptor": 8,
+              "format": 1
+            },
+            {
+              "descriptor": 2,
+              "format": 3
+            }
+          ]
+        ]
+      }
+    },
+    "presence_boundary": {
+      "capabilities": "booleans",
+      "value": {
+        "subscription_id": 12,
+        "channel": 1,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "5000000",
+        "prediction_offset": "25000000",
+        "sequence_number_format": 2,
+        "bundles": [
+          [],
+          [
+            {
+              "descriptor": 0,
+              "format": 1
+            }
+          ],
+          [
+            {
+              "descriptor": 1,
+              "format": 1
+            }
+          ],
+          [
+            {
+              "descriptor": 2,
+              "format": 1
+            }
+          ],
+          [
+            {
+              "descriptor": 3,
+              "format": 1
+            }
+          ],
+          [
+            {
+              "descriptor": 4,
+              "format": 1
+            }
+          ],
+          [
+            {
+              "descriptor": 5,
+              "format": 1
+            }
+          ],
+          [
+            {
+              "descriptor": 6,
+              "format": 1
+            }
+          ],
+          [
+            {
+              "descriptor": 7,
+              "format": 1
+            }
+          ],
+          [
+            {
+              "descriptor": 8,
+              "format": 1
+            }
+          ]
+        ]
+      }
+    },
+    "empty": {
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 13,
+        "channel": 1,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "5000000",
+        "prediction_offset": "25000000",
+        "sequence_number_format": null,
+        "bundles": [
+          []
+        ]
+      }
+    },
+    "sequenced_continuous": {
+      "capabilities": "device",
+      "value": {
+        "subscription_id": 14,
+        "channel": 1,
+        "group": 0,
+        "interval": "16666667",
+        "phase": "5000000",
+        "prediction_offset": "25000000",
+        "sequence_number_format": 3,
+        "bundles": [
+          [
+            {
+              "descriptor": 0,
+              "format": 1
+            }
+          ]
+        ]
+      }
+    }
+  },
+  "records": [
+    {
+      "name": "offer",
+      "tag": 1,
+      "value": {
+        "supported_versions": [
+          1
+        ]
+      },
+      "hex": "01010000000100"
+    },
+    {
+      "name": "selection",
+      "tag": 2,
+      "value": {
+        "selected_version": 1
+      },
+      "hex": "020100"
+    },
+    {
+      "name": "capabilities",
+      "tag": 3,
+      "hex": "0302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b000000000300000002050608000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b0000000003000000020506ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff010000000200000000000000070000000d000000000000001000000011000000",
+      "capabilities": "device"
+    },
+    {
+      "name": "shared_joint_descriptors_same_parent",
+      "tag": 3,
+      "hex": "0302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b000000000300000002050608000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b0000000003000000020506ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff010000000300000000000000070000000d000000000000001000000011000000000000001000000011000000",
+      "capabilities": "device",
+      "skeletons": [
+        {
+          "joints": [
+            {
+              "parent": 0,
+              "pose_sample": 7,
+              "rest_pose_sample": 13
+            },
+            {
+              "parent": 0,
+              "pose_sample": 16,
+              "rest_pose_sample": 17
+            },
+            {
+              "parent": 0,
+              "pose_sample": 16,
+              "rest_pose_sample": 17
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "request_inputs",
+      "tag": 4,
+      "hex": "040700000000000000012b50fe0000000000404b4c000000000040787d010000000000010000000300000000000000010100000002030000000c",
+      "request": "inputs"
+    },
+    {
+      "name": "request_quality",
+      "tag": 4,
+      "hex": "040800000000000000012b50fe00000000000000000000000000000000000000000001020000000000000005000000070000000a02080000000109000000010c0000000c0e00000004",
+      "request": "quality"
+    },
+    {
+      "name": "request_rest",
+      "tag": 4,
+      "hex": "040900000001000000022b50fe000000000000000000000000000000000000000000020200000000000000030000000d0000000a05110000000b050f00000004",
+      "request": "rest"
+    },
+    {
+      "name": "acceptance",
+      "tag": 5,
+      "value": {
+        "subscription_id": 7
+      },
+      "hex": "0507000000"
+    },
+    {
+      "name": "rejection",
+      "tag": 6,
+      "value": {
+        "subscription_id": 7,
+        "reason": "Unavailable representation"
+      },
+      "hex": "0607000000011a000000556e617661696c61626c6520726570726573656e746174696f6e"
+    },
+    {
+      "name": "unsubscribe",
+      "tag": 7,
+      "value": {
+        "subscription_id": 7
+      },
+      "hex": "0707000000"
+    },
+    {
+      "name": "ended_client_request",
+      "tag": 8,
+      "value": {
+        "subscription_id": 7,
+        "reason": "Client request"
+      },
+      "hex": "08070000000e000000436c69656e742072657175657374"
+    },
+    {
+      "name": "request_model_periodic",
+      "tag": 4,
+      "hex": "040a0000000100000002002d31010000000040787d010000000000000000000000000301000000030000000d0000000a06110000000b060f00000004",
+      "request": "model_periodic"
+    },
+    {
+      "name": "rejection_without_reason",
+      "tag": 6,
+      "value": {
+        "subscription_id": 7,
+        "reason": null
+      },
+      "hex": "060700000000"
+    },
+    {
+      "name": "rejection_empty_reason",
+      "tag": 6,
+      "value": {
+        "subscription_id": 7,
+        "reason": ""
+      },
+      "hex": "06070000000100000000"
+    },
+    {
+      "name": "update_timing",
+      "tag": 12,
+      "value": {
+        "subscription_id": 7,
+        "interval": "10000000",
+        "phase": "25000000",
+        "prediction_offset": "9007199254740993"
+      },
+      "hex": "0c07000000809698000000000040787d01000000000100000000002000"
+    },
+    {
+      "name": "capabilities_poses",
+      "tag": 3,
+      "hex": "03010000000000484303000000090000002f706f73652fe5b7a60e0000004c65667420706f736520f09f969018000000506f736974696f6e20616e64206f7269656e746174696f6e0a010000000a000000000100000002ffffffffffffffffffffffffffffffffffffffff010000003100000000000000000a010000000b000000000100000002ffffffffffffffffffffffffffffffffffffffff0100000032000000000000000009010000000e0000000000000000",
+      "capabilities": "poses"
+    },
+    {
+      "name": "request_compact_inputs",
+      "tag": 4,
+      "hex": "040700000000000000012b50fe00000000000000000000000000000000000000000000010000000300000000000000010100000002020000000c",
+      "request": "compact_inputs"
+    },
+    {
+      "name": "rejection_rate_unavailable",
+      "tag": 6,
+      "hex": "060700000001100000005261746520756e617661696c61626c65",
+      "value": {
+        "subscription_id": 7,
+        "reason": "Rate unavailable"
+      }
+    },
+    {
+      "name": "ended_device_lost",
+      "tag": 8,
+      "hex": "08070000000b000000446576696365206c6f7374",
+      "value": {
+        "subscription_id": 7,
+        "reason": "Device lost"
+      }
+    },
+    {
+      "name": "request_poses",
+      "tag": 4,
+      "request": "poses",
+      "hex": "040700000000000000012b50fe000000000000000000000000000000000000000000000100000003000000000000000a02010000000b02020000000e"
+    },
+    {
+      "name": "request_booleans",
+      "tag": 4,
+      "request": "booleans",
+      "hex": "040700000000000000012b50fe00000000000000000000000000000000000000000000010000000a0000000000000001010000000102000000010300000001040000000105000000010600000001070000000108000000010900000001"
+    },
+    {
+      "name": "request_mixed",
+      "tag": 4,
+      "request": "mixed",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003"
+    },
+    {
+      "name": "request_mixed_reliable",
+      "tag": 4,
+      "request": "mixed_reliable",
+      "hex": "040b00000000000000022b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003"
+    },
+    {
+      "name": "request_presence_boundary",
+      "tag": 4,
+      "request": "presence_boundary",
+      "hex": "040c00000000000000012b50fe0000000000404b4c000000000040787d0100000000020a00000000000000010000000000000001010000000100000001010000000200000001010000000300000001010000000400000001010000000500000001010000000600000001010000000700000001010000000800000001"
+    },
+    {
+      "name": "request_empty",
+      "tag": 4,
+      "request": "empty",
+      "hex": "040d00000000000000012b50fe0000000000404b4c000000000040787d0100000000000100000000000000"
+    },
+    {
+      "name": "request_sequenced_continuous",
+      "tag": 4,
+      "request": "sequenced_continuous",
+      "hex": "040e00000000000000012b50fe0000000000404b4c000000000040787d01000000000301000000010000000000000001"
+    }
+  ],
+  "publications": [
+    {
+      "name": "input_values",
+      "value": {
+        "subscription_id": 7,
+        "acquired_at": "1000000000",
+        "predicted_for": null,
+        "sequence_number": null,
+        "bundles": [
+          [
+            true,
+            254,
+            0.5019607843137255
+          ]
+        ]
+      },
+      "hex": "090700000000ca9a3b00000000ffffffffffffffff01fe80",
+      "requests": [
+        "inputs",
+        "compact_inputs"
+      ]
+    },
+    {
+      "name": "counter_wrap",
+      "value": {
+        "subscription_id": 7,
+        "acquired_at": "1020000000",
+        "predicted_for": null,
+        "sequence_number": null,
+        "bundles": [
+          [
+            false,
+            1,
+            0
+          ]
+        ]
+      },
+      "hex": "090700000000f7cb3c00000000ffffffffffffffff000100",
+      "requests": [
+        "inputs",
+        "compact_inputs"
+      ]
+    },
+    {
+      "name": "false_and_zero",
+      "value": {
+        "subscription_id": 7,
+        "acquired_at": "1040000000",
+        "predicted_for": null,
+        "sequence_number": null,
+        "bundles": [
+          [
+            false,
+            0,
+            0
+          ]
+        ]
+      },
+      "hex": "09070000000024fd3d00000000ffffffffffffffff000000",
+      "requests": [
+        "inputs",
+        "compact_inputs"
+      ]
+    },
+    {
+      "name": "pose_and_quality",
+      "value": {
+        "subscription_id": 8,
+        "acquired_at": "9007199254740993",
+        "predicted_for": "9007199279740993",
+        "sequence_number": "0",
+        "bundles": [
+          [],
+          [
+            [
+              1,
+              -2,
+              0.5,
+              0,
+              0,
+              0.6,
+              0.8
+            ],
+            false,
+            true,
+            0.5019607843137255,
+            7
+          ]
+        ]
+      },
+      "hex": "0908000000010000000000200041787d0100002000000001020000803f000000c00000003f00000000000000009a99193fcdcc4c3f8007000000",
+      "requests": [
+        "quality"
+      ]
+    },
+    {
+      "name": "reliable_rest",
+      "value": {
+        "subscription_id": 9,
+        "acquired_at": "9007199254740993",
+        "predicted_for": null,
+        "sequence_number": "0",
+        "bundles": [
+          [],
+          [
+            [
+              1,
+              2,
+              3,
+              0,
+              0,
+              0,
+              1
+            ],
+            [
+              0.25,
+              0.5,
+              0.75,
+              0,
+              0,
+              0.6,
+              0.8
+            ],
+            7
+          ]
+        ]
+      },
+      "hex": "09090000000100000000002000ffffffffffffffff00000000010000803f00000040000040400000000000000000000000000000803f000000000000d03f000000000000e03f000000000000e83f00000000000000000000000000000000333333333333e33f9a9999999999e93f07000000",
+      "requests": [
+        "rest"
+      ]
+    },
+    {
+      "name": "model_periodic",
+      "value": {
+        "subscription_id": 10,
+        "acquired_at": "9007199254740993",
+        "predicted_for": null,
+        "sequence_number": "0",
+        "bundles": [
+          [
+            [
+              1,
+              2,
+              3,
+              0,
+              0,
+              0,
+              1
+            ],
+            [
+              0.25,
+              0.5,
+              0.75,
+              0,
+              0,
+              0.6,
+              0.8
+            ],
+            7
+          ]
+        ]
+      },
+      "hex": "090a0000000100000000002000ffffffffffffffff00000000000000000000803f00000040000040400000000000000000000000000000803f000000000000d03f000000000000e03f000000000000e83f00000000000000000000000000000000333333333333e33f9a9999999999e93f07000000",
+      "requests": [
+        "model_periodic"
+      ]
+    },
+    {
+      "name": "poses_and_thumbstick",
+      "requests": [
+        "poses"
+      ],
+      "value": {
+        "subscription_id": 7,
+        "acquired_at": "9007199254740993",
+        "predicted_for": "9007199279740993",
+        "sequence_number": null,
+        "bundles": [
+          [
+            [
+              1.0,
+              -2.0,
+              0.5,
+              0.0,
+              0.0,
+              0.6000000238418579,
+              0.800000011920929
+            ],
+            [
+              1.0,
+              -2.0,
+              0.5,
+              0.0,
+              0.0,
+              0.6,
+              0.8
+            ],
+            [
+              -1,
+              1
+            ]
+          ]
+        ]
+      },
+      "hex": "0907000000010000000000200041787d01000020000000803f000000c00000003f00000000000000009a99193fcdcc4c3f000000000000f03f00000000000000c0000000000000e03f00000000000000000000000000000000333333333333e33f9a9999999999e93f817f"
+    },
+    {
+      "name": "boolean_byte_boundary",
+      "requests": [
+        "booleans"
+      ],
+      "value": {
+        "subscription_id": 7,
+        "acquired_at": "0",
+        "predicted_for": null,
+        "sequence_number": null,
+        "bundles": [
+          [
+            true,
+            false,
+            true,
+            false,
+            true,
+            false,
+            true,
+            false,
+            true,
+            false
+          ]
+        ]
+      },
+      "hex": "09070000000000000000000000ffffffffffffffff5501"
+    },
+    {
+      "name": "mixed_all",
+      "requests": [
+        "mixed",
+        "mixed_reliable"
+      ],
+      "value": {
+        "subscription_id": 11,
+        "acquired_at": "200",
+        "predicted_for": null,
+        "sequence_number": "65535",
+        "bundles": [
+          [
+            true,
+            254
+          ],
+          [
+            false,
+            0.5019607843137255
+          ],
+          [
+            true,
+            4660
+          ]
+        ]
+      },
+      "hex": "090b000000c800000000000000ffffffffffffffffffff0301fe0080013412"
+    },
+    {
+      "name": "mixed_sparse_wrap",
+      "requests": [
+        "mixed",
+        "mixed_reliable"
+      ],
+      "value": {
+        "subscription_id": 11,
+        "acquired_at": "220",
+        "predicted_for": null,
+        "sequence_number": "0",
+        "bundles": [
+          [
+            false,
+            1
+          ],
+          null,
+          [
+            false,
+            4661
+          ]
+        ]
+      },
+      "hex": "090b000000dc00000000000000ffffffffffffffff0000020001003512"
+    },
+    {
+      "name": "mixed_only_continuous",
+      "requests": [
+        "mixed",
+        "mixed_reliable"
+      ],
+      "value": {
+        "subscription_id": 11,
+        "acquired_at": "240",
+        "predicted_for": null,
+        "sequence_number": "1",
+        "bundles": [
+          [
+            true,
+            2
+          ],
+          null,
+          null
+        ]
+      },
+      "hex": "090b000000f000000000000000ffffffffffffffff0100000102"
+    },
+    {
+      "name": "empty_continuous_pending",
+      "requests": [
+        "quality"
+      ],
+      "value": {
+        "subscription_id": 8,
+        "acquired_at": "200",
+        "predicted_for": null,
+        "sequence_number": "1",
+        "bundles": [
+          [],
+          [
+            [
+              1,
+              -2,
+              0.5,
+              0,
+              0,
+              0.6,
+              0.8
+            ],
+            false,
+            true,
+            0.5019607843137255,
+            7
+          ]
+        ]
+      },
+      "hex": "0908000000c800000000000000ffffffffffffffff010001020000803f000000c00000003f00000000000000009a99193fcdcc4c3f8007000000"
+    },
+    {
+      "name": "presence_crosses_byte",
+      "requests": [
+        "presence_boundary"
+      ],
+      "value": {
+        "subscription_id": 12,
+        "acquired_at": "200",
+        "predicted_for": null,
+        "sequence_number": "4294967295",
+        "bundles": [
+          [],
+          [
+            true
+          ],
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          [
+            false
+          ],
+          [
+            true
+          ]
+        ]
+      },
+      "hex": "090c000000c800000000000000ffffffffffffffffffffffff8101010001"
+    },
+    {
+      "name": "sequence_u64_max",
+      "requests": [
+        "sequenced_continuous"
+      ],
+      "value": {
+        "subscription_id": 14,
+        "acquired_at": "200",
+        "predicted_for": null,
+        "sequence_number": "18446744073709551615",
+        "bundles": [
+          [
+            true
+          ]
+        ]
+      },
+      "hex": "090e000000c800000000000000ffffffffffffffffffffffffffffffff01"
+    },
+    {
+      "name": "sequence_u64_wrap",
+      "requests": [
+        "sequenced_continuous"
+      ],
+      "value": {
+        "subscription_id": 14,
+        "acquired_at": "220",
+        "predicted_for": null,
+        "sequence_number": "0",
+        "bundles": [
+          [
+            false
+          ]
+        ]
+      },
+      "hex": "090e000000dc00000000000000ffffffffffffffff000000000000000000"
+    },
+    {
+      "name": "ignored_bitmap_padding",
+      "requests": [
+        "mixed",
+        "mixed_reliable"
+      ],
+      "value": {
+        "subscription_id": 11,
+        "acquired_at": "260",
+        "predicted_for": null,
+        "sequence_number": "2",
+        "bundles": [
+          [
+            false,
+            1
+          ],
+          null,
+          [
+            false,
+            4661
+          ]
+        ]
+      },
+      "hex": "090b0000000401000000000000ffffffffffffffff0200fe8001fe3512"
+    }
+  ],
+  "formats": [
+    {
+      "decoded": "true",
+      "format": 1,
+      "hex": "01",
+      "name": "bit",
+      "value": "true"
+    },
+    {
+      "decoded": "255",
+      "format": 2,
+      "hex": "ff",
+      "name": "u8",
+      "value": "255"
+    },
+    {
+      "decoded": "65535",
+      "format": 3,
+      "hex": "ffff",
+      "name": "u16",
+      "value": "65535"
+    },
+    {
+      "decoded": "4294967295",
+      "format": 4,
+      "hex": "ffffffff",
+      "name": "u32",
+      "value": "4294967295"
+    },
+    {
+      "decoded": "18446744073709551615",
+      "format": 5,
+      "hex": "ffffffffffffffff",
+      "name": "u64",
+      "value": "18446744073709551615"
+    },
+    {
+      "decoded": "-128",
+      "format": 6,
+      "hex": "80",
+      "name": "i8",
+      "value": "-128"
+    },
+    {
+      "decoded": "-32768",
+      "format": 7,
+      "hex": "0080",
+      "name": "i16",
+      "value": "-32768"
+    },
+    {
+      "decoded": "-2147483648",
+      "format": 8,
+      "hex": "00000080",
+      "name": "i32",
+      "value": "-2147483648"
+    },
+    {
+      "decoded": "-9223372036854775808",
+      "format": 9,
+      "hex": "0000000000000080",
+      "name": "i64",
+      "value": "-9223372036854775808"
+    },
+    {
+      "decoded": "1.5",
+      "format": 10,
+      "hex": "0000c03f",
+      "name": "f32",
+      "value": "1.5"
+    },
+    {
+      "decoded": "-2.25",
+      "format": 11,
+      "hex": "00000000000002c0",
+      "name": "f64",
+      "value": "-2.25"
+    },
+    {
+      "decoded": "0.5019607843137255",
+      "format": 12,
+      "hex": "80",
+      "name": "unorm8",
+      "value": "0.5"
+    },
+    {
+      "decoded": "0.5000076295109483",
+      "format": 13,
+      "hex": "0080",
+      "name": "unorm16",
+      "value": "0.5"
+    },
+    {
+      "decoded": "-1",
+      "format": 14,
+      "hex": "81",
+      "name": "snorm8",
+      "value": "-1"
+    },
+    {
+      "decoded": "-1",
+      "format": 15,
+      "hex": "0180",
+      "name": "snorm16",
+      "value": "-1"
+    }
+  ],
+  "clock_examples": [
+    {
+      "timestamps_ns": [
+        1000,
+        1200,
+        1300,
+        1300
+      ],
+      "server_minus_client_ns": 100,
+      "round_trip_delay_ns": 200,
+      "acquired_at_ns": 1150,
+      "client_sample_time_ns": 1050,
+      "precision_ns": 1
+    },
+    {
+      "timestamps_ns": [
+        5000,
+        1200,
+        1300,
+        5300
+      ],
+      "server_minus_client_ns": -3900,
+      "round_trip_delay_ns": 200,
+      "acquired_at_ns": 1150,
+      "client_sample_time_ns": 5050,
+      "precision_ns": 1
+    },
+    {
+      "timestamps_ns": [
+        1000,
+        1200,
+        1300,
+        1050
+      ],
+      "precision_ns": 10,
+      "server_minus_client_ns": 225,
+      "round_trip_delay_ns": 10,
+      "acquired_at_ns": 1150,
+      "client_sample_time_ns": 925
+    }
+  ],
+  "datagrams": [
+    {
+      "name": "clock_request",
+      "tag": 10,
+      "value": {
+        "request_id": 42
+      },
+      "hex": "0a2a000000"
+    },
+    {
+      "name": "clock_response",
+      "tag": 11,
+      "value": {
+        "request_id": 42,
+        "received_at": "1200",
+        "sent_at": "1300"
+      },
+      "hex": "0b2a000000b0040000000000001405000000000000"
+    },
+    {
+      "name": "clock_response_large_timestamp",
+      "tag": 11,
+      "value": {
+        "request_id": 43,
+        "received_at": "9007199254740993",
+        "sent_at": "9007199254741993"
+      },
+      "hex": "0b2b0000000100000000002000e903000000002000"
+    },
+    {
+      "name": "ack_u16",
+      "tag": 13,
+      "request": "mixed",
+      "value": {
+        "subscription_id": 11,
+        "sequence_number": "65535"
+      },
+      "hex": "0d0b000000ffff"
+    },
+    {
+      "name": "ack_u16_wrap",
+      "tag": 13,
+      "request": "mixed",
+      "value": {
+        "subscription_id": 11,
+        "sequence_number": "0"
+      },
+      "hex": "0d0b0000000000"
+    },
+    {
+      "name": "ack_u32",
+      "tag": 13,
+      "request": "presence_boundary",
+      "value": {
+        "subscription_id": 12,
+        "sequence_number": "4294967295"
+      },
+      "hex": "0d0c000000ffffffff"
+    },
+    {
+      "name": "ack_u64",
+      "tag": 13,
+      "request": "sequenced_continuous",
+      "value": {
+        "subscription_id": 14,
+        "sequence_number": "18446744073709551615"
+      },
+      "hex": "0d0e000000ffffffffffffffff"
+    }
+  ],
+  "time_values": [
+    {
+      "name": "zero_instant",
+      "optional": false,
+      "value": "0",
+      "hex": "0000000000000000"
+    },
+    {
+      "name": "large_instant",
+      "optional": false,
+      "value": "9007199254740993",
+      "hex": "0100000000002000"
+    },
+    {
+      "name": "maximum_present_time",
+      "optional": false,
+      "value": "18446744073709551614",
+      "hex": "feffffffffffffff"
+    },
+    {
+      "name": "absent_optional_time",
+      "optional": true,
+      "value": null,
+      "hex": "ffffffffffffffff"
+    }
+  ],
+  "schedule_examples": [
+    {
+      "now": "100",
+      "interval": "20",
+      "phase": "5",
+      "next_publication_time": "105",
+      "target_time": "135",
+      "prediction_offset": "30"
+    },
+    {
+      "now": "105",
+      "interval": "20",
+      "phase": "45",
+      "next_publication_time": "105",
+      "target_time": "105",
+      "prediction_offset": "0"
+    },
+    {
+      "now": "106",
+      "interval": "20",
+      "phase": "45",
+      "next_publication_time": "125",
+      "target_time": "155",
+      "prediction_offset": "30"
+    },
+    {
+      "now": "9007199254740993",
+      "interval": "10",
+      "phase": "0",
+      "next_publication_time": "9007199254741000",
+      "target_time": "9007199254741001",
+      "prediction_offset": "1"
+    },
+    {
+      "now": "18446744073709551614",
+      "interval": "10",
+      "phase": "0",
+      "next_publication_time": null,
+      "target_time": null,
+      "prediction_offset": "1"
+    },
+    {
+      "now": "18446744073709551610",
+      "interval": "10",
+      "phase": "0",
+      "next_publication_time": "18446744073709551610",
+      "target_time": null,
+      "prediction_offset": "5"
+    }
+  ],
+  "maintenance": "Static expected values and bytes are reviewed against the working specification, independently of application output. Sequence and acknowledgment traces express protocol behavior without prescribing application data structures.",
+  "sequence_examples": [
+    {
+      "format": 1,
+      "previous": "65535",
+      "current": "0",
+      "order": "newer"
+    },
+    {
+      "format": 1,
+      "previous": "0",
+      "current": "65535",
+      "order": "older"
+    },
+    {
+      "format": 1,
+      "previous": "1",
+      "current": "1",
+      "order": "duplicate"
+    },
+    {
+      "format": 1,
+      "previous": "0",
+      "current": "32768",
+      "order": "ambiguous"
+    },
+    {
+      "format": 1,
+      "previous": "0",
+      "current": "32767",
+      "order": "newer"
+    },
+    {
+      "format": 2,
+      "previous": "4294967295",
+      "current": "0",
+      "order": "newer"
+    },
+    {
+      "format": 2,
+      "previous": "0",
+      "current": "4294967295",
+      "order": "older"
+    },
+    {
+      "format": 2,
+      "previous": "1",
+      "current": "1",
+      "order": "duplicate"
+    },
+    {
+      "format": 2,
+      "previous": "0",
+      "current": "2147483648",
+      "order": "ambiguous"
+    },
+    {
+      "format": 2,
+      "previous": "0",
+      "current": "2147483647",
+      "order": "newer"
+    },
+    {
+      "format": 3,
+      "previous": "18446744073709551615",
+      "current": "0",
+      "order": "newer"
+    },
+    {
+      "format": 3,
+      "previous": "0",
+      "current": "18446744073709551615",
+      "order": "older"
+    },
+    {
+      "format": 3,
+      "previous": "1",
+      "current": "1",
+      "order": "duplicate"
+    },
+    {
+      "format": 3,
+      "previous": "0",
+      "current": "9223372036854775808",
+      "order": "ambiguous"
+    },
+    {
+      "format": 3,
+      "previous": "0",
+      "current": "9223372036854775807",
+      "order": "newer"
+    }
+  ],
+  "acknowledgment_traces": [
+    {
+      "name": "loss_supersession_exact_ack",
+      "sequence_format": 1,
+      "initial_sequence": "65534",
+      "continuous": false,
+      "history_limit": 8,
+      "steps": [
+        {
+          "acquire": [
+            "00",
+            "10"
+          ],
+          "pending": [
+            1,
+            2
+          ]
+        },
+        {
+          "publish": {
+            "sequence": "65534",
+            "included": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "publish": {
+            "sequence": "65535",
+            "included": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "acquire": [
+            "01",
+            "10"
+          ],
+          "pending": [
+            1,
+            2
+          ]
+        },
+        {
+          "publish": {
+            "sequence": "0",
+            "included": [
+              0,
+              1,
+              2
+            ]
+          }
+        },
+        {
+          "ack": "65534",
+          "pending": [
+            1
+          ]
+        },
+        {
+          "ack": "65534",
+          "pending": [
+            1
+          ]
+        },
+        {
+          "publish": {
+            "sequence": "1",
+            "included": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "acquire": [
+            "00",
+            "10"
+          ],
+          "pending": [
+            1
+          ]
+        },
+        {
+          "ack": "0",
+          "pending": [
+            1
+          ]
+        },
+        {
+          "ack": "1",
+          "pending": [
+            1
+          ]
+        },
+        {
+          "publish": {
+            "sequence": "2",
+            "included": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "ack": "99",
+          "pending": [
+            1
+          ]
+        },
+        {
+          "ack": "2",
+          "pending": []
+        },
+        {
+          "publish": null
+        },
+        {
+          "acquire": [
+            "00",
+            "10"
+          ],
+          "pending": []
+        },
+        {
+          "publish": null
+        },
+        {
+          "acquire": [
+            "00",
+            "11"
+          ],
+          "pending": [
+            2
+          ]
+        },
+        {
+          "publish": {
+            "sequence": "3",
+            "included": [
+              0,
+              2
+            ]
+          }
+        },
+        {
+          "ack": "1",
+          "pending": [
+            2
+          ]
+        },
+        {
+          "ack": "3",
+          "pending": []
+        }
+      ]
+    },
+    {
+      "name": "bounded_history_and_continuous",
+      "sequence_format": 2,
+      "initial_sequence": "0",
+      "continuous": true,
+      "history_limit": 1,
+      "steps": [
+        {
+          "acquire": [
+            "01"
+          ],
+          "pending": [
+            1
+          ]
+        },
+        {
+          "publish": {
+            "sequence": "0",
+            "included": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "publish": {
+            "sequence": "1",
+            "included": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "ack": "0",
+          "pending": [
+            1
+          ]
+        },
+        {
+          "ack": "1",
+          "pending": []
+        },
+        {
+          "publish": {
+            "sequence": "2",
+            "included": [
+              0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "empty_subscription_skips",
+      "sequence_format": null,
+      "initial_sequence": "0",
+      "continuous": false,
+      "history_limit": 1,
+      "steps": [
+        {
+          "acquire": [],
+          "pending": []
+        },
+        {
+          "publish": null
+        }
+      ]
+    }
+  ],
+  "receive_traces": [
+    {
+      "name": "per_bundle_reordering",
+      "sequence_format": 1,
+      "steps": [
+        {
+          "sequence": "65535",
+          "bundles": [
+            0,
+            1
+          ],
+          "apply": [
+            0,
+            1
+          ],
+          "ack": true
+        },
+        {
+          "sequence": "1",
+          "bundles": [
+            0,
+            2
+          ],
+          "apply": [
+            0,
+            2
+          ],
+          "ack": true
+        },
+        {
+          "sequence": "0",
+          "bundles": [
+            0,
+            1
+          ],
+          "apply": [
+            1
+          ],
+          "ack": true
+        },
+        {
+          "sequence": "0",
+          "bundles": [
+            0,
+            1
+          ],
+          "apply": [],
+          "ack": true
+        },
+        {
+          "sequence": "65534",
+          "bundles": [
+            0,
+            1,
+            2
+          ],
+          "apply": [],
+          "ack": true
+        },
+        {
+          "sequence": "32769",
+          "bundles": [
+            0
+          ],
+          "apply": [],
+          "ack": false
+        }
+      ]
+    },
+    {
+      "name": "bundle_absent_beyond_half_range",
+      "sequence_format": 1,
+      "steps": [
+        {
+          "sequence": "0",
+          "bundles": [
+            0,
+            1
+          ],
+          "apply": [
+            0,
+            1
+          ],
+          "ack": true
+        },
+        {
+          "sequence": "30000",
+          "bundles": [
+            0
+          ],
+          "apply": [
+            0
+          ],
+          "ack": false
+        },
+        {
+          "sequence": "40000",
+          "bundles": [
+            0,
+            1
+          ],
+          "apply": [
+            0,
+            1
+          ],
+          "ack": true
+        },
+        {
+          "sequence": "60000",
+          "bundles": [
+            0
+          ],
+          "apply": [
+            0
+          ],
+          "ack": false
+        },
+        {
+          "sequence": "100",
+          "bundles": [
+            0,
+            1
+          ],
+          "apply": [
+            0,
+            1
+          ],
+          "ack": true
+        },
+        {
+          "sequence": "60001",
+          "bundles": [
+            0,
+            1
+          ],
+          "apply": [],
+          "ack": true
+        }
+      ]
+    },
+    {
+      "name": "optional_continuous_only_ack",
+      "sequence_format": 1,
+      "steps": [
+        {
+          "sequence": "0",
+          "bundles": [
+            0
+          ],
+          "apply": [
+            0
+          ],
+          "ack": true
+        }
+      ]
+    }
+  ],
+  "message_outcomes": [
+    {
+      "name": "zero_interval",
+      "hex": "040b00000000000000010000000000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "absent_required_interval",
+      "hex": "040b0000000000000001ffffffffffffffff404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "unknown_sequence_format",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000004030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "bundles_without_sequence",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000000030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "no_bundles",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d01000000000100000000",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "group_mismatch",
+      "hex": "040b00000001000000012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "reject_subscription"
+    },
+    {
+      "name": "unknown_descriptor",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d0100000000010300000002000000feffffff010100000002020000000400000001030000000c0200000008000000010200000003",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "unsupported_format",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d0100000000010300000002000000000000000a0100000002020000000400000001030000000c0200000008000000010200000003",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "reject_subscription"
+    },
+    {
+      "name": "reserved_channel",
+      "hex": "040b00000000000000032b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "oversized_bundle_count",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000001ffffffff",
+      "request": "mixed",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "presence_requires_missing_bundle",
+      "hex": "090b000000dc00000000000000ffffffffffffffff0000030001003512",
+      "request": "mixed",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "absent_required_acquisition",
+      "hex": "090b000000ffffffffffffffffffffffffffffffff0000020001003512",
+      "request": "mixed",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "unknown_publication_id",
+      "hex": "0963000000dc00000000000000ffffffffffffffff0000020001003512",
+      "request": "mixed",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "truncated_presence",
+      "hex": "090b000000dc00000000000000ffffffffffffffff0000",
+      "request": "mixed",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "trailing_publication_byte",
+      "hex": "090b000000dc00000000000000ffffffffffffffff000002000100351200",
+      "request": "mixed",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "ack_without_sequence",
+      "hex": "0d070000000000",
+      "request": "inputs",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "ack_wrong_id",
+      "hex": "0d630000000000",
+      "request": "mixed",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "ack_wrong_width",
+      "hex": "0d0b00000000000000",
+      "request": "mixed",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "unknown_tag",
+      "hex": "0e",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "empty_message",
+      "hex": "",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "zero_offer_version",
+      "hex": "01010000000000",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "invalid_optional_reason",
+      "hex": "060700000002",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "nonfinite_pose_position",
+      "hex": "0908000000010000000000200041787d0100002000000001020000c07f000000c00000003f00000000000000009a99193fcdcc4c3f8007000000",
+      "request": "quality",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "nonunit_pose_quaternion",
+      "hex": "0908000000010000000000200041787d0100002000000001020000803f000000c00000003f000000000000000000000000000000008007000000",
+      "request": "quality",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "defined_unsupported_sample_format",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000040100000002020000000400000001030000000c0200000008000000010200000003",
+      "channel": 2,
+      "outcome": "reject_subscription",
+      "request": "mixed"
+    },
+    {
+      "name": "reserved_sample_format",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000100100000002020000000400000001030000000c0200000008000000010200000003",
+      "channel": 2,
+      "outcome": "close_connection",
+      "request": "mixed"
+    },
+    {
+      "name": "unknown_group",
+      "hex": "040b00000063000000012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "channel": 2,
+      "outcome": "reject_subscription",
+      "request": "mixed"
+    },
+    {
+      "name": "absent_required_group",
+      "hex": "040b000000ffffffff012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "channel": 2,
+      "outcome": "close_connection",
+      "request": "mixed"
+    },
+    {
+      "name": "defined_unsupported_reference_space",
+      "hex": "040700000000000000012b50fe000000000000000000000000000000000000000000000100000003000000000000000a03010000000b02020000000e",
+      "channel": 2,
+      "outcome": "reject_subscription",
+      "request": "poses"
+    },
+    {
+      "name": "reserved_reference_space",
+      "hex": "040700000000000000012b50fe000000000000000000000000000000000000000000000100000003000000000000000a07010000000b02020000000e",
+      "channel": 2,
+      "outcome": "close_connection",
+      "request": "poses"
+    },
+    {
+      "name": "publication_size_admission",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "channel": 2,
+      "outcome": "reject_subscription",
+      "limits": {
+        "max_publication_bytes": 24
+      },
+      "request": "mixed"
+    },
+    {
+      "name": "publication_rate_admission",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "channel": 2,
+      "outcome": "reject_subscription",
+      "limits": {
+        "max_publication_rate_hz": 10
+      },
+      "request": "mixed"
+    },
+    {
+      "name": "control_decode_bound",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "channel": 2,
+      "outcome": "close_connection",
+      "limits": {
+        "max_message_bytes": 32
+      },
+      "request": "mixed"
+    },
+    {
+      "name": "valid_update_unknown_id",
+      "hex": "0c07000000809698000000000040787d01000000000100000000002000",
+      "channel": 2,
+      "outcome": "ignore_update"
+    },
+    {
+      "name": "valid_update_ended_id",
+      "hex": "0c07000000809698000000000040787d01000000000100000000002000",
+      "channel": 2,
+      "outcome": "ignore_update",
+      "request": "inputs",
+      "subscription_state": "ended"
+    },
+    {
+      "name": "valid_update_exceeds_rate",
+      "hex": "0c07000000809698000000000040787d01000000000100000000002000",
+      "channel": 2,
+      "outcome": "terminate_subscription",
+      "limits": {
+        "max_publication_rate_hz": 10
+      },
+      "request": "inputs"
+    },
+    {
+      "name": "zero_interval_update_unknown_id",
+      "hex": "0c07000000000000000000000040787d01000000000100000000002000",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "sentinel_interval_update_unknown_id",
+      "hex": "0c07000000ffffffffffffffff40787d01000000000100000000002000",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "unknown_unreliable_tag",
+      "hex": "0e",
+      "channel": 1,
+      "outcome": "discard_message"
+    },
+    {
+      "name": "ack_wrong_channel",
+      "hex": "0d0b0000000000",
+      "channel": 2,
+      "outcome": "close_connection",
+      "request": "mixed"
+    },
+    {
+      "name": "reliable_request_on_unreliable",
+      "hex": "040b00000000000000012b50fe0000000000404b4c000000000040787d010000000001030000000200000000000000010100000002020000000400000001030000000c0200000008000000010200000003",
+      "channel": 1,
+      "outcome": "discard_message",
+      "request": "mixed"
+    },
+    {
+      "name": "ack_unknown_sent_sequence",
+      "hex": "0d0b0000000900",
+      "channel": 1,
+      "outcome": "discard_message",
+      "sent_sequences": [
+        "0",
+        "1"
+      ],
+      "request": "mixed"
+    },
+    {
+      "name": "malformed_reliable_publication",
+      "hex": "090b000000dc00000000000000ffffffffffffffff000002000100351200",
+      "channel": 2,
+      "outcome": "discard_message",
+      "request": "mixed_reliable"
+    },
+    {
+      "name": "publication_wrong_channel",
+      "hex": "090b000000dc00000000000000ffffffffffffffff0000020001003512",
+      "channel": 2,
+      "outcome": "discard_message",
+      "request": "mixed"
+    },
+    {
+      "name": "joint_reference_non_pose",
+      "hex": "0302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b000000000300000002050608000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b0000000003000000020506ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff010000000200000000000000000000000d000000000000001000000011000000",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "skeleton_nonroot_cycle",
+      "hex": "0302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b000000000300000002050608000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b0000000003000000020506ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff010000000200000001000000070000000d000000000000001000000011000000",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "conflicting_parent_frame",
+      "hex": "0302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b000000000300000002050608000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b0000000003000000020506ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff010000000300000000000000070000000d000000000000001000000011000000020000001000000011000000",
+      "channel": 2,
+      "outcome": "close_connection"
+    },
+    {
+      "name": "missing_parent_frame",
+      "hex": "0302000000000048430000b44212000000090000002f73616d706c652f300000000000000000020100000001000000000100000002000000090000002f73616d706c652f31000000000000000003040000000203040500000000090000002f73616d706c652f32000000000000000004040000000203040500000000090000002f73616d706c652f33000000000000000008040000000a0b0c0d00000000090000002f73616d706c652f340000000000000000050100000001000000000500000006000000090000002f73616d706c652f35000000000000000006040000000203040500000000090000002f73616d706c652f360000000000000000070400000002030405000000000c000000efbbbf2f706f73652fe5b7a60e0000004c65667420706f736520f09f9690000000000a020000000a0b000000000300000002050608000000090000000a0000000b0000000c000000090000002f73616d706c652f3800000000000000000c010000000100000000090000002f73616d706c652f3900000000000000000d0100000001000000000a0000002f73616d706c652f313000000000000000000e0100000001000000000a0000002f73616d706c652f313100000000000000000f0100000001000000000a0000002f73616d706c652f3132000000000000000010040000000a0b0c0d000000000a0000002f73616d706c652f313300000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff0a0000002f73616d706c652f313400000000000000000b040000000203040500000000010000000a0000002f73616d706c652f313500000000000000000b040000000203040501000000010000000a0000002f73616d706c652f313600000000000000000a020000000a0b0000000003000000020506ffffffffffffffffffffffffffffffff0c0000000a0000002f73616d706c652f313700000000000000000a020000000a0b01000000020000000506ffffffffffffffffffffffffffffffffffffffff010000000100000000000000070000000d000000",
+      "channel": 2,
+      "outcome": "close_connection"
+    }
+  ],
+  "capability_cases": [
+    {
+      "name": "shared_descriptors_without_parent_space",
+      "skeletons": [
+        {
+          "joints": [
+            {
+              "parent": 0,
+              "pose_sample": 7,
+              "rest_pose_sample": 13
+            },
+            {
+              "parent": 0,
+              "pose_sample": 16,
+              "rest_pose_sample": 17
+            },
+            {
+              "parent": 2,
+              "pose_sample": 16,
+              "rest_pose_sample": 17
+            }
+          ]
+        }
+      ],
+      "descriptor_spaces": {
+        "7": [
+          2,
+          6
+        ],
+        "13": [
+          6
+        ],
+        "16": [
+          2,
+          6
+        ],
+        "17": [
+          6
+        ]
+      },
+      "valid": true
+    }
+  ],
+  "replacement_traces": [
+    {
+      "name": "accepted_unreliable_guard",
+      "queued_ack": true,
+      "steps": [
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "8",
+          "decode": true,
+          "layout": "old",
+          "ack": true
+        },
+        {
+          "event": "request",
+          "pending": true,
+          "active": "old",
+          "queued_ack": false
+        },
+        {
+          "event": "server_accept",
+          "notifications": [
+            "SubscriptionAccepted"
+          ]
+        },
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "0",
+          "decode": false,
+          "layout": null,
+          "ack": false
+        },
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "9",
+          "decode": false,
+          "layout": null,
+          "ack": false
+        },
+        {
+          "event": "accepted",
+          "active": "new",
+          "pending": false,
+          "received": []
+        },
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "1",
+          "decode": true,
+          "layout": "new",
+          "ack": true
+        }
+      ]
+    },
+    {
+      "name": "accepted_reliable_preserves_order",
+      "steps": [
+        {
+          "event": "publication",
+          "channel": 2,
+          "sequence": "5",
+          "decode": true,
+          "layout": "old",
+          "ack": true
+        },
+        {
+          "event": "request"
+        },
+        {
+          "event": "server_accept",
+          "notifications": [
+            "SubscriptionAccepted"
+          ]
+        },
+        {
+          "event": "publication",
+          "channel": 2,
+          "sequence": "6",
+          "decode": true,
+          "layout": "old",
+          "ack": false,
+          "received": [
+            "5",
+            "6"
+          ]
+        },
+        {
+          "event": "accepted",
+          "received": []
+        },
+        {
+          "event": "publication",
+          "channel": 2,
+          "sequence": "0",
+          "decode": true,
+          "layout": "new",
+          "ack": true
+        }
+      ]
+    },
+    {
+      "name": "rejected_unreliable_resumes_old",
+      "steps": [
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "4",
+          "decode": true,
+          "layout": "old",
+          "ack": true
+        },
+        {
+          "event": "request"
+        },
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "5",
+          "decode": false,
+          "layout": null,
+          "ack": false
+        },
+        {
+          "event": "rejected",
+          "active": "old",
+          "pending": false,
+          "received": [
+            "4"
+          ]
+        },
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "6",
+          "decode": true,
+          "layout": "old",
+          "ack": true
+        }
+      ]
+    },
+    {
+      "name": "rejected_reliable_preserves_receive_state",
+      "steps": [
+        {
+          "event": "publication",
+          "channel": 2,
+          "sequence": "4",
+          "decode": true,
+          "layout": "old",
+          "ack": true
+        },
+        {
+          "event": "request"
+        },
+        {
+          "event": "publication",
+          "channel": 2,
+          "sequence": "5",
+          "decode": true,
+          "layout": "old",
+          "ack": false
+        },
+        {
+          "event": "rejected",
+          "active": "old",
+          "pending": false,
+          "received": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "event": "publication",
+          "channel": 2,
+          "sequence": "6",
+          "decode": true,
+          "layout": "old",
+          "ack": true
+        }
+      ]
+    },
+    {
+      "name": "termination_then_rejection",
+      "steps": [
+        {
+          "event": "request"
+        },
+        {
+          "event": "terminated",
+          "active": null,
+          "pending": true
+        },
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "0",
+          "decode": false,
+          "layout": null,
+          "ack": false
+        },
+        {
+          "event": "rejected",
+          "active": null,
+          "pending": false
+        },
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "1",
+          "decode": false,
+          "layout": null,
+          "ack": false
+        }
+      ]
+    },
+    {
+      "name": "termination_then_acceptance",
+      "steps": [
+        {
+          "event": "request"
+        },
+        {
+          "event": "terminated",
+          "active": null,
+          "pending": true
+        },
+        {
+          "event": "accepted",
+          "active": "new",
+          "pending": false
+        },
+        {
+          "event": "publication",
+          "channel": 1,
+          "sequence": "0",
+          "decode": true,
+          "layout": "new",
+          "ack": true
+        }
+      ]
+    }
+  ],
+  "initial_target_examples": [
+    {
+      "opportunity_time": "100",
+      "interval": "20",
+      "phase": "5",
+      "prediction_offset": "30",
+      "requested_target": "130"
+    },
+    {
+      "opportunity_time": "105",
+      "interval": "20",
+      "phase": "5",
+      "prediction_offset": "30",
+      "requested_target": "135"
+    },
+    {
+      "opportunity_time": "18446744073709551614",
+      "interval": "20",
+      "phase": "5",
+      "prediction_offset": "1",
+      "requested_target": null
+    }
+  ]
+}
