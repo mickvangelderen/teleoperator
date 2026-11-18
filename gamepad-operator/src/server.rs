@@ -272,7 +272,10 @@ impl Peer {
                 changed = incoming.channels.changed() => { changed.map_err(|_| "Channel state closed")?; },
                 bytes = incoming.controls.recv() => {
                     let bytes = bytes.ok_or("Peer control receiver closed")?;
-                    let replies = state.handle_with_source(protocol::decode_client(&bytes)?, self.hub.now(), |r|self.hub.check(r))?;
+                    let message = protocol::decode_client(&bytes)?;
+                    let reschedule = matches!(message, Message::UpdateSchedule { .. } | Message::Unsubscribe { .. });
+                    let replies = state.handle_with_source(message, self.hub.now(), |r|self.hub.check(r))?;
+                    if reschedule { self.hub.reschedule(); }
                     for reply in replies {
                         if let Message::Accepted { id } = reply {
                             let subscription = &state.active[&id];

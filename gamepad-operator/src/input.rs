@@ -6,8 +6,8 @@ use crate::protocol::{
 use crate::virtual_pose::{self, VirtualPose};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 pub const RATE: f32 = 100.;
@@ -103,6 +103,7 @@ pub struct Hub {
     pub clock: Arc<Clock>,
     state: Mutex<State>,
     planned_slot: AtomicU64,
+    schedule_changed: Condvar,
 }
 fn descriptor(
     id: String,
@@ -280,6 +281,7 @@ impl Hub {
             updates: watch::channel(1).0,
             retired: watch::channel(false).0,
             planned_slot: AtomicU64::new(0),
+            schedule_changed: Condvar::new(),
             state: Mutex::new(State {
                 virtual_pose,
                 connected: true,
@@ -308,10 +310,20 @@ impl Hub {
             request: r.clone(),
             publication: Arc::downgrade(p),
         });
+        self.refresh_plan(&s);
+        self.schedule_changed.notify_one();
         Ok(())
     }
-    pub fn next_observation(&self) -> u64 {
+
+    // Schedule changes and registration can move the next slot while the input
+    // thread sleeps. The state mutex makes planning and beginning the wait atomic.
+    pub fn reschedule(&self) {
         let state = self.state.lock().unwrap();
+        self.refresh_plan(&state);
+        self.schedule_changed.notify_one();
+    }
+
+    fn refresh_plan(&self, state: &State) -> u64 {
         let earliest = state.at + OBSERVATION_PERIOD_NS;
         let schedules: Vec<_> = state
             .demands
@@ -319,28 +331,49 @@ impl Hub {
             .filter_map(|d| d.publication.upgrade())
             .map(|p| p.lock().unwrap().timing())
             .collect();
-        let Some(grid) = schedules.iter().min_by_key(|t| t.interval) else {
-            return earliest;
-        };
-        // A single observation can serve every slot on this shared grid.
-        if schedules.iter().any(|t| {
-            t.interval % grid.interval != 0 || t.phase % grid.interval != grid.phase % grid.interval
-        }) {
-            return earliest;
-        }
-        let Some(slot) = grid.next_at(state.at + 1) else {
-            return earliest;
-        };
-        // Fill longer gaps with ordinary observations, leaving at least one source
-        // period before the slot. At the rate limit a late wake can delay a slot.
-        if slot.saturating_sub(earliest) >= OBSERVATION_PERIOD_NS {
-            return earliest;
-        }
-        if slot >= earliest {
-            self.planned_slot.store(slot, Ordering::Release);
-        }
-        slot.max(earliest)
+        let aligned = schedules
+            .iter()
+            .min_by_key(|t| t.interval)
+            .and_then(|grid| {
+                if schedules.iter().any(|t| {
+                    t.interval % grid.interval != 0
+                        || t.phase % grid.interval != grid.phase % grid.interval
+                }) {
+                    return None;
+                }
+                grid.next_at(state.at + 1)
+                    .filter(|&slot| slot >= earliest && slot - earliest < OBSERVATION_PERIOD_NS)
+            });
+        self.planned_slot
+            .store(aligned.unwrap_or(0), Ordering::Release);
+        aligned.unwrap_or(earliest)
     }
+
+    pub fn wait_for_observation(&self, pump_by: Option<u64>) -> u64 {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            let next = self.refresh_plan(&state);
+            let wake = pump_by.map_or(next, |pump| pump.min(next));
+            let remaining = wake.saturating_sub(self.clock.now());
+            if remaining == 0 {
+                return next;
+            }
+            let (locked, timeout) = self
+                .schedule_changed
+                .wait_timeout(state, Duration::from_nanos(remaining))
+                .unwrap();
+            if timeout.timed_out() {
+                return next;
+            }
+            state = locked;
+        }
+    }
+
+    #[cfg(test)]
+    fn next_observation(&self) -> u64 {
+        self.refresh_plan(&self.state.lock().unwrap())
+    }
+
     /// The source wakes the sender after installing its promised observation.
     /// Keep a one-millisecond timer fallback if the input thread stalls.
     pub fn publication_deadline(&self, slot: u64) -> u64 {
@@ -558,6 +591,8 @@ mod tests {
         assert_eq!(h.next_observation(), 16_000_000);
         r.phase = 8_000_000;
         second.lock().unwrap().update(r.timing(), 0);
+        h.reschedule();
+        assert_eq!(h.publication_deadline(16_000_000), 16_000_000);
         assert_eq!(h.next_observation(), 10 + OBSERVATION_PERIOD_NS);
         drop(second);
         assert_eq!(h.next_observation(), 16_000_000);

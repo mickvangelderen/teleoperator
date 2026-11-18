@@ -755,7 +755,6 @@ pub fn run_sdl(
                             hub.batch(&transitions, &values, source.clock.now())?;
                             pad.values = values;
                             transitions.clear();
-                            next_observation = hub.next_observation();
                         }
                         Err(e) => {
                             hub.disconnect(source.clock.now());
@@ -789,7 +788,6 @@ pub fn run_sdl(
                                 virtual_config,
                             )?;
                             transitions.clear();
-                            next_observation = hub.next_observation();
                             selection.selected(&pad.info);
                             source.install(hub.clone());
                             status = selected_status(&hub);
@@ -815,14 +813,12 @@ pub fn run_sdl(
             }
         }
         // Drain native edges and detect removal between phase-aligned snapshots.
-        let wait = if open.is_some() {
-            next_observation
-                .saturating_sub(source.clock.now())
-                .min(OBSERVATION_PERIOD_NS)
+        if let Some((_, hub)) = &open {
+            next_observation =
+                hub.wait_for_observation(Some(source.clock.now() + OBSERVATION_PERIOD_NS));
         } else {
-            OBSERVATION_PERIOD_NS
-        };
-        std::thread::sleep(Duration::from_nanos(wait));
+            std::thread::sleep(Duration::from_nanos(OBSERVATION_PERIOD_NS));
+        }
     }
     if let Some((_, hub)) = open {
         hub.disconnect(source.clock.now());
@@ -961,9 +957,9 @@ pub fn run_synthetic(
                     virtual_config,
                 )?;
                 source.install(h.clone());
+                h.wait_for_observation(None);
                 hub = Some(h);
                 previous = values.clone();
-                std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
             let events = values
@@ -977,10 +973,11 @@ pub fn run_synthetic(
                 .batch(&events, &values, source.clock.now())?;
             previous = values;
         }
-        let wait = hub.as_ref().map_or(OBSERVATION_PERIOD_NS, |h| {
-            h.next_observation().saturating_sub(source.clock.now())
-        });
-        std::thread::sleep(Duration::from_nanos(wait));
+        if let Some(h) = &hub {
+            h.wait_for_observation(None);
+        } else {
+            std::thread::sleep(Duration::from_nanos(OBSERVATION_PERIOD_NS));
+        }
     }
     if let Some(h) = hub {
         h.disconnect(source.clock.now());
