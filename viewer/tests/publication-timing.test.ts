@@ -111,3 +111,14 @@ test("ordinary decode cost is covered without predicting extra frames after one 
   for (let i = 0; i < 20; i++) timing.received(4, now);
   assert.equal(timing.schedule(schedule(), now, 20, clock)!.predictionOffset - before.predictionOffset, ns(2));
 });
+
+test("controller delivery changes the preparation lead while preserving the consumption target", () => {
+  const timing = new PublicationTiming(), now = frames(timing, 1000);
+  const clock = { offset: ns(12_345), delay: ns(0.4), at: now };
+  const quiet = timing.schedule(schedule(), now, 20, clock, 0.2, 100, 0.6)!;
+  const slower = timing.schedule(schedule(), now, 20, clock, 0.2, 100, 5.6)!;
+  assert.equal(slower.predictionOffset - quiet.predictionOffset, ns(5));
+  assert.equal(mod(quiet.phase - slower.phase, quiet.interval), ns(5));
+  assert.equal(mod(quiet.phase + quiet.predictionOffset, quiet.interval),
+    mod(slower.phase + slower.predictionOffset, slower.interval));
+});

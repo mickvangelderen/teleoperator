@@ -5,6 +5,7 @@ import type { ClockEstimate } from "./clock";
 const ns = (ms: number) => BigInt(Math.round(ms * 1e6));
 const modulo = (value: bigint, interval: bigint) => ((value % interval) + interval) % interval;
 export const SCHEDULE_UPDATE_INTERVAL_MS = 1000;
+const phaseDeadbandNs = 1_000_000n;
 
 // Browser frame callbacks estimate consumption opportunities, not physical scanout.
 // renderToPhotonMs remains the user's display-delay estimate; no server horizon is assumed.
@@ -40,7 +41,7 @@ export class PublicationTiming {
     this.processing = this.processing.filter(p => now - p.at < 2000).slice(-64);
   }
 
-  schedule(current: Timing, now: number, renderToPhotonMs: number, clock?: ClockEstimate, transitMs?: number, maxRate = Infinity): Timing | undefined {
+  schedule(current: Timing, now: number, renderToPhotonMs: number, clock?: ClockEstimate, transitMs?: number, maxRate = Infinity, controllerDeliveryMs?: number): Timing | undefined {
     if (!clock || clock.at < this.clockAfter || now < clock.at || now - clock.at > 3000 || clock.delay < 0n
       || this.lastFrame === undefined || now - this.lastFrame > 250 || this.intervals.length < 4
       || !Number.isFinite(renderToPhotonMs) || renderToPhotonMs < 0 || renderToPhotonMs > 1000) return;
@@ -67,7 +68,14 @@ export class PublicationTiming {
     // Only clock probes estimate transit independently of the retained sample's age.
     const probeJitter = Math.abs(transit - Number(clock.delay) / 2e6);
     const arrivalMargin = 2 + Math.min(50, 2 * frameJitter + probeJitter);
-    const lead = transit + Math.min(50, receiveCost) + arrivalMargin;
+    let lead = transit + Math.min(50, receiveCost) + arrivalMargin;
+    if (controllerDeliveryMs !== undefined) {
+      // Budget the observed high water mark and allow for an earlier callback
+      // and the phase-update deadband. Preserve the requested consumption target.
+      const earlyCallback = callbackDelay - Math.min(...this.callbackDelays);
+      const margin = Number(phaseDeadbandNs) / 1e6 + earlyCallback + 2 * frameJitter + probeJitter;
+      lead = Math.max(transit, controllerDeliveryMs) + Math.min(50, receiveCost) + margin;
+    }
     // Choose an upcoming render far enough away for the reliable update to reach the server.
     const anchor = this.lastFrame + callbackDelay;
     const framesAhead = Math.max(1, Math.ceil((now + transit + 2 + lead - anchor) / cadence));
@@ -86,5 +94,5 @@ export function scheduleNeedsUpdate(current: Timing, next: Timing) {
   const phaseError = distance < current.interval - distance ? distance : current.interval - distance;
   const delayError = next.predictionOffset - current.predictionOffset;
   // Avoid churn from timestamp quantization, callback jitter and small probe changes.
-  return phaseError > 1_000_000n || delayError > 500_000n || delayError < -500_000n;
+  return phaseError > phaseDeadbandNs || delayError > 500_000n || delayError < -500_000n;
 }

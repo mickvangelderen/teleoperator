@@ -3,7 +3,9 @@ import type { Capabilities, Packet, Request, Timing, ServerMessage, Value } from
 import { FreshnessBaseline, summarizeFreshness } from "./freshness";
 import type { StreamFreshness } from "./freshness";
 
-import { SoftwareClock } from "./clock";
+import { isGamepadGroup } from "./default-bundles";
+import { ControllerTiming } from "./controller-timing";
+import { SoftwareClock, BROWSER_CLOCK_PRECISION_NS } from "./clock";
 type ReceivedPrediction = { packet: Packet; values: Value[]; arrivedAt: number; acquiredAtArrival: number };
 export type ReceivedBundle = ReceivedPrediction & { position: bigint; predictions: ReceivedPrediction[]; consumed?: ReceivedPrediction };
 export type Subscription = {
@@ -11,6 +13,7 @@ export type Subscription = {
   bundles: (ReceivedBundle | undefined)[]; newestPosition?: bigint; version: number;
   counters: Map<number, bigint>; deltas: Map<number, bigint>;
   arrivals: number[]; packets: number; bytes: number;
+  controllerTiming?: ControllerTiming;
   freshness: FreshnessBaseline;
 };
 export const selectedBundle = (s: Subscription, index: number) => s.bundles[index]?.consumed ?? s.bundles[index];
@@ -31,13 +34,14 @@ export class Session {
   private readonly clockRequests = new Map<number, { sent: bigint; at: number }>();
   private softwareClock = new SoftwareClock();
   private acknowledgments: { id: number; bytes: Uint8Array }[] = [];
-  private clockObservations: { delay: bigint; at: number }[] = [];
+  private clockObservations: { delay: bigint; at: number; upperOffset: bigint }[] = [];
+  private clockEpoch = -Infinity;
   start() { return offer(); }
   retire() {
     this.phase = "closed"; this.capabilities = undefined;
     this.active.clear(); this.pending.clear(); this.stopping.clear(); this.outcomes.clear();
     this.revisions.clear();
-    this.clockRequests.clear(); this.clockObservations = [];
+    this.clockRequests.clear(); this.clockObservations = []; this.clockEpoch = -Infinity;
     this.softwareClock = new SoftwareClock(); this.acknowledgments = []; this.consumptionTime = undefined;
   }
   request(request: Request) {
@@ -66,6 +70,7 @@ export class Session {
     validateTiming(timing);
     const bytes = updateSchedule(id, timing);
     if (sub.request.interval !== timing.interval) sub.freshness = new FreshnessBaseline();
+    if (sub.request.phase !== timing.phase || sub.request.interval !== timing.interval) sub.controllerTiming?.changed(performance.now());
     Object.assign(sub.request, { interval: timing.interval, phase: timing.phase, predictionOffset: timing.predictionOffset });
     return bytes;
   }
@@ -98,9 +103,28 @@ export class Session {
     this.clockRequests.delete(id);
     const result = this.softwareClock.observe(request.sent, t2, t3, t4, arrivedAt);
     this.clockObservations = this.clockObservations.filter(o => arrivedAt - o.at <= 30_000).slice(-127);
-    this.clockObservations.push(result.observation);
-    if (result.alignedNow || result.reinitialized) this.clockRequests.clear();
+    this.clockObservations.push({ ...result.observation, upperOffset: t2 - BigInt(Math.round(request.at * 1e6)) });
+    if (result.alignedNow || result.reinitialized) {
+      this.clockRequests.clear();
+      if (result.reinitialized) {
+        this.clockEpoch = arrivedAt;
+        for (const sub of this.active.values()) if (sub.controllerTiming) sub.controllerTiming = new ControllerTiming();
+      }
+    }
     return null;
+  }
+  // T2 follows the client's send, even on asymmetric paths. Bound the upper
+  // server-clock mapping using recent probes, read precision and holdover.
+  private upperOffset(now: number) {
+    let bound: bigint | undefined;
+    for (let i = this.clockObservations.length - 1; i >= 0; i--) {
+      const probe = this.clockObservations[i], elapsed = now - probe.at;
+      if (elapsed > 2000 || probe.at <= this.clockEpoch) break;
+      if (elapsed < 0) continue;
+      const upper = probe.upperOffset + BROWSER_CLOCK_PRECISION_NS + BigInt(Math.ceil(elapsed * 1000));
+      if (bound === undefined || upper < bound) bound = upper;
+    }
+    return bound;
   }
   sampleAge(timestamp: bigint, now: number, renderToPhotonMs = 0) {
     const clock = this.clockEstimate(now);
@@ -181,7 +205,8 @@ export class Session {
         if (!request) throw new Error("Unexpected subscription acceptance");
         this.pending.delete(message.id);
         this.outcome(message.id, "accepted");
-        this.active.set(message.id, { request, bundles: request.bundles.map(() => undefined), version: 0, generation: this.nextGeneration++, counters: new Map(), deltas: new Map(), arrivals: [], packets: 0, bytes: 0, freshness: new FreshnessBaseline() });
+        this.active.set(message.id, { request, bundles: request.bundles.map(() => undefined), version: 0, generation: this.nextGeneration++, counters: new Map(), deltas: new Map(), arrivals: [], packets: 0, bytes: 0, freshness: new FreshnessBaseline(),
+          controllerTiming: isGamepadGroup(this.capabilities!, request.group) ? new ControllerTiming() : undefined });
         this.detail = `Subscription ${message.id} accepted`; break;
       }
       case 6:
@@ -208,6 +233,10 @@ export class Session {
     let packet: Packet;
     try { packet = decodeTracking(bytes, this.capabilities, active.request); }
     catch { this.discarded++; return null; }
+    if (active.controllerTiming) {
+      const clock = this.clockEstimate(arrivedAt), upper = this.upperOffset(arrivedAt);
+      if (clock && upper !== undefined) active.controllerTiming.observe(packet.timestamp, arrivedAt, active.request, clock, upper);
+    }
     const format = active.request.sequenceNumberFormat;
     const position = format === null ? packet.timestamp : sequencePosition(packet.sequenceNumber!, active.newestPosition, format);
     if (position === null) { this.discarded++; return null; }
