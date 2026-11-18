@@ -273,7 +273,7 @@ try {
     const row=document.querySelector('[data-bundle-index="2"] tr[data-descriptor="/user/gamepad/input/trigger_left/value"]');
     return row?.dataset.available==='true' && Math.abs(Number(row.querySelector('.sample-value')?.textContent)-0.25)<0.01;
   });
-  const picker = page.getByLabel('Visualization', {exact:true});
+  const picker = page.getByRole('combobox', {name:'Visualization', exact:true});
   await picker.selectOption('values');
   const inspector = page.locator('#sample-inspector');
   const accepted = inspector.locator('.inspect-selector select');
@@ -380,7 +380,7 @@ async function verifyVirtual(page) {
   });
   await page.getByRole('button',{name:'Connect',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
-  await page.getByLabel('Visualization', {exact:true}).selectOption('spatial');
+  await page.getByRole('combobox', {name:'Visualization', exact:true}).selectOption('spatial');
   await page.waitForFunction(()=>document.querySelector('[data-pose-count="1"]'));
   await page.waitForFunction(()=>{
     const row=document.querySelector('tr[data-descriptor="/gamepad/virtual/pose"]');
