@@ -131,8 +131,15 @@ export class Session {
       const continuous = sub.bundles[0];
       const age = continuous && this.sampleAge(continuous.packet.timestamp, now);
       const ageMs = age !== undefined && age >= 0 ? age : undefined;
+      const intervalMs = 1000 / publicationRate(sub.request);
+      // A rate change can reset the baseline while the source is stalled.
+      // Evaluate a known acquisition against the same probe bootstrap used on arrival.
+      if (ageMs !== undefined && sub.freshness.thresholdMs === undefined) {
+        const clock = this.clockEstimate(now);
+        if (clock) sub.freshness.bootstrap(intervalMs, Number(clock.delay) / 2e6);
+      }
       const { thresholdMs, latencyMs, jitterMs } = sub.freshness;
-      streams.push({ id: sub.request.id, group: sub.request.group, generation: sub.generation, intervalMs: 1000 / publicationRate(sub.request),
+      streams.push({ id: sub.request.id, group: sub.request.group, generation: sub.generation, intervalMs,
         ageMs, thresholdMs, latencyMs, jitterMs,
         status: ageMs === undefined || thresholdMs === undefined ? "Unknown" : ageMs > thresholdMs ? "Late" : "Fresh" });
     }

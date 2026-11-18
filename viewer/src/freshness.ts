@@ -16,17 +16,20 @@ export class FreshnessBaseline {
   jitterMs?: number;
   thresholdMs?: number;
 
+  bootstrap(interval: number, networkLatency: number) {
+    // Bootstrap from clock probes so the first queued packet cannot establish a healthy baseline.
+    this.latencyMs ??= networkLatency;
+    this.jitterMs ??= 0;
+    return this.thresholdMs ??= networkLatency + 2 * interval;
+  }
+
   observe(age: number | undefined, at: number, interval: number, networkLatency: number) {
     if (age === undefined || !Number.isFinite(age) || age < 0) {
       this.samples = []; this.latencyMs = this.jitterMs = this.thresholdMs = undefined;
       return;
     }
-    // Bootstrap from clock probes so the first queued packet cannot establish a healthy baseline.
-    this.latencyMs ??= networkLatency;
-    this.jitterMs ??= 0;
-    this.thresholdMs ??= networkLatency + 2 * interval;
     // A late packet must not raise the threshold that judges its own freshness.
-    if (age > this.thresholdMs) return;
+    if (age > this.bootstrap(interval, networkLatency)) return;
     while (this.samples.length && (this.samples[0].at <= at - 2000 || this.samples.length >= 2048)) this.samples.shift();
     this.samples.push({ at, age });
     this.latencyMs = median(this.samples.map(sample => sample.age));

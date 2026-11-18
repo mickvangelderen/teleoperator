@@ -115,3 +115,19 @@ test("repeated frozen acquisitions never train a stale stream back to Fresh", ()
   assert.ok(sub.packets>500);assert.equal(sub.acquiredAtArrival,1010);
   packet(s,6050,6060);assert.equal(s.freshness(6060).status,"Fresh");
 });
+
+test("a schedule interval change judges the retained acquisition during a source stall", () => {
+  const s = session();
+  packet(s, 1000, 1010);
+  assert.equal(s.freshness(1400).status, "Late");
+  s.changeSchedule(1, timing(50));
+  const stalled = s.freshness(1400).worst!;
+  assert.equal(stalled.status, "Late");
+  assert.equal(stalled.ageMs, 400);
+  assert.equal(stalled.thresholdMs, 50); // 10 ms probe latency + two 20 ms intervals
+  assert.equal(s.active.get(1)!.acquiredAtArrival, 1010);
+  packet(s, 1000, 1410);
+  assert.equal(s.freshness(1410).worst?.thresholdMs, 50);
+  packet(s, 1410, 1420);
+  assert.equal(s.freshness(1420).status, "Fresh");
+});
