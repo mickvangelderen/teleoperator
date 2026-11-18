@@ -161,7 +161,10 @@ try {
   await page.route("**/api/offer", route => route.fulfill({ status: 503, body: "Test unavailable" }));
   await page.route("**/api/health", route => route.fulfill({ json: { source: "test" } }));
   await page.locator("header #connect").click();
-  await page.waitForFunction(() => document.querySelector("#status").textContent === "Error");
+  await page.locator("#error").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#status").innerText(), "Disconnected");
+  assert.equal(await page.locator("#workspace-title").innerText(), "Operator disconnected");
+  assert.equal(await page.locator("subscription-editor").count(), 0);
   assert.match(await page.locator("#error").innerText(), /127\.0\.0\.1:1/);
   assert.equal(await page.locator("#connect").innerText(), "Retry");
   const address = "http://192.168.1.42:8082";

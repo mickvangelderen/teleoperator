@@ -198,10 +198,11 @@ export class Connection {
         body: JSON.stringify(this.pc.localDescription),
         signal: this.abort.signal,
       });
-      if (!response.ok)
-        throw new Error(
-          `Signaling failed (${response.status}). Check the device address and network.`,
-        );
+      if (!response.ok) {
+        const plainText = response.headers.get("content-type")?.split(";")[0] === "text/plain";
+        const reason = plainText ? (await response.text()).trim().slice(0, 512) : "";
+        throw new Error(`Signaling failed (${response.status}). ${reason || "Check the operator address and port."}`);
+      }
       const text = await response.text();
       if (text.length > 65_536)
         throw new Error("Signaling answer too large");

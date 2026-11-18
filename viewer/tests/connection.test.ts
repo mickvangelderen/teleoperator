@@ -55,7 +55,7 @@ test("connection attempts reset network measurements while preserving render dia
       try {
         await c.connect();
         assert.equal(c.state.status, "Error");
-        assert.match(c.state.detail, /Signaling failed \(503\)/);
+        assert.equal(c.state.detail, "Signaling failed (503). Device unavailable");
         assert.deepEqual(viewerTimings(), before);
         const snapshot = profiler.snapshot();
         assert.ok(snapshot.transfer.every(m => m.samples.length === 0));

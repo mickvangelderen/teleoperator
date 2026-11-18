@@ -6,7 +6,7 @@ import { TimeSeriesGraph } from "./ui/time-series-graph";
 
 export function mountPerformancePanel(container: HTMLElement) {
   const results = document.createElement("div"); results.id = "profile-results";
-  container.replaceChildren(panelHeader("Performance"), results);
+  container.replaceChildren(panelHeader("Viewer performance"), results);
   const panels = [
     { id: "timing", unit: "ms", label: "Viewer timings", definitions: metrics },
     { id: "transfer", unit: "kB/s", label: "Payload transfer · rolling 1 s", definitions: transferMetrics },

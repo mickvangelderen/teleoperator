@@ -45,8 +45,11 @@ export async function checkFrameRate(page) {
       assert.ok(count.before > 0);
       assert.equal(count.after, count.before, "Connecting preserves the renderer's frame count");
       await response;
-      await page.waitForFunction(() => document.querySelector("#status").textContent === "Error");
+      await page.locator("#error").waitFor({ state: "visible" });
+      assert.equal(await page.locator("#status").innerText(), "Disconnected");
       assert.match(await page.locator("#error").textContent(), /Signaling failed \(503\)/);
+      assert.equal(await page.locator("#sample-summary").isVisible(), false);
+      assert.equal(await page.locator("#subscription-prompt").innerText(), await page.locator("#error").innerText());
     }
   } finally { await page.evaluate(() => { delete window.frameRateView; }); }
 }

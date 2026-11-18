@@ -54,7 +54,7 @@ try {
   await page.screenshot({ path: output + "disconnected.png", fullPage: true });
   await page.getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(
-    () => ["Connected", "Error"].includes(document.querySelector("#status").textContent),
+    () => document.querySelector("#status").textContent === "Connected" || !document.querySelector("#error").hidden,
   );
   assert.equal(
     await page.locator("#status").textContent(),
@@ -129,7 +129,7 @@ try {
     await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected");
     await page.getByRole("button", { name: "Connect" }).click();
     await page.waitForFunction(
-      () => ["Connected", "Error"].includes(document.querySelector("#status").textContent),
+      () => document.querySelector("#status").textContent === "Connected" || !document.querySelector("#error").hidden,
     );
     assert.equal(
       await page.locator("#status").textContent(),
@@ -145,7 +145,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#status").textContent === "Disconnected");
   await page.getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(
-    () => ["Connected", "Error"].includes(document.querySelector("#status").textContent),
+    () => document.querySelector("#status").textContent === "Connected" || !document.querySelector("#error").hidden,
   );
   assert.equal(
     await page.locator("#status").textContent(),
