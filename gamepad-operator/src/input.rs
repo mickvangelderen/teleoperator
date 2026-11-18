@@ -5,6 +5,7 @@ use crate::protocol::{
 };
 use crate::virtual_pose::{self, VirtualPose};
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 use tokio::sync::watch;
@@ -101,6 +102,7 @@ pub struct Hub {
     pub retired: watch::Sender<bool>,
     pub clock: Arc<Clock>,
     state: Mutex<State>,
+    planned_slot: AtomicU64,
 }
 fn descriptor(
     id: String,
@@ -277,6 +279,7 @@ impl Hub {
             clock,
             updates: watch::channel(1).0,
             retired: watch::channel(false).0,
+            planned_slot: AtomicU64::new(0),
             state: Mutex::new(State {
                 virtual_pose,
                 connected: true,
@@ -331,9 +334,20 @@ impl Hub {
         // Fill longer gaps with ordinary observations, leaving at least one source
         // period before the slot. At the rate limit a late wake can delay a slot.
         if slot.saturating_sub(earliest) >= OBSERVATION_PERIOD_NS {
-            earliest
+            return earliest;
+        }
+        if slot >= earliest {
+            self.planned_slot.store(slot, Ordering::Release);
+        }
+        slot.max(earliest)
+    }
+    /// The source wakes the sender after installing its promised observation.
+    /// Keep a one-millisecond timer fallback if the input thread stalls.
+    pub fn publication_deadline(&self, slot: u64) -> u64 {
+        if slot != 0 && self.planned_slot.load(Ordering::Acquire) == slot {
+            slot.saturating_add(1_000_000)
         } else {
-            slot.max(earliest)
+            slot
         }
     }
     pub fn check(&self, r: &Request) -> protocol::Result<()> {
@@ -426,6 +440,7 @@ impl Hub {
         for ((r, _), p) in publications.iter().zip(guards.iter_mut()) {
             p.observe(s.encode(&self.capabilities, r)?);
         }
+        self.planned_slot.store(0, Ordering::Release);
         self.updates.send_replace(s.number);
         Ok(())
     }
@@ -437,6 +452,7 @@ impl Hub {
             pose.disconnect();
         }
         s.publish(&self.capabilities, at);
+        self.planned_slot.store(0, Ordering::Release);
         self.updates.send_replace(s.number);
     }
     pub fn retire(&self) {
@@ -529,6 +545,13 @@ mod tests {
         let first = Arc::new(Mutex::new(PublicationState::new(&r, 0)));
         h.observe(&r, &first).unwrap(); // on-change demand still owns a publication grid
         assert_eq!(h.next_observation(), 16_000_000);
+        assert_eq!(
+            h.publication_deadline(0),
+            0,
+            "initial delivery remains immediate"
+        );
+        assert_eq!(h.publication_deadline(16_000_000), 17_000_000);
+        assert_eq!(h.publication_deadline(16_000_001), 16_000_001);
         r.interval *= 2;
         let second = Arc::new(Mutex::new(PublicationState::new(&r, 0)));
         h.observe(&r, &second).unwrap();
@@ -540,11 +563,50 @@ mod tests {
         assert_eq!(h.next_observation(), 16_000_000);
         h.batch(&[], &[InputValue::Button(false)], 8_000_000)
             .unwrap();
+        assert_eq!(h.publication_deadline(16_000_000), 16_000_000);
         assert_eq!(h.next_observation(), 18_000_000);
         r.interval = 100_000_000;
         r.phase = 0;
         first.lock().unwrap().update(r.timing(), 0);
         assert_eq!(h.next_observation(), 18_000_000);
+    }
+
+    #[test]
+    fn on_change_slot_waits_for_the_promised_observation_then_releases_on_ack() {
+        let h = hub(false);
+        let mut r = request(&h);
+        r.interval = 16_000_000;
+        let p = Arc::new(Mutex::new(PublicationState::new(&r, 10)));
+        h.observe(&r, &p).unwrap();
+        {
+            let mut publication = p.lock().unwrap();
+            assert!(publication.opportunity(10));
+            let initial = publication.candidate().unwrap();
+            publication.submitted(initial);
+            publication.acknowledge(0);
+            assert!(publication.candidate().is_none());
+        }
+        let slot = h.next_observation();
+        assert_eq!(slot, p.lock().unwrap().next_wake().unwrap());
+        assert!(h.publication_deadline(slot) > slot); // early sender wake
+        let acquired = slot + 64_000;
+        h.batch(
+            &[(0, InputValue::Button(true))],
+            &[InputValue::Button(true)],
+            acquired,
+        )
+        .unwrap();
+        assert_eq!(h.publication_deadline(slot), slot);
+        let mut publication = p.lock().unwrap();
+        assert!(publication.opportunity(acquired));
+        let changed = publication.candidate().unwrap();
+        assert_eq!(
+            u64::from_le_bytes(changed.body[4..12].try_into().unwrap()),
+            acquired
+        );
+        publication.submitted(changed);
+        publication.acknowledge(1);
+        assert!(publication.candidate().is_none());
     }
 
     #[test]

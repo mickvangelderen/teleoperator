@@ -107,12 +107,13 @@ impl Peer {
             .map_err(|_| "Peer control receiver closed".into())
     }
 }
-fn next_publication(session: Option<&Session>, ready: [bool; 2]) -> Option<u64> {
-    session?
+fn next_publication(session: &Session, ready: [bool; 2], hub: &Hub) -> Option<u64> {
+    session
         .active
         .values()
         .filter(|s| ready[s.request.channel as usize - 1])
         .filter_map(|s| s.publication.lock().unwrap().next_wake())
+        .map(|slot| hub.publication_deadline(slot))
         .min()
 }
 
@@ -261,7 +262,7 @@ impl Peer {
             }
             let channels = incoming.channels.borrow_and_update().clone();
             let ready = channels.ready();
-            let next = next_publication(Some(&state), ready);
+            let next = next_publication(&state, ready, &self.hub);
             let wait = next.map_or(Duration::from_secs(3600), |due| {
                 Duration::from_nanos(due.saturating_sub(self.hub.now() as u64))
             });
@@ -307,7 +308,11 @@ impl Peer {
                         ended.push((subscription.request.id, e));
                         continue;
                     }
-                    if !p.opportunity(self.hub.now() as u64) {
+                    let now = self.hub.now() as u64;
+                    if p.next_wake()
+                        .is_some_and(|slot| self.hub.publication_deadline(slot) > now)
+                        || !p.opportunity(now)
+                    {
                         continue;
                     }
                     p.candidate()
