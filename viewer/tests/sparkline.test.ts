@@ -14,3 +14,14 @@ test("mini graphs retain brief age peaks, missing data and signed values in a bo
   assert.ok(age.samples.length <= 101);
   assert.equal(age.samples.at(-1)!.value, 29_999, "Non-peak lines use the latest reading in each bucket");
 });
+
+test("a sub-100ms peak survives recovery and missing readings only within its observed bucket", () => {
+  const age = new SparklineHistory();
+  age.add(1000, 20, true); age.add(1020, 800, true); age.add(1040, 20, true);
+  age.add(1050, undefined, true); age.add(1099, NaN, true);
+  assert.deepEqual(age.samples, [{ at: 1000, value: 800 }]);
+  age.add(1100, undefined, true); age.add(1120, undefined, true);
+  age.add(1200, -12, true); age.add(1220, undefined, true);
+  assert.deepEqual(age.samples, [{ at: 1000, value: 800 }, { at: 1100, value: undefined }, { at: 1200, value: -12 }],
+    "An entirely missing bucket remains a gap; known negative ages never become zero");
+});

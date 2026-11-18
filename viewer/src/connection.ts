@@ -35,7 +35,7 @@ export class Connection {
   private readonly automatic = new Set<number>();
   private readonly scheduleUpdates = new Map<number, number>();
   private readonly timing = new PublicationTiming();
-  private renderToPhotonMs = 20;
+  private renderToPhotonMs = 0;
   private visible = true;
   private subscribed = false;
   private readonly pc = new RTCPeerConnection({ iceServers: [] });

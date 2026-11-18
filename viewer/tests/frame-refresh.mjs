@@ -111,24 +111,24 @@ export async function checkMetricMedians(page) {
       input.value = "-1"; input.dispatchEvent(new Event("input", { bubbles: true }));
       await wait(100);
       const invalid = latestArguments;
-      return { baseline, spike, graphSpikes, sustained, missing, ahead, defaults, changed, invalid, usedOldFrameTime, liveGroups: subscriptions.size };
+      return { baseline, spike, graphSpikes, sustained, missing, ahead, defaults, changed, invalid, usedOldFrameTime };
     } finally {
       window.requestAnimationFrame = requestFrame; Session.prototype.sampleAge = sampleAge;
       Session.prototype.freshness = freshness; Session.prototype.latestNetworkLatency = latency;
       Session.prototype.tracking = tracking; SpatialView.prototype.frameRate = frameRate;
       for (const sub of subscriptions) sub.arrivals.length = 0;
       const input = document.querySelector("#render-to-photon");
-      input.value = "20"; input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.value = "0"; input.dispatchEvent(new Event("input", { bubbles: true }));
     }
   });
-  const expected = value => ({ "sample-age": `${value}.00 ms`, "freshness-age": `${value}.0 ms`, "estimated-latency": `${value}.00 ms`, "arrival-rate": `${value * result.liveGroups}.0 Hz`, "frame-rate": `${value} fps`, "freshness-threshold": `Late above ${value + 20}.0 ms` });
+  const expected = value => ({ "sample-age": `${value}.00 ms`, "freshness-age": `${value}.0 ms`, "estimated-latency": `${value}.00 ms`, "arrival-rate": `${value}.0 Hz`, "frame-rate": `${value} fps`, "freshness-threshold": `Late above ${value + 20}.0 ms` });
   assert.deepEqual(result.baseline, expected(50));
   assert.deepEqual(result.spike, expected(50), "Every displayed metric rejects a brief spike");
   for (const graph of result.graphSpikes) assert.equal(graph.changed, true, `${graph.selector} must still show the raw spike`);
   assert.deepEqual(result.sustained, expected(75), "All displayed values follow sustained changes within two seconds");
   for (const id of ["sample-age", "freshness-age", "estimated-latency", "freshness-threshold"]) assert.equal(result.missing[id], id === "freshness-threshold" ? "Late above —" : "—", "Missing estimates clear display history immediately");
   assert.equal(result.ahead, "-3.00 ms");
-  assert.deepEqual(result.defaults, { renderToPhoton: 20 });
+  assert.deepEqual(result.defaults, { renderToPhoton: 0 });
   assert.deepEqual(result.changed, { renderToPhoton: 30 });
   assert.deepEqual(result.invalid, result.changed, "Invalid display delays do not affect the calculation");
   assert.equal(result.usedOldFrameTime, false, "Sample age uses current time rather than the earlier frame timestamp");

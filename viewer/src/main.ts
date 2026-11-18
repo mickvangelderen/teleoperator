@@ -1,6 +1,6 @@
 import { Connection, initialState } from "./connection";
 import { spatialFrames, staleBundle } from "./tracking-view";
-import { spaceNames, publicationRate, changedOnly, restGroup } from "./protocol";
+import { spaceNames } from "./protocol";
 import type { Session } from "./session";
 import { selectedBundle } from "./session";
 import type { State } from "./connection";
@@ -15,6 +15,7 @@ import type { Request } from "./protocol";
 import { Recorder } from "./recording";
 import { setAttribute, setText } from "./dom";
 import { TwoSecondMedian } from "./statistics";
+import { GroupMetrics } from "./group-metrics";
 import { mountFreshnessIndicator } from "./freshness-view";
 import { groupColor, mountGroupLegend, mountSparkline, neutralColor } from "./sparkline";
 
@@ -32,14 +33,10 @@ const icon = (name: "head" | "controller" | "body") => {
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <header class="topbar">
-    <a class="brand" href="/" aria-label="XR Operator Viewer home"><span class="brand-mark">×</span><span>XR OPERATOR</span><span class="brand-divider">/</span><strong>Viewer</strong></a>
-    <span class="header-note"><span class="mini-dot"></span> DEVICE OBSERVABILITY</span>
+    <h1 class="product-title"><a class="brand" href="/" aria-label="Teleoperator protocol home"><span class="brand-mark" aria-hidden="true">×</span><span>Teleoperator protocol</span></a></h1>
+    <div class="connection-box"><div class="endpoint"><span class="section-label">DEVICE ENDPOINT</span><span id="target" class="mono"></span></div><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></div>
   </header>
   <main>
-    <section class="page-heading">
-      <div><div class="eyebrow">OPERATOR / CONNECTION</div><h1>A window into your device.</h1><p>Inspect live poses, body joints and inputs. Choose exactly what the device publishes.</p></div>
-      <div class="connection-box"><div><span class="section-label">DEVICE ENDPOINT</span><span id="target" class="mono"></span><span class="connection-status"><span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status" aria-live="polite">Disconnected</span></span></div><button id="connect" class="primary">Connect <span aria-hidden="true">↗</span></button></div>
-    </section>
     <div id="error" class="status-message" data-tone="error" role="alert" hidden></div>
     <p id="recording-status" class="recording-status" role="status" hidden></p>
     <section class="metrics" aria-label="Viewer metrics">
@@ -51,11 +48,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </section>
     <section class="panel workspace">
       <div class="viewport"><div id="poses"></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Ready to connect</h3><p id="workspace-note">Connect to inspect the device’s tracking data.</p></div></div>
-      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="20" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><div class="prediction-timing" aria-label="Prediction timing"><span id="prediction-offset-label">Prediction timing</span><span id="requested-prediction-offset" title="Requested offset from the publication slot to the desired device target. This does not establish actual prediction.">Requested: unavailable</span><span id="measured-prediction-offset" title="Actual device target minus acquisition time (predicted_for − acquired_at), when the source reports a target. Publication time is not supplied, so this is not measured publication-to-consumption delay.">Device target − acquisition: unavailable</span></div><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
+      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="0" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><div class="prediction-timing" aria-label="Prediction timing"><span id="prediction-offset-label">Prediction timing</span><span id="requested-prediction-offset" title="Requested offset from the publication slot to the desired device target. This does not establish actual prediction.">Requested: unavailable</span><span id="measured-prediction-offset" title="Actual device target minus acquisition time (predicted_for − acquired_at), when the source reports a target. Publication time is not supplied, so this is not measured publication-to-consumption delay.">Device target − acquisition: unavailable</span></div><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
     </section>
     <section class="panel subscriptions-panel"><span id="sample-summary" class="tag">No capabilities</span><p id="publication-status" class="publication-status status-message" role="status"></p><div id="subscriptions" class="subscriptions"><p>Connect to discover selectable samples.</p></div></section>
     <section class="panel performance-panel" id="performance" aria-label="Performance profiling"></section>
-    <footer><span><span class="footer-mark">×</span> XR Operator <span class="footer-separator">/</span> Viewer</span><span id="footer-status">No device connected</span></footer>
   </main>`;
 
 const element = <T extends HTMLElement = HTMLElement>(id: string) =>
@@ -77,11 +73,10 @@ const publicationGroups: PublicationGroup[] = [];
 let publicationError: string | undefined;
 let graphicsStatus = "Loading 3D view…";
 const setGraphicsStatus = (message: string) => { graphicsStatus = message; };
-const sampleAgeMedian = new TwoSecondMedian();
-const arrivalRateMedian = new TwoSecondMedian();
+const groupMetrics = new GroupMetrics();
 const latencyMedian = new TwoSecondMedian();
 const frameRateMedian = new TwoSecondMedian();
-let renderToPhotonMs = 20;
+let renderToPhotonMs = 0;
 const animate = (frameTime: number) => {
   frame = requestAnimationFrame(animate);
   if (document.hidden) return;
@@ -108,11 +103,12 @@ const animate = (frameTime: number) => {
 let frame = requestAnimationFrame(animate);
 const performancePanel = mountPerformancePanel(element("performance"));
 const freshnessIndicator = mountFreshnessIndicator(element<MetricDisplay>("freshness"));
-const arrivalChart = mountSparkline(element("arrival-metric"), "arrival-chart", "Arrivals per second.\nSolid: actual. Dashed: requested.");
+const arrivalChart = mountSparkline(element("arrival-metric"), "arrival-chart", "Message arrivals per second by group.\nHeadline: mean of 2 s group medians, continuous dynamic groups only.\nSolid: actual. Dashed: requested.");
 const arrivalGroups = mountGroupLegend(arrivalChart.tooltip);
 const latencyChart = mountSparkline(element("latency-metric"), "latency-chart", "Estimated one-way latency.");
 const frameChart = mountSparkline(element("frame-metric"), "frame-chart", "Frames rendered per second.");
-const ageChart = mountSparkline(element("age-metric"), "age-chart", "Estimated age when displayed.\nNegative means predicted ahead.");
+const ageChart = mountSparkline(element("age-metric"), "age-chart", "Age at photon by continuous dynamic group.\nHeadline: mean of 2 s group medians; unknown if any group is missing.\nNegative means the actual device target is ahead.");
+const ageGroups = mountGroupLegend(ageChart.tooltip);
 let metricSession: Session | undefined;
 void import("./spatial").then(({ SpatialView }) => {
   spatial = new SpatialView(element("poses"), setGraphicsStatus);
@@ -125,7 +121,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   if (metricSession !== state.session) {
     metricSession = state.session;
     for (const chart of [freshnessIndicator, arrivalChart, latencyChart, ageChart]) chart.reset();
-    sampleAgeMedian.reset(); arrivalRateMedian.reset(); latencyMedian.reset();
+    latencyMedian.reset();
   }
   freshnessIndicator.update(state.freshness);
   text("graphics-status", graphicsStatus);
@@ -144,7 +140,6 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   element("connect").classList.toggle("secondary", live || busy);
   setAttribute(element("error"), "hidden", state.status !== "Error" ? "" : null);
   text("error", state.detail);
-  text("footer-status", live ? "Connected" : "No device connected");
   const session = state.session;
   if (mountedSession && mountedSession !== session) {
     mountedSession = undefined; publicationGroups.length = 0;
@@ -157,24 +152,17 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   if (session?.capabilities && mountedSession !== session) mountCapabilities(session);
   const subscriptions = [...session?.active.values() ?? []];
   const received = subscriptions.filter(s => s.arrivedAt !== undefined);
-  const rates = subscriptions.map(s => ({
-    key: `${s.request.id}:${s.generation}`, group: s.request.group, onChange: changedOnly(s.request),
-    requested: changedOnly(s.request) ? undefined : publicationRate(s.request),
-    actual: s.arrivals.filter(at => at > now - 1000 && at <= now).length,
-  }));
-  const displayedRate = arrivalRateMedian.update(subscriptions.length ? rates.reduce((sum, s) => sum + s.actual, 0) : undefined, now);
-  element<MetricDisplay>("arrival-metric").update(displayedRate);
-  arrivalGroups(rates);
-  arrivalChart.update(rates.flatMap(s => [
-    ...s.requested === undefined ? [] : [{ key: `${s.key}:requested`, value: s.requested, color: groupColor(s.group), dashed: true, className: "arrival-requested-line" }],
-    { key: `${s.key}:actual`, value: s.actual, color: groupColor(s.group), className: "arrival-actual-line" },
+  const metrics = groupMetrics.update(session, now, renderToPhotonMs);
+  element<MetricDisplay>("arrival-metric").update(metrics.arrival);
+  arrivalGroups(metrics.groups);
+  arrivalChart.update(metrics.groups.flatMap(group => [
+    ...group.requested === undefined ? [] : [{ key: `${group.key}:requested`, value: group.requested, color: groupColor(group.group), dashed: true, className: "arrival-requested-line" }],
+    { key: `${group.key}:actual`, value: group.arrival, color: groupColor(group.group), className: "arrival-actual-line" },
   ]), now);
-  const definitions = new Set(session?.capabilities?.groups.flatMap((_, group) => restGroup(session.capabilities!, group) ? [group] : []) ?? []);
-  const sampleTime = [...view.values.entries()].filter(([index, value]) => !value.stale && session?.capabilities?.descriptors[index].kind === 10 && !definitions.has(session.capabilities.descriptors[index].group))
-    .reduce<bigint | undefined>((latest, [, value]) => { const p = value.packet, time = p && (p.predictedFor ?? p.timestamp); return time !== undefined && (latest === undefined || time > latest) ? time : latest; }, undefined);
-  const sampleAge = sampleTime === undefined ? undefined : session?.sampleAge(sampleTime, now, renderToPhotonMs);
-  const age = sampleAgeMedian.update(sampleAge, now);
-  element<MetricDisplay>("age-metric").update(age);
+  element<MetricDisplay>("age-metric").update(metrics.age);
+  const ageMetrics = metrics.groups.filter(group => group.continuous);
+  ageGroups(ageMetrics);
+  ageChart.update(ageMetrics.map(group => ({ key: group.key, value: group.age, color: groupColor(group.group), peak: true })), now);
   const latency = session?.latestNetworkLatency(now);
   const displayedLatency = latencyMedian.update(latency, now);
   element<MetricDisplay>("latency-metric").update(displayedLatency);
@@ -183,7 +171,6 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   const displayedFps = frameRateMedian.update(fps, now);
   element<MetricDisplay>("frame-metric").update(displayedFps);
   frameChart.update([{ key: "frames", value: fps, color: neutralColor }], now);
-  ageChart.update([{ key: "age", value: sampleAge, color: neutralColor }], now);
   const timing = received.find(s => s.packet?.predictedFor != null)
     ?? subscriptions[0];
   const prediction = timing?.packet, schedule = timing?.request;
@@ -207,7 +194,6 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
 }
 
 function mountCapabilities(session: Session) {
-  sampleAgeMedian.reset();
   mountedSession = session;
   publicationGroups.length = 0;
   const capabilities = session.capabilities!, container = element("subscriptions");
@@ -267,7 +253,7 @@ element("continuous-render").onchange = () => {
 element<HTMLInputElement>("render-to-photon").oninput = () => {
   const input = element<HTMLInputElement>("render-to-photon"), value = input.valueAsNumber;
   if (!input.validity.valid || !Number.isFinite(value)) return;
-  renderToPhotonMs = value; sampleAgeMedian.reset();
+  renderToPhotonMs = value;
 };
 
 element("skeleton-view").onchange = () => spatial?.reframe();

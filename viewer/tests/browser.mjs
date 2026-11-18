@@ -47,7 +47,7 @@ try {
   assert.equal(await page.locator("#estimated-latency").textContent(), "—");
   assert.equal(await page.locator("#sample-age").textContent(), "—");
   assert.equal(await page.locator("#freshness-age").textContent(), "—");
-  assert.equal(await page.locator("#render-to-photon").inputValue(), "20");
+  assert.equal(await page.locator("#render-to-photon").inputValue(), "0");
   await page.screenshot({ path: output + "disconnected.png", fullPage: true });
   await page.getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(

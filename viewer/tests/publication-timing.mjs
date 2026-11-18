@@ -155,7 +155,7 @@ export async function checkAutomaticPublicationTiming(page) {
     });
     assert.ok(Math.abs(retargeted.after - retargeted.before - 0.25) < 1e-6, "A new prediction of the same acquisition must update the rendered pose");
   } finally {
-    await page.locator("#render-to-photon").fill("20");
+    await page.locator("#render-to-photon").fill("0");
     await page.evaluate(() => { window.publicationTimingCheck.restore(); delete window.publicationTimingCheck; });
   }
 }
