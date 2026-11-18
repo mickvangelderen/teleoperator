@@ -507,7 +507,7 @@ impl Ui {
             self.last_source.clone_from(&self.tracking.message);
         }
         if Instant::now() >= self.next_address_check {
-            let address = super::viewer_address();
+            let address = super::operator_address();
             if self.last_address != address {
                 set_text(env, &self.address, &address)?;
                 self.last_address = address;

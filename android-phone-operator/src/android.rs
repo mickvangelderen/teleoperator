@@ -145,7 +145,7 @@ fn hub() -> Arc<Hub> {
     app().lock().unwrap().running.as_ref().unwrap().hub.clone()
 }
 
-fn viewer_address() -> String {
+fn operator_address() -> String {
     let current = app().lock().unwrap();
     let Some(a) = &current.running else {
         return "Server stopped".into();

@@ -2,7 +2,7 @@
     <string name="app_name">Phone Operator</string>
     <string name="ar_notice">This application runs on <a href="https://play.google.com/store/apps/details?id=com.google.ar.core">Google Play Services for AR</a> (ARCore), which is provided by Google and governed by the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>. Use of ARCore is subject to <a href="https://policies.google.com/terms">Google Terms of Service</a>.</string>
     <string name="tracking_source">Tracking source</string>
-    <string name="viewer_address">Viewer address</string>
+    <string name="operator_address">Operator address</string>
     <string name="control_hand">Control hand</string>
     <string name="show_options">Tracking options</string>
     <string name="hide_options">Hide tracking options</string>
