@@ -4,30 +4,67 @@
     <ScrollView android:layout_width="match_parent" android:layout_height="match_parent"
         android:fillViewport="true" android:splitMotionEvents="false">
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:orientation="vertical" android:paddingHorizontal="20dp" android:paddingVertical="12dp"
+            android:orientation="vertical" android:paddingHorizontal="24dp" android:paddingVertical="16dp"
             android:keepScreenOn="true" android:splitMotionEvents="false">
+
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:text="@string/app_name" android:textSize="23sp" android:accessibilityHeading="true" />
-            <TextView android:id="@+id/notice" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:text="@string/ar_notice" android:textSize="13sp" />
-            <Spinner android:id="@+id/source" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:minHeight="48dp" android:entries="@array/sources" android:saveEnabled="false"
-                android:contentDescription="@string/tracking_source" />
-            <Button android:id="@+id/retry" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:text="@string/retry" android:visibility="gone" />
-            <RadioGroup android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                <RadioButton android:id="@+id/left" android:layout_width="0dp" android:layout_weight="1"
-                    android:layout_height="62dp" android:text="@string/left" android:textSize="20sp" android:saveEnabled="false" />
-                <RadioButton android:id="@+id/right" android:layout_width="0dp" android:layout_weight="1"
-                    android:layout_height="62dp" android:text="@string/right" android:textSize="20sp" android:saveEnabled="false" />
+                android:text="@string/app_name" android:textSize="32sp" android:textColor="#1E283F"
+                android:fontFamily="sans-serif-medium" android:accessibilityHeading="true" />
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="16dp" android:text="@string/viewer_address" />
+            <TextView android:id="@+id/address" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textSize="18sp" android:fontFamily="monospace" android:textColor="#26344F"
+                android:textIsSelectable="true" />
+            <View android:layout_width="match_parent" android:layout_height="1dp"
+                android:layout_marginVertical="20dp" android:background="#D8DDE8" />
+
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/control_hand" />
+            <RadioGroup android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:orientation="horizontal" android:padding="3dp"
+                android:background="@drawable/hand_group">
+                <RadioButton android:id="@+id/left" style="@style/HandChoice" android:text="@string/left" />
+                <RadioButton android:id="@+id/right" style="@style/HandChoice" android:text="@string/right" />
             </RadioGroup>
-            <Button android:id="@+id/hold" android:layout_width="match_parent" android:layout_height="190dp"
-                android:text="@string/hold" android:textSize="26sp" android:textColor="#ffffff"
-                android:backgroundTint="@color/hold_tint" android:contentDescription="@string/hold_hint" />
-            <Button android:id="@+id/recenter" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:text="@string/recenter" />
-            <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:textSize="15sp" android:paddingVertical="8dp" android:textIsSelectable="true" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="18dp" android:gravity="center_vertical" android:orientation="horizontal">
+                <TextView android:id="@+id/status" android:layout_width="0dp" android:layout_weight="1"
+                    android:layout_height="wrap_content" android:textSize="23sp" android:textColor="#1E283F"
+                    android:fontFamily="sans-serif-medium" android:accessibilityLiveRegion="polite" />
+                <Button android:id="@+id/recenter" style="@style/TextAction"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/recenter" />
+            </LinearLayout>
+            <TextView android:id="@+id/hint" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:minLines="2" android:textSize="16sp" android:textColor="#515D74" />
+
+            <FrameLayout android:layout_width="match_parent" android:layout_height="180dp"
+                android:layout_weight="1" android:layout_marginVertical="16dp" android:splitMotionEvents="false">
+                <Button android:id="@+id/hold" android:layout_width="match_parent" android:layout_height="match_parent"
+                    android:background="@drawable/hold_pad" android:backgroundTint="@color/hold_tint"
+                    android:stateListAnimator="@null" android:paddingHorizontal="12dp" android:paddingTop="54dp"
+                    android:text="@string/hold" android:textAllCaps="false" android:textSize="30sp"
+                    android:textColor="#FFFFFF" android:fontFamily="sans-serif-medium"
+                    android:contentDescription="@string/hold_hint" />
+                <ImageView android:layout_width="48dp" android:layout_height="48dp"
+                    android:layout_gravity="center" android:translationY="-26dp" android:src="@drawable/touch_target"
+                    android:importantForAccessibility="no" />
+            </FrameLayout>
+            <Button android:id="@+id/options" style="@style/TextAction" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:text="@string/show_options" />
+            <LinearLayout android:id="@+id/settings" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:visibility="gone">
+                <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/tracking_source" android:labelFor="@id/source" />
+                <Spinner android:id="@+id/source" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:minHeight="48dp" android:entries="@array/sources" android:saveEnabled="false" />
+                <TextView android:id="@+id/source_detail" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:textSize="15sp" android:textColor="#515D74" />
+                <Button android:id="@+id/retry" style="@style/TextAction" android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" android:text="@string/retry" android:visibility="gone" />
+            </LinearLayout>
+            <Button android:id="@+id/disclosure" style="@style/TextAction" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:text="@string/notice_title" />
         </LinearLayout>
     </ScrollView>
 </FrameLayout>

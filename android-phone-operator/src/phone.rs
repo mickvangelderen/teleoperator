@@ -82,6 +82,23 @@ pub enum TrackingMode {
     Spatial,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+    Ready,
+    Waiting,
+    Unavailable,
+    Recenter,
+    Tracking,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct HandsetStatus {
+    pub hand: Hand,
+    pub held: bool,
+    pub mode: TrackingMode,
+    pub motion: Motion,
+}
+
 #[derive(Clone)]
 struct Snapshot {
     number: u64,
@@ -290,6 +307,16 @@ impl State {
             && self.focused
             && self.fresh(sensor, at)
             && self.last[sensor].is_some_and(|t| t >= self.hold_started)
+    }
+    fn can_hold(&self, at: u64) -> bool {
+        self.foreground
+            && self.focused
+            && self.fresh(0, at)
+            && self.heading_set
+            && self
+                .displacement
+                .as_ref()
+                .is_none_or(|d| self.fresh(1, at) && d.ready(at))
     }
     fn cancel(&mut self) {
         if self.held {
@@ -569,15 +596,7 @@ impl Hub {
                 s.selected = hand;
             }
             Action::Hold => {
-                if !s.held
-                    && s.foreground
-                    && s.focused
-                    && s.fresh(0, at)
-                    && s.heading_set
-                    && s.displacement
-                        .as_ref()
-                        .is_none_or(|d| s.fresh(1, at) && d.ready(at))
-                {
+                if !s.held && s.can_hold(at) {
                     s.held = true;
                     s.hold_started = at;
                     let hand = s.selected as usize;
@@ -823,6 +842,49 @@ impl Hub {
             self.updates.send_replace(s.serial);
         }
     }
+    pub fn handset_status(&self, at: u64) -> HandsetStatus {
+        let s = self.state.lock().unwrap();
+        let mode = if s.spatial.is_some() {
+            TrackingMode::Spatial
+        } else if s.displacement.is_some() {
+            TrackingMode::Displacement
+        } else {
+            TrackingMode::Orientation
+        };
+        let pose = &s.snapshots[0];
+        // Each hand publishes its pose followed by position/orientation valid and tracked bits.
+        let orientation_valid = matches!(
+            pose.values.get(s.selected as usize * 5 + 2),
+            Some(Value::Bit(true))
+        );
+        let motion = if s.held {
+            if orientation_valid && at.saturating_sub(pose.timestamp) <= STALE_NS {
+                Motion::Tracking
+            } else {
+                Motion::Waiting
+            }
+        } else if !s.available[0] || (mode == TrackingMode::Displacement && !s.available[1]) {
+            Motion::Unavailable
+        } else if s.spatial.as_ref().is_some_and(|a| {
+            !a.origin
+                && !a.recenter
+                && a.camera_ready_at
+                    .is_some_and(|t| at.saturating_sub(t) <= STALE_NS)
+        }) {
+            Motion::Recenter
+        } else if s.can_hold(at) {
+            Motion::Ready
+        } else {
+            Motion::Waiting
+        };
+        HandsetStatus {
+            hand: s.selected,
+            held: s.held,
+            mode,
+            motion,
+        }
+    }
+
     pub fn status(&self, at: u64) -> String {
         let s = self.state.lock().unwrap();
         if let Some(d) = &s.displacement {
@@ -948,6 +1010,7 @@ impl Hub {
             let Acquisition::New(capture_time) = acquisition else {
                 return Ok(None);
             };
+            a.camera_ready_at = Some(capture_time);
             if f.created_origin && a.recenter {
                 a.origin = true;
                 a.recenter = false;
@@ -1019,6 +1082,24 @@ mod tests {
             Value::Numbers(v) => v.clone(),
             _ => panic!(),
         }
+    }
+    #[test]
+    fn handset_shows_tracking_only_after_a_fresh_valid_pose() {
+        let h = hub();
+        h.action(Action::Select(Hand::Right), 3);
+        assert_eq!(h.handset_status(3).motion, Motion::Ready);
+        h.action(Action::Hold, 4);
+        assert!(h.handset_status(4).held);
+        assert_eq!(h.handset_status(4).motion, Motion::Waiting);
+        h.sensor(0, 5, upright(), 5);
+        assert_eq!(h.handset_status(5).motion, Motion::Tracking);
+        assert_ne!(h.handset_status(6 + STALE_NS).motion, Motion::Tracking);
+        h.action(Action::Release, 6);
+        assert_eq!(h.handset_status(6).motion, Motion::Ready);
+        let missing = Hub::at([false; 3], "test", 0);
+        missing.action(Action::Hold, 1);
+        assert_eq!(missing.handset_status(1).motion, Motion::Unavailable);
+        assert!(!missing.handset_status(1).held);
     }
     #[test]
     fn old_clock_read_cannot_cancel_a_fresh_source_or_backdate_transitions() {

@@ -125,6 +125,7 @@ impl ClockGate {
 
 #[derive(Debug)]
 pub(crate) struct SpatialState {
+    pub camera_ready_at: Option<u64>,
     pub generation: u64,
     pub recenter: bool,
     pub origin: bool,
@@ -136,6 +137,7 @@ pub(crate) struct SpatialState {
 impl Default for SpatialState {
     fn default() -> Self {
         Self {
+            camera_ready_at: None,
             generation: 0,
             recenter: false,
             origin: false,
@@ -148,6 +150,7 @@ impl Default for SpatialState {
 }
 impl SpatialState {
     pub fn invalidate(&mut self, reason: &str) {
+        self.camera_ready_at = None;
         self.generation = self.generation.wrapping_add(1);
         self.recenter = false;
         self.origin = false;

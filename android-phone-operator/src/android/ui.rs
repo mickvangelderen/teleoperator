@@ -1,6 +1,6 @@
 //! Framework Views, inflated and updated on the Activity's main looper.
 use super::{activity::with_ui, camera::Tracking, sensors::Sensors};
-use crate::phone::{self, Action, Hand, Hub};
+use crate::phone::{self, Action, Hand, HandsetStatus, Hub, Motion, TrackingMode};
 use jni::{
     JNIEnv,
     errors::Result,
@@ -11,7 +11,10 @@ use ndk_sys::{
     AMOTION_EVENT_ACTION_CANCEL, AMOTION_EVENT_ACTION_DOWN, AMOTION_EVENT_ACTION_MOVE,
     AMOTION_EVENT_ACTION_POINTER_DOWN, AMOTION_EVENT_ACTION_POINTER_UP, AMOTION_EVENT_ACTION_UP,
 };
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 pub(super) struct Ui {
     activity: GlobalRef,
@@ -20,13 +23,17 @@ pub(super) struct Ui {
     pub tracking: Tracking,
     hub: Arc<Hub>,
     status: GlobalRef,
+    hint: GlobalRef,
+    address: GlobalRef,
+    source_detail: GlobalRef,
     retry: GlobalRef,
     hands: [GlobalRef; 2],
     hold: GlobalRef,
-    hold_labels: [i32; 2],
-    last_held: Option<bool>,
-    last_hand: Option<Hand>,
-    last_status: String,
+    contact: bool,
+    last_controls: Option<(HandsetStatus, bool)>,
+    last_source: String,
+    last_address: String,
+    next_address_check: Instant,
     listeners: Vec<JniProxy>,
     refresh: JniProxy,
     resumed: bool,
@@ -103,22 +110,6 @@ impl Ui {
                 .l()?;
             env.new_global_ref(v)
         };
-        let notice = view(env, "notice")?;
-        let links = env
-            .call_static_method(
-                "android/text/method/LinkMovementMethod",
-                "getInstance",
-                "()Landroid/text/method/MovementMethod;",
-                &[],
-            )?
-            .l()?;
-        env.call_method(
-            &notice,
-            "setMovementMethod",
-            "(Landroid/text/method/MovementMethod;)V",
-            &[(&links).into()],
-        )?;
-
         // Keep the private preference file used by the previous Activity.getPreferences().
         let file = env.new_string("dev.xroperator.phone.MainActivity")?;
         let prefs = env
@@ -152,16 +143,17 @@ impl Ui {
             tracking,
             hub,
             status: view(env, "status")?,
+            hint: view(env, "hint")?,
+            address: view(env, "address")?,
+            source_detail: view(env, "source_detail")?,
             retry: view(env, "retry")?,
             hands: [view(env, "left")?, view(env, "right")?],
             hold: view(env, "hold")?,
-            hold_labels: [
-                resources.id(env, "string", "hold")?,
-                resources.id(env, "string", "held")?,
-            ],
-            last_held: None,
-            last_hand: None,
-            last_status: String::new(),
+            contact: false,
+            last_controls: None,
+            last_source: String::new(),
+            last_address: String::new(),
+            next_address_check: Instant::now(),
             listeners: Vec::new(),
             refresh: JniProxy::build(env, None, ["java/lang/Runnable"], |env, _, _| {
                 with_ui(|ui| ui.refresh(env))?;
@@ -193,10 +185,11 @@ impl Ui {
                 "android/view/View$OnClickListener",
                 &v,
                 "setOnClickListener",
-                move |_, _| {
+                move |env, _| {
                     with_ui(|ui| {
+                        ui.contact = false;
                         ui.action(action);
-                        Ok(())
+                        ui.render_controls(env)
                     })
                 },
             )?;
@@ -207,6 +200,45 @@ impl Ui {
             &ui.retry.clone(),
             "setOnClickListener",
             |env, _| with_ui(|ui| ui.tracking.retry(env, ui.activity.as_obj())),
+        )?;
+        let settings = view(env, "settings")?;
+        let options = view(env, "options")?;
+        let show = resources.id(env, "string", "show_options")?;
+        let hide = resources.id(env, "string", "hide_options")?;
+        ui.listen(
+            env,
+            "android/view/View$OnClickListener",
+            &options,
+            "setOnClickListener",
+            move |env, args| {
+                let expand = env
+                    .call_method(&settings, "getVisibility", "()I", &[])?
+                    .i()?
+                    != 0;
+                env.call_method(
+                    &settings,
+                    "setVisibility",
+                    "(I)V",
+                    &[if expand { 0 } else { 8 }.into()],
+                )?;
+                env.call_method(
+                    args[0],
+                    "setText",
+                    "(I)V",
+                    &[if expand { hide } else { show }.into()],
+                )?;
+                Ok(())
+            },
+        )?;
+        let title = resources.id(env, "string", "notice_title")?;
+        let notice = resources.id(env, "string", "ar_notice")?;
+        let disclosure = view(env, "disclosure")?;
+        ui.listen(
+            env,
+            "android/view/View$OnClickListener",
+            &disclosure,
+            "setOnClickListener",
+            move |env, _| with_ui(|ui| show_notice(env, &ui.activity, title, notice)),
         )?;
         let hold = JniProxy::build(
             env,
@@ -264,7 +296,7 @@ impl Ui {
         self.hub.action(action, phone::now());
     }
 
-    fn touch(&self, env: &mut JNIEnv, view: &JObject, event: &JObject) -> Result<()> {
+    fn touch(&mut self, env: &mut JNIEnv, view: &JObject, event: &JObject) -> Result<()> {
         match env.call_method(event, "getActionMasked", "()I", &[])?.i()? as u32 {
             AMOTION_EVENT_ACTION_DOWN => {
                 let parent = env
@@ -276,16 +308,17 @@ impl Ui {
                     "(Z)V",
                     &[true.into()],
                 )?;
+                self.contact = true;
                 self.action(Action::Hold);
             }
-            AMOTION_EVENT_ACTION_MOVE if self.hub.held() => {
+            AMOTION_EVENT_ACTION_MOVE if self.contact => {
                 let width = env.call_method(view, "getWidth", "()I", &[])?.i()? as f32;
                 let height = env.call_method(view, "getHeight", "()I", &[])?.i()? as f32;
                 let inside = |x, y| (0.0..width).contains(&x) && (0.0..height).contains(&y);
                 let x = env.call_method(event, "getX", "()F", &[])?.f()?;
                 let y = env.call_method(event, "getY", "()F", &[])?.f()?;
                 if !inside(x, y) {
-                    self.action(Action::Cancel);
+                    self.cancel_contact();
                 } else {
                     for i in 0..env.call_method(event, "getHistorySize", "()I", &[])?.i()? {
                         let x = env
@@ -295,22 +328,30 @@ impl Ui {
                             .call_method(event, "getHistoricalY", "(I)F", &[i.into()])?
                             .f()?;
                         if !inside(x, y) {
-                            self.action(Action::Cancel);
+                            self.cancel_contact();
                             break;
                         }
                     }
                 }
             }
             AMOTION_EVENT_ACTION_UP => {
+                let inside = self.contact;
+                self.contact = false;
                 self.action(Action::Release);
-                env.call_method(view, "performClick", "()Z", &[])?;
+                if inside {
+                    env.call_method(view, "performClick", "()Z", &[])?;
+                }
             }
             AMOTION_EVENT_ACTION_CANCEL
             | AMOTION_EVENT_ACTION_POINTER_DOWN
-            | AMOTION_EVENT_ACTION_POINTER_UP => self.action(Action::Cancel),
+            | AMOTION_EVENT_ACTION_POINTER_UP => self.cancel_contact(),
             _ => {}
         }
-        Ok(())
+        self.render_controls(env)
+    }
+    fn cancel_contact(&mut self) {
+        self.contact = false;
+        self.action(Action::Cancel);
     }
     fn select(&mut self, env: &mut JNIEnv, source: i32) -> Result<()> {
         if self.tracking.source == source {
@@ -332,8 +373,9 @@ impl Ui {
             &[(&key).into(), source.into()],
         )?;
         env.call_method(editor, "apply", "()V", &[])?;
+        self.contact = false;
         self.tracking.select(source);
-        Ok(())
+        self.render_controls(env)
     }
     pub fn resume(&mut self, env: &mut JNIEnv) -> Result<()> {
         self.resumed = true;
@@ -344,6 +386,7 @@ impl Ui {
     }
     pub fn pause(&mut self, env: &mut JNIEnv) -> Result<()> {
         self.resumed = false;
+        self.contact = false;
         self.action(Action::Pause);
         self.tracking.stop();
         self.sensors.pause(env)?;
@@ -361,8 +404,95 @@ impl Ui {
         if focused {
             self.tracking.check_soon();
         } else {
+            self.contact = false;
             self.tracking.stop();
         }
+    }
+    fn render_controls(&mut self, env: &mut JNIEnv) -> Result<()> {
+        let state = self.hub.handset_status(phone::now());
+        if self.last_controls == Some((state, self.contact)) {
+            return Ok(());
+        }
+        let (title, hint) = match (state.motion, state.mode) {
+            (Motion::Unavailable, _) => (
+                "Tracking unavailable",
+                "Choose another tracking source in Tracking options.",
+            ),
+            (Motion::Recenter, _) => (
+                "Recenter to start",
+                "Point the rear camera forward and tap Recenter.",
+            ),
+            (Motion::Waiting, _) if state.held => (
+                "Waiting for motion",
+                "Keep holding for the first fresh measurement.",
+            ),
+            (Motion::Waiting, TrackingMode::Spatial) => (
+                "Waiting for camera",
+                "Slowly move the phone while looking at a well-lit surface with detail.",
+            ),
+            (Motion::Waiting, _) => (
+                "Waiting for sensors",
+                "Hold the phone upright with its rear camera facing forward.",
+            ),
+            (Motion::Ready, _) if self.contact => (
+                "Ready to retry",
+                "Lift your finger, then press and hold again.",
+            ),
+            (Motion::Ready, TrackingMode::Orientation) => {
+                ("Ready to track", "Press and hold to track rotation.")
+            }
+            (Motion::Ready, TrackingMode::Spatial) => (
+                "Ready to track",
+                "Press and hold to track position and rotation.",
+            ),
+            (Motion::Ready, TrackingMode::Displacement) => (
+                "Ready to estimate",
+                "Press and hold to estimate movement from this point.",
+            ),
+            (Motion::Tracking, TrackingMode::Orientation) => {
+                ("Tracking rotation", "Rotate the phone. Release to stop.")
+            }
+            (Motion::Tracking, TrackingMode::Spatial) => (
+                "Tracking motion",
+                "Move or rotate the phone. Release to stop.",
+            ),
+            (Motion::Tracking, TrackingMode::Displacement) => (
+                "Estimating movement",
+                "Position is estimated from motion sensors. Release to stop.",
+            ),
+        };
+        let pad = if !self.contact {
+            "Press and hold"
+        } else if state.held {
+            "Release to stop"
+        } else {
+            "Release to retry"
+        };
+        env.call_method(&self.hold, "setPressed", "(Z)V", &[self.contact.into()])?;
+        env.call_method(
+            &self.hold,
+            "setActivated",
+            "(Z)V",
+            &[(state.motion == Motion::Tracking).into()],
+        )?;
+        set_text(env, &self.hold, pad)?;
+        set_text(env, &self.status, title)?;
+        set_text(env, &self.hint, hint)?;
+        let description = env.new_string(title)?;
+        env.call_method(
+            &self.hold,
+            "setStateDescription",
+            "(Ljava/lang/CharSequence;)V",
+            &[(&description).into()],
+        )?;
+        env.call_method(
+            &self.hands[state.hand as usize],
+            "setChecked",
+            "(Z)V",
+            &[true.into()],
+        )?;
+        self.last_controls = Some((state, self.contact));
+        Ok(())
     }
     fn refresh(&mut self, env: &mut JNIEnv) -> Result<()> {
         if !self.resumed {
@@ -371,46 +501,18 @@ impl Ui {
         if self.focused {
             self.tracking.update(env, &self.activity)?;
         }
-        let status = format!("{}\n\n{}", self.tracking.message, super::status());
-        if status != self.last_status {
-            let text = env.new_string(&status)?;
-            env.call_method(
-                &self.status,
-                "setText",
-                "(Ljava/lang/CharSequence;)V",
-                &[(&text).into()],
-            )?;
-            self.last_status = status;
+        self.render_controls(env)?;
+        if self.tracking.message != self.last_source {
+            set_text(env, &self.source_detail, &self.tracking.message)?;
+            self.last_source.clone_from(&self.tracking.message);
         }
-        let hand = self.hub.selected();
-        if self.last_hand != Some(hand) {
-            env.call_method(
-                &self.hands[hand as usize],
-                "setChecked",
-                "(Z)V",
-                &[true.into()],
-            )?;
-            self.last_hand = Some(hand);
-        }
-        let held = self.hub.held();
-        if self.last_held != Some(held) {
-            env.call_method(
-                &self.hold,
-                "setText",
-                "(I)V",
-                &[self.hold_labels[usize::from(held)].into()],
-            )?;
-            env.call_method(&self.hold, "setActivated", "(Z)V", &[held.into()])?;
-            let label = env
-                .call_method(&self.hold, "getText", "()Ljava/lang/CharSequence;", &[])?
-                .l()?;
-            env.call_method(
-                &self.hold,
-                "setStateDescription",
-                "(Ljava/lang/CharSequence;)V",
-                &[(&label).into()],
-            )?;
-            self.last_held = Some(held);
+        if Instant::now() >= self.next_address_check {
+            let address = super::viewer_address();
+            if self.last_address != address {
+                set_text(env, &self.address, &address)?;
+                self.last_address = address;
+            }
+            self.next_address_check = Instant::now() + Duration::from_secs(2);
         }
         let visibility = if self.tracking.retry_visible { 0 } else { 8 };
         env.call_method(&self.retry, "setVisibility", "(I)V", &[visibility.into()])?;
@@ -422,4 +524,69 @@ impl Ui {
         )?;
         Ok(())
     }
+}
+
+fn set_text(env: &mut JNIEnv, view: &GlobalRef, value: &str) -> Result<()> {
+    let text = env.new_string(value)?;
+    env.call_method(
+        view,
+        "setText",
+        "(Ljava/lang/CharSequence;)V",
+        &[(&text).into()],
+    )?;
+    Ok(())
+}
+
+fn show_notice(env: &mut JNIEnv, activity: &GlobalRef, title: i32, notice: i32) -> Result<()> {
+    let builder = env.new_object(
+        "android/app/AlertDialog$Builder",
+        "(Landroid/content/Context;)V",
+        &[activity.as_obj().into()],
+    )?;
+    env.call_method(
+        &builder,
+        "setTitle",
+        "(I)Landroid/app/AlertDialog$Builder;",
+        &[title.into()],
+    )?;
+    env.call_method(
+        &builder,
+        "setMessage",
+        "(I)Landroid/app/AlertDialog$Builder;",
+        &[notice.into()],
+    )?;
+    let ok = env.get_static_field("android/R$string", "ok", "I")?.i()?;
+    env.call_method(
+        &builder,
+        "setPositiveButton",
+        "(ILandroid/content/DialogInterface$OnClickListener;)Landroid/app/AlertDialog$Builder;",
+        &[ok.into(), (&JObject::null()).into()],
+    )?;
+    let dialog = env
+        .call_method(builder, "show", "()Landroid/app/AlertDialog;", &[])?
+        .l()?;
+    let id = env.get_static_field("android/R$id", "message", "I")?.i()?;
+    let message = env
+        .call_method(
+            dialog,
+            "findViewById",
+            "(I)Landroid/view/View;",
+            &[id.into()],
+        )?
+        .l()?;
+    let links = env
+        .call_static_method(
+            "android/text/method/LinkMovementMethod",
+            "getInstance",
+            "()Landroid/text/method/MovementMethod;",
+            &[],
+        )?
+        .l()?;
+    env.call_method(
+        message,
+        "setMovementMethod",
+        "(Landroid/text/method/MovementMethod;)V",
+        &[(&links).into()],
+    )?;
+    Ok(())
 }

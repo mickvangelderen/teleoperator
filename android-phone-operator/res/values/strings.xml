@@ -2,6 +2,11 @@
     <string name="app_name">Phone Operator</string>
     <string name="ar_notice">This application runs on <a href="https://play.google.com/store/apps/details?id=com.google.ar.core">Google Play Services for AR</a> (ARCore), which is provided by Google and governed by the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>. Use of ARCore is subject to <a href="https://policies.google.com/terms">Google Terms of Service</a>.</string>
     <string name="tracking_source">Tracking source</string>
+    <string name="viewer_address">Viewer address</string>
+    <string name="control_hand">Control hand</string>
+    <string name="show_options">Tracking options</string>
+    <string name="hide_options">Hide tracking options</string>
+    <string name="notice_title">ARCore privacy notice</string>
     <string-array name="sources">
         <item>Automatic (prefer ARCore)</item>
         <item>Sensors: orientation</item>
@@ -10,8 +15,7 @@
     <string name="retry">Retry ARCore</string>
     <string name="left">Left</string>
     <string name="right">Right</string>
-    <string name="hold">Hold to track</string>
-    <string name="held">Tracking\nRelease to stop</string>
+    <string name="hold">Press and hold</string>
     <string name="hold_hint">Press and hold to track. Release to stop.</string>
-    <string name="recenter">Recenter (stops tracking)</string>
+    <string name="recenter">Recenter</string>
 </resources>

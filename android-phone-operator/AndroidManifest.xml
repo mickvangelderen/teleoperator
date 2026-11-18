@@ -4,7 +4,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
-    <application android:label="@string/app_name" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+    <application android:label="@string/app_name" android:theme="@style/OperatorTheme"
         android:allowBackup="false" android:usesCleartextTraffic="true">
         <meta-data android:name="com.google.ar.core" android:value="optional" />
         <activity android:name="android.app.NativeActivity" android:launchMode="singleTask" android:exported="false" android:screenOrientation="portrait">

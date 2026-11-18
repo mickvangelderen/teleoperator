@@ -39,6 +39,7 @@ fn app() -> &'static Mutex<AppSlot> {
 fn addresses() -> String {
     let mut first = std::ptr::null_mut();
     let mut ips = Vec::new();
+    let mut wifi = Vec::new();
     unsafe {
         if libc::getifaddrs(&mut first) == 0 {
             let mut entry = first;
@@ -51,7 +52,12 @@ fn addresses() -> String {
                         .to_ne_bytes();
                     let ip = std::net::Ipv4Addr::from(bytes);
                     if !ip.is_loopback() && !ip.is_unspecified() {
-                        ips.push(format!("http://{ip}:{PORT}"));
+                        let name = std::ffi::CStr::from_ptr((*entry).ifa_name).to_bytes();
+                        if name.starts_with(b"wlan") {
+                            wifi.push(format!("http://{ip}:{PORT}"));
+                        } else {
+                            ips.push(format!("http://{ip}:{PORT}"));
+                        }
                     }
                 }
                 entry = (*entry).ifa_next;
@@ -59,10 +65,13 @@ fn addresses() -> String {
             libc::freeifaddrs(first);
         }
     }
+    if !wifi.is_empty() {
+        ips = wifi;
+    }
     ips.sort();
     ips.dedup();
     if ips.is_empty() {
-        format!("No LAN IPv4 address. Connect Wi-Fi; server port {PORT}.")
+        "Connect the phone to Wi-Fi".into()
     } else {
         ips.join("\n")
     }
@@ -108,7 +117,7 @@ fn start(mask: i32) {
         };
         runtime.block_on(async move {
             let listener=match tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED,PORT)).await {Ok(l)=>l,Err(e)=>{*n.lock().unwrap()=format!("Server unavailable: {e}");return;}};
-            *n.lock().unwrap()=format!("Listening — port {PORT}");
+            n.lock().unwrap().clear();
             let source=h.clone();let mut ticker_stop=rx.clone();
             let ticker=tokio::spawn(async move {
                 let mut timer=tokio::time::interval(std::time::Duration::from_millis(25));
@@ -136,15 +145,15 @@ fn hub() -> Arc<Hub> {
     app().lock().unwrap().running.as_ref().unwrap().hub.clone()
 }
 
-fn status() -> String {
+fn viewer_address() -> String {
     let current = app().lock().unwrap();
     let Some(a) = &current.running else {
         return "Server stopped".into();
     };
-    format!(
-        "{}\n\n{}\n{}",
-        a.hub.status(phone::now()),
-        a.network.lock().unwrap(),
+    let network = a.network.lock().unwrap();
+    if network.is_empty() {
         addresses()
-    )
+    } else {
+        network.clone()
+    }
 }
