@@ -55,6 +55,7 @@ async function run(mode) {
     browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE||'/opt/google/chrome/chrome',headless:true});
     const page=await browser.newPage({viewport:{width:1400,height:1000}});
     await page.goto(url);
+    await page.getByRole('dialog').getByLabel('Operator address').fill(`http://127.0.0.1:${serverPort}`);
     const normal=await page.evaluate(async mode=>{
       const {Connection}=await import('/src/connection.ts');
       const {currentValues,poseSources,spatialFrames}=await import('/src/tracking-view.ts');
@@ -157,7 +158,7 @@ async function run(mode) {
     });
     assert.deepEqual(protocol.errors,[]);assert.ok(protocol.reports.every(r=>r.predictedFor===null&&r.packets>=3));
     // Exercise the unchanged production UI, using its ordinary connect action.
-    await page.getByRole('button',{name:'Connect',exact:true}).click();
+    await page.getByRole('dialog').getByRole('button',{name:'Connect',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
     await page.waitForFunction(()=>document.querySelector('#poses')?.dataset.poseCount==='1');
     if (mode === 'orientation')
