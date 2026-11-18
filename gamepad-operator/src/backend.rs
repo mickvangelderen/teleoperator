@@ -1,6 +1,6 @@
 //! Linux-only SDL evdev input. No video, keyboard, mouse, haptics, or HIDAPI.
 //! SDL 2 mappings: https://wiki.libsdl.org/SDL2/CategoryGameController
-use crate::input::{Definition, DeviceInfo, Hub, InputValue, Source};
+use crate::input::{Definition, DeviceInfo, Hub, InputValue, OBSERVATION_PERIOD_NS, Source};
 use sdl2::{
     controller::{Axis, Button, GameController},
     event::Event,
@@ -714,6 +714,8 @@ pub fn run_sdl(
     };
     let mut open: Option<(Opened, Arc<Hub>)> = None;
     let mut next_scan = Instant::now();
+    let mut next_observation = 0;
+    let mut transitions = Vec::new();
     let mut message = String::new();
     while !stop.load(Ordering::Relaxed) {
         sdl.events.pump_events();
@@ -746,21 +748,22 @@ pub fn run_sdl(
                 open = None;
                 next_scan = Instant::now();
             } else {
-                let transitions = events
-                    .into_iter()
-                    .flat_map(|e| pad.event(e))
-                    .collect::<Vec<_>>();
-                match pad.snapshot() {
-                    Ok(values) => {
-                        hub.batch(&transitions, &values, source.clock.now())?;
-                        pad.values = values;
-                    }
-                    Err(e) => {
-                        hub.disconnect(source.clock.now());
-                        selection.disconnected(&pad.info);
-                        log::warn!("Input error: {e}");
-                        open = None;
-                        next_scan = Instant::now();
+                transitions.extend(events.into_iter().flat_map(|e| pad.event(e)));
+                if source.clock.now() >= next_observation {
+                    match pad.snapshot() {
+                        Ok(values) => {
+                            hub.batch(&transitions, &values, source.clock.now())?;
+                            pad.values = values;
+                            transitions.clear();
+                            next_observation = hub.next_observation();
+                        }
+                        Err(e) => {
+                            hub.disconnect(source.clock.now());
+                            selection.disconnected(&pad.info);
+                            log::warn!("Input error: {e}");
+                            open = None;
+                            next_scan = Instant::now();
+                        }
                     }
                 }
             }
@@ -785,6 +788,8 @@ pub fn run_sdl(
                                 source.clock.now(),
                                 virtual_config,
                             )?;
+                            transitions.clear();
+                            next_observation = hub.next_observation();
                             selection.selected(&pad.info);
                             source.install(hub.clone());
                             status = selected_status(&hub);
@@ -809,7 +814,15 @@ pub fn run_sdl(
                 message = status;
             }
         }
-        std::thread::sleep(Duration::from_millis(10));
+        // Drain native edges and detect removal between phase-aligned snapshots.
+        let wait = if open.is_some() {
+            next_observation
+                .saturating_sub(source.clock.now())
+                .min(OBSERVATION_PERIOD_NS)
+        } else {
+            OBSERVATION_PERIOD_NS
+        };
+        std::thread::sleep(Duration::from_nanos(wait));
     }
     if let Some((_, hub)) = open {
         hub.disconnect(source.clock.now());
@@ -921,11 +934,12 @@ pub fn run_synthetic(
     virtual_config: Option<crate::virtual_pose::Config>,
     virtual_demo: bool,
 ) -> Result<(), String> {
-    let mut tick = 0;
+    let started = source.clock.now();
     let mut hub: Option<Arc<Hub>> = None;
     let mut previous = vec![];
     source.report(serde_json::json!({"name":"SYNTHETIC","status":"Deterministic software events, no physical input opened","lifecycle":lifecycle,"virtual_demo":virtual_demo}));
     while !stop.load(Ordering::Relaxed) {
+        let tick = (source.clock.now() - started) / OBSERVATION_PERIOD_NS;
         let disconnected = lifecycle && (tick % 1200 >= 600 && tick % 1200 < 800);
         if disconnected {
             if let Some(h) = hub.take() {
@@ -949,7 +963,6 @@ pub fn run_synthetic(
                 source.install(h.clone());
                 hub = Some(h);
                 previous = values.clone();
-                tick += 1;
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
@@ -964,8 +977,10 @@ pub fn run_synthetic(
                 .batch(&events, &values, source.clock.now())?;
             previous = values;
         }
-        tick += 1;
-        std::thread::sleep(Duration::from_millis(10));
+        let wait = hub.as_ref().map_or(OBSERVATION_PERIOD_NS, |h| {
+            h.next_observation().saturating_sub(source.clock.now())
+        });
+        std::thread::sleep(Duration::from_nanos(wait));
     }
     if let Some(h) = hub {
         h.disconnect(source.clock.now());

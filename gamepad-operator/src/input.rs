@@ -10,6 +10,7 @@ use std::time::Instant;
 use tokio::sync::watch;
 
 pub const RATE: f32 = 100.;
+pub const OBSERVATION_PERIOD_NS: u64 = (1e9 / RATE as f64) as u64;
 pub struct Clock(Instant);
 impl Default for Clock {
     fn default() -> Self {
@@ -306,6 +307,35 @@ impl Hub {
         });
         Ok(())
     }
+    pub fn next_observation(&self) -> u64 {
+        let state = self.state.lock().unwrap();
+        let earliest = state.at + OBSERVATION_PERIOD_NS;
+        let schedules: Vec<_> = state
+            .demands
+            .iter()
+            .filter_map(|d| d.publication.upgrade())
+            .map(|p| p.lock().unwrap().timing())
+            .collect();
+        let Some(grid) = schedules.iter().min_by_key(|t| t.interval) else {
+            return earliest;
+        };
+        // A single observation can serve every slot on this shared grid.
+        if schedules.iter().any(|t| {
+            t.interval % grid.interval != 0 || t.phase % grid.interval != grid.phase % grid.interval
+        }) {
+            return earliest;
+        }
+        let Some(slot) = grid.next_at(state.at + 1) else {
+            return earliest;
+        };
+        // Fill longer gaps with ordinary observations, leaving at least one source
+        // period before the slot. At the rate limit a late wake can delay a slot.
+        if slot.saturating_sub(earliest) >= OBSERVATION_PERIOD_NS {
+            earliest
+        } else {
+            slot.max(earliest)
+        }
+    }
     pub fn check(&self, r: &Request) -> protocol::Result<()> {
         self.state
             .lock()
@@ -491,6 +521,32 @@ mod tests {
             ],
         }
     }
+    #[test]
+    fn observations_share_live_grids_and_respect_the_device_rate() {
+        let h = hub(false);
+        let mut r = request(&h);
+        r.interval = 16_000_000;
+        let first = Arc::new(Mutex::new(PublicationState::new(&r, 0)));
+        h.observe(&r, &first).unwrap(); // on-change demand still owns a publication grid
+        assert_eq!(h.next_observation(), 16_000_000);
+        r.interval *= 2;
+        let second = Arc::new(Mutex::new(PublicationState::new(&r, 0)));
+        h.observe(&r, &second).unwrap();
+        assert_eq!(h.next_observation(), 16_000_000);
+        r.phase = 8_000_000;
+        second.lock().unwrap().update(r.timing(), 0);
+        assert_eq!(h.next_observation(), 10 + OBSERVATION_PERIOD_NS);
+        drop(second);
+        assert_eq!(h.next_observation(), 16_000_000);
+        h.batch(&[], &[InputValue::Button(false)], 8_000_000)
+            .unwrap();
+        assert_eq!(h.next_observation(), 18_000_000);
+        r.interval = 100_000_000;
+        r.phase = 0;
+        first.lock().unwrap().update(r.timing(), 0);
+        assert_eq!(h.next_observation(), 18_000_000);
+    }
+
     #[test]
     fn initial_held_idle_native_edges_and_disconnect_are_distinct() {
         let h = hub(true);

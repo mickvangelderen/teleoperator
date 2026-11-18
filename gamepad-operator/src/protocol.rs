@@ -887,6 +887,9 @@ impl PublicationState {
         self.timing = timing;
         self.next_slot = timing.next_at(now);
     }
+    pub fn timing(&self) -> Timing {
+        self.timing
+    }
     pub fn next_wake(&self) -> Option<u64> {
         if self.initial {
             self.available.then_some(0)
