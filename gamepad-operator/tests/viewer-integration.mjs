@@ -281,13 +281,16 @@ try {
   const bundleKey = await accepted.locator('option').filter({hasText:'Bundle 2'}).getAttribute('value');
   await accepted.selectOption(bundleKey);
   const observed = inspector.locator('.observed-sample');
+  // The old bundle also contains this trigger. Wait for its other rows to leave.
+  await observed.nth(1).waitFor({state:'detached'});
   await observed.locator('[data-sample-id$="/trigger_left/value/active"] .sample-value').filter({hasText:'true'}).waitFor();
   assert.equal(await observed.count(), 1);
   assert.ok(Math.abs(Number(await observed.locator('[data-sample-id$="/trigger_left/value"] .sample-value').innerText()) - 0.25) < 0.01);
-  await picker.selectOption('auto');
-  await page.locator('.gamepad [data-control="a/click"][data-edge]').waitFor();
+  const rawKey = await accepted.locator('option').filter({hasText:'Bundle 1'}).getAttribute('value');
+  await accepted.selectOption(rawKey);
+  const buttonDisplay = await verifyControllerButton(page, picker);
   if(process.env.SCREENSHOT)await page.screenshot({path:process.env.SCREENSHOT,fullPage:true});
-  console.log('PASS gamepad current-viewer integration',JSON.stringify({normal,protocol,buttonReadings:[baseline,down,up],ui:'populated sticks/triggers, reliable replacement with on-change bundle'},(_,v)=>typeof v==='bigint'?v.toString():v));
+  console.log('PASS gamepad current-viewer integration',JSON.stringify({normal,protocol,buttonReadings:[baseline,down,up],buttonDisplay,ui:'populated sticks/triggers, reliable replacement with on-change bundle'},(_,v)=>typeof v==='bigint'?v.toString():v));
 
   }
 } finally {
@@ -300,6 +303,49 @@ try {
   }
 }
 
+
+async function verifyControllerButton(page, picker) {
+  const counters = async (minPresses, minReleases) => {
+    const reading = await page.waitForFunction(([minPresses, minReleases]) => {
+      const read = kind => Number.parseInt(document.querySelector(
+        '#sample-inspector [data-sample-id="/user/gamepad/input/a/click/' + kind + '_count"] .sample-value'
+      )?.textContent, 10);
+      const presses = read('press'), releases = read('release');
+      if (presses >= minPresses && releases >= minReleases) return {presses, releases};
+    }, [minPresses, minReleases]);
+    return reading.jsonValue();
+  };
+  const before = await counters(0, 0);
+  await picker.selectOption('auto');
+  await page.locator('.gamepad [data-control="a/click"]').scrollIntoViewIfNeeded();
+  const states = [];
+  for (const held of [false, true, false]) {
+    const reading = await page.waitForFunction(held => {
+      const cell = document.querySelector('.gamepad [data-control="a/click"]');
+      if (!cell || cell.hasAttribute('data-held') !== held) return;
+      const label = cell.querySelector('span').textContent;
+      if (!/^(Pressed|Released)/.test(label)) return;
+      const {x, y, width, height} = cell.getBoundingClientRect();
+      if (x < 0 || y < 0 || x + width > innerWidth || y + height > innerHeight) return;
+      const style = getComputedStyle(cell);
+      return {label, bounds: [x, y, width, height], background: style.backgroundColor, outline: style.outlineStyle};
+    }, held);
+    const state = await reading.jsonValue();
+    assert.equal(state.label, held ? 'Pressed' : 'Released');
+    assert.equal(state.outline, 'none');
+    states.push(state);
+  }
+  const [released, pressed, releasedAgain] = states;
+  assert.ok(released.bounds[2] > 0 && released.bounds[3] > 0);
+  assert.deepEqual(pressed.bounds, released.bounds);
+  assert.deepEqual(releasedAgain.bounds, released.bounds);
+  assert.notEqual(pressed.background, released.background);
+  assert.equal(releasedAgain.background, released.background);
+  await picker.selectOption('values');
+  const after = await counters(before.presses + 1, before.releases + 1);
+  await picker.selectOption('auto');
+  return {states, before, after};
+}
 
 async function verifyVirtual(page) {
   const report=await page.evaluate(async()=>{
