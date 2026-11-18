@@ -51,7 +51,8 @@ try {
   browser = await chromium.launch({executablePath: process.env.CHROMIUM_EXECUTABLE ?? '/opt/google/chrome/chrome'});
   const page = await browser.newPage();
   await page.goto(url.href);
-  assert.equal(await page.locator('#target').innerText(), endpoint.host);
+  await page.waitForFunction(() => !document.querySelector('#target').disabled);
+  assert.equal(await page.locator('#target').inputValue(), endpoint.origin);
   const health = await page.request.get(new URL('/api/health', url).href);
   assert.equal(health.status(), 200);
   const info = await health.json();
