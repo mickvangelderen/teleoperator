@@ -59,19 +59,15 @@ android sdk \
 
 ## Build and install
 
-From `android-phone-operator/`, set `ANDROID_HOME` to your SDK directory.
-This example uses the default Linux location.
-
-```sh
-export ANDROID_HOME="$HOME/Android/Sdk"
-export PATH="$ANDROID_HOME/platform-tools:$PATH"
-```
-
-Build the signed ARM64 APK. The first build downloads the ARCore SDK.
+From `android-phone-operator/`, build the signed ARM64 APK. The first build
+downloads the ARCore SDK. Set `ANDROID_HOME` only if your SDK is outside
+the default Linux location (`~/Android/Sdk`).
 
 ```sh
 cpack --config apk.cmake
 ```
+
+If your shell cannot find `adb`, run `export PATH="$(android info sdk)/platform-tools:$PATH"`.
 
 Connect the phone to ADB using either method.
 
