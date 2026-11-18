@@ -329,19 +329,27 @@ impl Hub {
             .demands
             .iter()
             .filter_map(|d| d.publication.upgrade())
-            .map(|p| p.lock().unwrap().timing())
+            .map(|p| {
+                let p = p.lock().unwrap();
+                (p.timing(), p.next_wake().unwrap_or(0))
+            })
             .collect();
         let aligned = schedules
             .iter()
-            .min_by_key(|t| t.interval)
-            .and_then(|grid| {
-                if schedules.iter().any(|t| {
+            .min_by_key(|(t, _)| t.interval)
+            .and_then(|(grid, _)| {
+                if schedules.iter().any(|(t, _)| {
                     t.interval % grid.interval != 0
                         || t.phase % grid.interval != grid.phase % grid.interval
                 }) {
                     return None;
                 }
-                grid.next_at(state.at + 1)
+                // A reliable update takes effect at its next actual opportunity.
+                // Extending the new grid back to the last sample can invent an
+                // expired slot, trigger a free-running poll and consume the budget
+                // for the first real slot under the device's rate cap.
+                let first = schedules.iter().map(|(_, due)| *due).min()?;
+                grid.next_at((state.at + 1).max(first))
                     .filter(|&slot| slot >= earliest && slot - earliest < OBSERVATION_PERIOD_NS)
             });
         self.planned_slot
@@ -604,6 +612,23 @@ mod tests {
         r.phase = 0;
         first.lock().unwrap().update(r.timing(), 0);
         assert_eq!(h.next_observation(), 18_000_000);
+    }
+
+    #[test]
+    fn a_retimed_grid_starts_at_the_first_actual_publication_slot() {
+        let h = hub(false);
+        let mut r = request(&h);
+        r.interval = 16_000_000;
+        let p = Arc::new(Mutex::new(PublicationState::new(&r, 0)));
+        h.observe(&r, &p).unwrap();
+        assert!(p.lock().unwrap().opportunity(10));
+        h.batch(&[], &[InputValue::Button(false)], 16_060_000)
+            .unwrap();
+        r.phase = 600_000;
+        p.lock().unwrap().update(r.timing(), 20_000_000);
+        h.reschedule();
+        assert_eq!(h.next_observation(), 32_600_000);
+        assert!(h.publication_deadline(32_600_000) > 32_600_000);
     }
 
     #[test]

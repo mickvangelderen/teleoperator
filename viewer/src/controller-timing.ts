@@ -8,7 +8,7 @@ const slotAt = (t: bigint, { phase, interval }: Timing) =>
 
 export class ControllerTiming {
   private samples: number[] = [];
-  private peakMs = 0;
+  private guardMs = 0;
   private qualified = 0;
   private first = true;
   private updatedAt = -Infinity;
@@ -39,13 +39,18 @@ export class ControllerTiming {
     this.qualified = Math.min(8, this.qualified + 1);
     this.samples.push(delay);
     if (this.samples.length > maxObservations) this.samples.shift();
-    this.peakMs = this.samples.length === maxObservations
-      ? Math.max(...this.samples) : Math.max(this.peakMs, delay);
+    // Reserve another ordinary late excursion on a variable path. An isolated
+    // high-water observation affects the peak once, not the ordinary spread.
+    const sorted = [...this.samples].sort((a, b) => a - b);
+    const last = sorted.length - 1;
+    const spread = sorted[Math.floor(last * 0.9)] - sorted[Math.floor(last / 2)];
+    const guard = sorted[last] + spread;
+    this.guardMs = sorted.length === maxObservations ? guard : Math.max(this.guardMs, guard);
   }
 
   deliveryMs() {
     // Attack on a slow delivery and release only after newer publications.
     // Quiet frames and ACK silence provide no evidence of a faster path.
-    return this.qualified >= 8 ? this.peakMs : undefined;
+    return this.qualified >= 8 ? this.guardMs : undefined;
   }
 }

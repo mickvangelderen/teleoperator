@@ -46,3 +46,11 @@ test("ambiguous long deliveries cannot tighten the budget built from attributabl
   for (let i = 90; i < 154; i++) publish(guard, i * 16, 0.5);
   assert.equal(guard.deliveryMs(), 0.5);
 });
+
+test("recurrent data-path variation earns an additional late-delivery reserve", () => {
+  const guard = new ControllerTiming();
+  for (let i = 0; i < 65; i++) publish(guard, i * 16, i % 4 === 0 ? 6 : 4);
+  assert.equal(guard.deliveryMs(), 8); // peak 6 ms plus the measured 2 ms excursion
+  for (let i = 65; i <= 128; i++) publish(guard, i * 16, 4);
+  assert.equal(guard.deliveryMs(), 4);
+});
