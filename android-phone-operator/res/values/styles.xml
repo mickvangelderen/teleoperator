@@ -7,6 +7,12 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
     </style>
+    <style name="SettingsIcon">
+        <item name="android:layout_width">48dp</item>
+        <item name="android:layout_height">48dp</item>
+        <item name="android:background">?android:attr/selectableItemBackgroundBorderless</item>
+        <item name="android:tint">#515D74</item>
+    </style>
     <style name="SectionLabel">
         <item name="android:textColor">#525B70</item>
         <item name="android:textSize">14sp</item>

@@ -59,6 +59,7 @@ configurations { arcoreNative }
 def arcoreVersion = '1.57.0'
 def arcoreSdk = "com.google.ar:core:${arcoreVersion}"
 dependencies {
+    implementation 'androidx.drawerlayout:drawerlayout:1.2.0'
     implementation arcoreSdk
     arcoreNative "${arcoreSdk}@aar"
 }

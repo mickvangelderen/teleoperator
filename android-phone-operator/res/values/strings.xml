@@ -3,8 +3,8 @@
     <string name="tracking_source">Tracking source</string>
     <string name="operator_address">Operator address</string>
     <string name="control_hand">Control hand</string>
-    <string name="show_options">Tracking options</string>
-    <string name="hide_options">Hide tracking options</string>
+    <string name="settings">Settings</string>
+    <string name="close_settings">Close settings</string>
     <string-array name="sources">
         <item>Automatic (prefer ARCore)</item>
         <item>Sensors: orientation</item>

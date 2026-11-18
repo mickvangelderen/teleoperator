@@ -201,35 +201,35 @@ impl Ui {
             "setOnClickListener",
             |env, _| with_ui(|ui| ui.tracking.retry(env, ui.activity.as_obj())),
         )?;
-        let settings = view(env, "settings")?;
-        let options = view(env, "options")?;
-        let show = resources.id(env, "string", "show_options")?;
-        let hide = resources.id(env, "string", "hide_options")?;
-        ui.listen(
-            env,
-            "android/view/View$OnClickListener",
-            &options,
-            "setOnClickListener",
-            move |env, args| {
-                let expand = env
-                    .call_method(&settings, "getVisibility", "()I", &[])?
-                    .i()?
-                    != 0;
-                env.call_method(
-                    &settings,
-                    "setVisibility",
-                    "(I)V",
-                    &[if expand { 0 } else { 8 }.into()],
-                )?;
-                env.call_method(
-                    args[0],
-                    "setText",
-                    "(I)V",
-                    &[if expand { hide } else { show }.into()],
-                )?;
-                Ok(())
-            },
-        )?;
+        let drawer = view(env, "drawer")?;
+        let panel = view(env, "settings_panel")?;
+        for (button, method) in [
+            ("open_settings", "openDrawer"),
+            ("close_settings", "closeDrawer"),
+        ] {
+            let button = view(env, button)?;
+            let drawer = drawer.clone();
+            let panel = panel.clone();
+            ui.listen(
+                env,
+                "android/view/View$OnClickListener",
+                &button,
+                "setOnClickListener",
+                move |env, _| {
+                    with_ui(|ui| {
+                        ui.cancel_contact();
+                        ui.render_controls(env)
+                    })?;
+                    env.call_method(
+                        &drawer,
+                        method,
+                        "(Landroid/view/View;)V",
+                        &[panel.as_obj().into()],
+                    )?;
+                    Ok(())
+                },
+            )?;
+        }
         let hold = JniProxy::build(
             env,
             None,
@@ -404,12 +404,9 @@ impl Ui {
             return Ok(());
         }
         let (title, hint) = match (state.motion, state.mode) {
-            (Motion::Unavailable, _) => (
-                "Tracking unavailable",
-                "Choose another tracking source in Tracking options.",
-            ),
+            (Motion::Unavailable, _) => ("Tracking unavailable", "Choose another tracking source."),
             (Motion::Recenter, _) => (
-                "Recenter to start",
+                "Recenter in Settings",
                 "Point the rear camera forward and tap Recenter.",
             ),
             (Motion::Waiting, _) if state.held => (
