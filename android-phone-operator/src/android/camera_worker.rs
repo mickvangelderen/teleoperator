@@ -2,7 +2,7 @@
 //! session destruction, run under one process-wide lock on background threads.
 use crate::{
     phone::{self, Hub},
-    spatial::{self, Frame, Pose},
+    spatial::{self, Acquisition, ClockGate, Frame, Pose},
 };
 use arcore::{
     Anchor, LightEstimationMode, PlaneFindingMode, Session, TextureUpdateMode, TrackingState,
@@ -171,7 +171,7 @@ fn phone_pose(pose: arcore::Pose) -> Pose {
 fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> arcore::Result<()> {
     let mut anchor: Option<Anchor> = None;
     let mut anchor_generation = None;
-    let mut last_timestamp = 0;
+    let mut clock = ClockGate::default();
     while !worker.lock().unwrap().stopped {
         let (generation, active, recenter) = hub.spatial_context();
         if !active {
@@ -192,12 +192,19 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> arcore::Res
         } else {
             Pose::IDENTITY
         };
-        let age = phone::now().checked_sub(timestamp as u64);
-        let fresh = timestamp > last_timestamp
-            && metadata_timestamp == Some(timestamp)
-            && age.is_some_and(|ns| ns <= phone::STALE_NS);
-        last_timestamp = last_timestamp.max(timestamp);
-        let mut created_origin = false;
+        let mut sample = Frame {
+            generation,
+            timestamp,
+            metadata_timestamp,
+            realtime: true,
+            query_started,
+            query_finished: phone::now(),
+            tracking,
+            sensor,
+            anchor: None,
+            created_origin: false,
+        };
+        let fresh = matches!(clock.observe(&sample), Ok(Acquisition::New(_)));
         if recenter
             && anchor.is_none()
             && tracking
@@ -208,9 +215,9 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> arcore::Res
                 translation: origin.position.map(|v| v as f32),
                 rotation: origin.orientation.map(|v| v as f32),
             })?);
-            created_origin = true;
+            sample.created_origin = true;
         }
-        let origin = anchor
+        sample.anchor = anchor
             .as_ref()
             .filter(|a| a.tracking_state() == TrackingState::Tracking)
             .map(|a| phone_pose(a.pose()));
@@ -219,18 +226,8 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> arcore::Res
         if state.stopped {
             break;
         }
-        hub.spatial_frame(Frame {
-            generation,
-            timestamp,
-            metadata_timestamp,
-            realtime: true,
-            query_started,
-            query_finished: phone::now(),
-            tracking,
-            sensor,
-            anchor: origin,
-            created_origin,
-        });
+        sample.query_finished = phone::now();
+        hub.spatial_frame(sample);
     }
     Ok(())
 }

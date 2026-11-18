@@ -46,9 +46,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     cached=None;
                 }
                 if phase!=3 {
-                    if cached.is_none_or(|f|at-(f.timestamp as u64)>=30_000_000) {
+                    if cached.is_none_or(|f|at-f.query_finished>=30_000_000) {
                         let t=(at-start) as f64/1e9;let yaw=0.3*t.sin();
-                        cached=Some(Frame{generation:source.spatial_context().0,timestamp:at as i64,metadata_timestamp:Some(at as i64),realtime:true,query_started:at,query_finished:at,
+                        // The SDK frame clock can have a different epoch from Camera2 BOOTTIME.
+                        cached=Some(Frame{generation:source.spatial_context().0,timestamp:(at-start) as i64+1,metadata_timestamp:Some(at as i64),realtime:true,query_started:at,query_finished:at,
                             tracking:true,sensor:Pose{position:[0.25*t.sin(),0.2+0.05*(t*0.7).cos(),-0.3],orientation:[0.,(yaw/2.).sin(),0.,(yaw/2.).cos()]},anchor:Some(Pose::IDENTITY),created_origin:source.spatial_context().2});
                     }
                     let mut f=cached.unwrap();f.query_started=at;f.query_finished=at;source.spatial_frame(f);

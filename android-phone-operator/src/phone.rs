@@ -924,14 +924,18 @@ impl Hub {
         if f.generation != a.generation {
             return;
         }
+        let capture_age = f
+            .metadata_timestamp
+            .and_then(|ns| u64::try_from(ns).ok())
+            .and_then(|ns| f.query_finished.checked_sub(ns));
         a.diagnostics = format!(
-            "Frame ns: {} · metadata: {:?}\nREALTIME: {} · query BOOTTIME: {}..{}\nFrame age at return ns: {} (not measured physical latency)",
+            "ARCore frame ns: {} · camera capture ns: {:?}\nREALTIME: {} · query BOOTTIME: {}..{}\nCapture age at return ns: {:?} (not measured physical latency)",
             f.timestamp,
             f.metadata_timestamp,
             f.realtime,
             f.query_started,
             f.query_finished,
-            f.query_finished.saturating_sub(f.timestamp.max(0) as u64)
+            capture_age
         );
         let result = if !f.tracking {
             Err("Camera PAUSED/STOPPED — recenter required")
@@ -941,9 +945,9 @@ impl Hub {
             a.clock.observe(&f)
         };
         let result = result.and_then(|acquisition| {
-            if acquisition == Acquisition::Repeated {
+            let Acquisition::New(capture_time) = acquisition else {
                 return Ok(None);
-            }
+            };
             if f.created_origin && a.recenter {
                 a.origin = true;
                 a.recenter = false;
@@ -956,7 +960,7 @@ impl Hub {
                 .anchor
                 .and_then(|anchor| relative_grip(f.sensor, anchor))
                 .ok_or("Invalid sensor/origin pose — recenter required")?;
-            Ok(Some((f.timestamp as u64, pose)))
+            Ok(Some((capture_time, pose)))
         });
         match result {
             Ok(Some((timestamp, pose))) => {
@@ -1372,6 +1376,30 @@ mod spatial_tests {
         }
     }
     #[test]
+    fn spatial_hold_publishes_at_camera_capture_time_when_sdk_timestamps_differ() {
+        let h = Hub::spatial_at([true; 3], "SYNTHETIC separate frame clock", 0);
+        h.action(Action::Resume, 1);
+        h.action(Action::Focus(true), 2);
+        h.action(Action::Recenter, 3);
+        let capture = 1_000_000_000;
+        let mut f = frame(&h, capture);
+        f.timestamp += 21_636_872;
+        f.created_origin = true;
+        h.spatial_frame(f);
+        h.action(Action::Hold, capture + 10);
+        assert!(h.held());
+        let mut next = frame(&h, capture + 33_333_333);
+        next.timestamp += 21_636_872;
+        h.spatial_frame(next);
+        assert!(position_valid(&h, 0));
+        assert_eq!(
+            h.state.lock().unwrap().snapshots[0].timestamp,
+            capture + 33_333_333
+        );
+        h.action(Action::Release, next.query_finished + 1);
+        assert!(!position_valid(&h, 0));
+    }
+    #[test]
     fn fresh_repeats_do_not_release_retime_or_create_acquisitions_but_stall_does() {
         let h = ready();
         assert!(h.held());
@@ -1458,7 +1486,7 @@ mod spatial_tests {
         assert!(!position_valid(&h, 0));
         assert!(position_valid(&h, 1));
         let mut f = frame(&h, 60);
-        f.metadata_timestamp = Some(59);
+        f.metadata_timestamp = None;
         h.spatial_frame(f);
         assert!(!h.held());
         h.sensor(0, 70, [0., 0., 0., 1.], 70);

@@ -63,7 +63,9 @@ pub fn origin_pose(sensor: Pose) -> Option<Pose> {
 #[derive(Clone, Copy, Debug)]
 pub struct Frame {
     pub generation: u64,
+    /// Timestamp identifying this ARCore frame. Its time base is unspecified.
     pub timestamp: i64,
+    /// Camera2 SENSOR_TIMESTAMP for the image in this same frame.
     pub metadata_timestamp: Option<i64>,
     pub realtime: bool,
     pub query_started: u64,
@@ -77,7 +79,8 @@ pub struct Frame {
 
 #[derive(Default, Debug)]
 pub struct ClockGate {
-    last: Option<u64>,
+    // SDK frame timestamp and Camera2 capture timestamp of the last acquisition.
+    last: Option<(i64, u64)>,
 }
 #[derive(Debug, PartialEq)]
 pub enum Acquisition {
@@ -92,25 +95,30 @@ impl ClockGate {
         if f.timestamp <= 0 {
             return Err("Waiting for nonzero camera timestamp");
         }
-        if f.metadata_timestamp != Some(f.timestamp) {
-            return Err("Frame/metadata timestamp mismatch or metadata missing");
-        }
-        let t = f.timestamp as u64;
+        // Only the selected camera's REALTIME SENSOR_TIMESTAMP is specified
+        // in BOOTTIME. ArFrame_getTimestamp can differ even on the same image.
+        let t = f
+            .metadata_timestamp
+            .filter(|&t| t > 0)
+            .ok_or("Waiting for camera capture timestamp metadata")? as u64;
         if f.query_finished < f.query_started || t > f.query_finished {
             return Err("Clock regression or future camera timestamp");
         }
         if f.query_finished - t > STALE_NS {
             return Err("Camera frame stale");
         }
-        if let Some(last) = self.last {
-            if t < last {
+        if let Some((last_frame, last_capture)) = self.last {
+            if f.timestamp < last_frame || t < last_capture {
                 return Err("Camera timestamp regressed");
             }
-            if t == last {
+            if f.timestamp == last_frame && t == last_capture {
                 return Ok(Acquisition::Repeated);
             }
+            if f.timestamp == last_frame || t == last_capture {
+                return Err("Frame and capture timestamps did not advance together");
+            }
         }
-        self.last = Some(t);
+        self.last = Some((f.timestamp, t));
         Ok(Acquisition::New(t))
     }
 }
@@ -252,7 +260,11 @@ mod tests {
         f.metadata_timestamp = None;
         assert!(g.observe(&f).is_err());
         f.metadata_timestamp = Some(199);
+        assert_eq!(g.observe(&f), Ok(Acquisition::New(199)));
+        assert_eq!(g.observe(&f), Ok(Acquisition::Repeated));
+        f.timestamp += 1;
         assert!(g.observe(&f).is_err());
+        f.timestamp -= 1;
         f.metadata_timestamp = Some(200);
         f.query_finished = 199;
         assert!(g.observe(&f).is_err());
