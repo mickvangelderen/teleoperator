@@ -392,6 +392,9 @@ impl Estimator {
         self.ready_at
             .is_some_and(|t| at.saturating_sub(t) <= STALE_NS)
     }
+    pub fn has_hold(&self) -> bool {
+        self.hold.is_some()
+    }
     pub fn begin(&mut self, at: u64, heading: [f64; 4]) {
         self.end();
         self.hold = Some((at, heading));

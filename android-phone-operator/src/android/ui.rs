@@ -405,9 +405,13 @@ impl Ui {
         }
         let (title, hint) = match (state.motion, state.mode) {
             (Motion::Unavailable, _) => ("Tracking unavailable", "Choose another tracking source."),
-            (Motion::Recenter, _) => (
-                "Recenter in Settings",
-                "Point the rear camera forward and tap Recenter.",
+            (Motion::Calibrating, _) => (
+                "Calibrating the camera",
+                "Keep holding and move the phone slowly across a well-lit, detailed surface.",
+            ),
+            (Motion::Recovering, _) => (
+                "Recovering tracking",
+                "Keep holding while the camera locates the reference again.",
             ),
             (Motion::Waiting, _) if state.held => (
                 "Waiting for motion",
@@ -434,7 +438,7 @@ impl Ui {
             ),
             (Motion::Ready, TrackingMode::Displacement) => (
                 "Ready to estimate",
-                "Press and hold to estimate movement from this point.",
+                "Keep the phone still for half a second, then hold to estimate movement.",
             ),
             (Motion::Tracking, TrackingMode::Orientation) => {
                 ("Tracking rotation", "Rotate the phone. Release to stop.")

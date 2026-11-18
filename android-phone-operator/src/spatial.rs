@@ -39,7 +39,7 @@ pub fn rotate(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
 pub fn relative_grip(sensor: Pose, anchor: Pose) -> Option<Pose> {
     let sensor = sensor.checked()?;
     let anchor = anchor.checked()?;
-    let yaw = heading_inverse(anchor.orientation)?;
+    let yaw = heading_inverse(anchor.orientation);
     let s = std::f64::consts::FRAC_1_SQRT_2;
     Pose {
         position: rotate(
@@ -53,11 +53,18 @@ pub fn relative_grip(sensor: Pose, anchor: Pose) -> Option<Pose> {
 /// New origin is translation + yaw only, retaining world gravity-up.
 pub fn origin_pose(sensor: Pose) -> Option<Pose> {
     let sensor = sensor.checked()?;
-    let h = heading_inverse(sensor.orientation)?;
+    let h = heading_inverse(sensor.orientation);
     Some(Pose {
         position: sensor.position,
         orientation: [-h[0], -h[1], -h[2], h[3]],
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum FrameAnchor {
+    Missing,
+    Paused,
+    Tracking(Pose),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -72,9 +79,7 @@ pub struct Frame {
     pub query_finished: u64,
     pub tracking: bool,
     pub sensor: Pose,
-    /// None includes missing, PAUSED or STOPPED anchor.
-    pub anchor: Option<Pose>,
-    pub created_origin: bool,
+    pub anchor: FrameAnchor,
 }
 
 #[derive(Default, Debug)]
@@ -127,7 +132,7 @@ impl ClockGate {
 pub(crate) struct SpatialState {
     pub camera_ready_at: Option<u64>,
     pub generation: u64,
-    pub recenter: bool,
+    pub recenter_since: Option<u64>,
     pub origin: bool,
     pub pose: Option<Pose>,
     pub clock: ClockGate,
@@ -139,11 +144,11 @@ impl Default for SpatialState {
         Self {
             camera_ready_at: None,
             generation: 0,
-            recenter: false,
+            recenter_since: None,
             origin: false,
             pose: None,
             clock: ClockGate::default(),
-            status: "Waiting for camera; recenter to establish origin".into(),
+            status: "Waiting for camera tracking".into(),
             diagnostics: String::new(),
         }
     }
@@ -152,7 +157,7 @@ impl SpatialState {
     pub fn invalidate(&mut self, reason: &str) {
         self.camera_ready_at = None;
         self.generation = self.generation.wrapping_add(1);
-        self.recenter = false;
+        self.recenter_since = None;
         self.origin = false;
         self.pose = None;
         // Keep last timestamp across recenter/loss. Only a new session resets it.
@@ -220,7 +225,7 @@ mod tests {
                 orientation: [s, 0., 0., s],
                 ..device
             })
-            .is_none()
+            .is_some()
         );
         assert!(
             relative_grip(
@@ -243,8 +248,7 @@ mod tests {
             query_finished: t as u64 + 10,
             tracking: true,
             sensor: Pose::IDENTITY,
-            anchor: Some(Pose::IDENTITY),
-            created_origin: false,
+            anchor: FrameAnchor::Tracking(Pose::IDENTITY),
         }
     }
     #[test]

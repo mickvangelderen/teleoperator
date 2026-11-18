@@ -2,7 +2,7 @@
 //! session destruction, run under one process-wide lock on background threads.
 use crate::{
     phone::{self, Hub},
-    spatial::{self, Acquisition, ClockGate, Frame, Pose},
+    spatial::{self, Acquisition, ClockGate, Frame, FrameAnchor, Pose},
 };
 use arcore::{
     Anchor, LightEstimationMode, PlaneFindingMode, Session, TextureUpdateMode, TrackingState,
@@ -168,12 +168,12 @@ fn phone_pose(pose: arcore::Pose) -> Pose {
     }
 }
 
-fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> arcore::Result<()> {
+fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), Box<dyn Error>> {
     let mut anchor: Option<Anchor> = None;
     let mut anchor_generation = None;
     let mut clock = ClockGate::default();
     while !worker.lock().unwrap().stopped {
-        let (generation, active, recenter) = hub.spatial_context();
+        let (generation, active, origin_since) = hub.spatial_context();
         if !active {
             break;
         }
@@ -186,7 +186,8 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> arcore::Res
         let frame = session.update()?;
         let timestamp = frame.timestamp_ns();
         let metadata_timestamp = frame.android_camera_timestamp_ns()?;
-        let tracking = frame.tracking_state()? == TrackingState::Tracking;
+        let camera_state = frame.tracking_state()?;
+        let tracking = camera_state == TrackingState::Tracking;
         let sensor = if tracking {
             phone_pose(frame.android_sensor_pose())
         } else {
@@ -201,26 +202,41 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> arcore::Res
             query_finished: phone::now(),
             tracking,
             sensor,
-            anchor: None,
-            created_origin: false,
+            anchor: FrameAnchor::Missing,
         };
-        let fresh = matches!(clock.observe(&sample), Ok(Acquisition::New(_)));
-        if recenter
-            && anchor.is_none()
+        let acquisition = clock.observe(&sample);
+        // A paused anchor can relocalize in the same reference. STOPPED is
+        // terminal. Report that loss before creating a new local reference.
+        if anchor
+            .as_ref()
+            .is_some_and(|a| a.tracking_state() == TrackingState::Stopped)
+        {
+            anchor = None;
+        } else if anchor.is_none()
             && tracking
-            && fresh
+            && let (Some(since), Ok(Acquisition::New(at))) = (origin_since, acquisition)
+            && at >= since
             && let Some(origin) = spatial::origin_pose(sensor)
         {
-            anchor = Some(session.create_anchor(arcore::Pose {
+            match session.create_anchor(arcore::Pose {
                 translation: origin.position.map(|v| v as f32),
                 rotation: origin.orientation.map(|v| v as f32),
-            })?);
-            sample.created_origin = true;
+            }) {
+                Ok(new_anchor) => anchor = Some(new_anchor),
+                // The SDK can lose tracking between update and acquisition.
+                Err(arcore::Error::Status(
+                    _,
+                    arcore_sys::AR_ERROR_NOT_TRACKING | arcore_sys::AR_ERROR_RESOURCE_EXHAUSTED,
+                )) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
-        sample.anchor = anchor
-            .as_ref()
-            .filter(|a| a.tracking_state() == TrackingState::Tracking)
-            .map(|a| phone_pose(a.pose()));
+        if let Some(anchor) = &anchor {
+            sample.anchor = match anchor.tracking_state() {
+                TrackingState::Tracking => FrameAnchor::Tracking(phone_pose(anchor.pose())),
+                _ => FrameAnchor::Paused,
+            };
+        }
 
         let state = worker.lock().unwrap();
         if state.stopped {
@@ -228,6 +244,9 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> arcore::Res
         }
         sample.query_finished = phone::now();
         hub.spatial_frame(sample);
+        if camera_state == TrackingState::Stopped {
+            return Err("ARCore stopped tracking the camera".into());
+        }
     }
     Ok(())
 }

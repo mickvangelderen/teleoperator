@@ -44,18 +44,22 @@ pub fn android_to_tracking(q: [f64; 4]) -> Option<[f64; 4]> {
     let s = std::f64::consts::FRAC_1_SQRT_2;
     normalized(multiply([-s, 0., 0., s], normalized(q)?))
 }
-pub(crate) fn heading_inverse(q: [f64; 4]) -> Option<[f64; 4]> {
+pub(crate) fn heading_inverse(q: [f64; 4]) -> [f64; 4] {
     let [x, y, z, w] = q;
     let forward = [
         -2. * (x * z + w * y),
         2. * (w * x - y * z),
         2. * (x * x + y * y) - 1.,
     ];
-    if forward[0].hypot(forward[2]) < 0.1 {
-        return None;
-    }
-    let yaw = (-forward[0]).atan2(-forward[2]);
-    Some([0., (-yaw / 2.).sin(), 0., (-yaw / 2.).cos()])
+    // With the rear camera pointing straight up or down, the phone's right
+    // axis still defines yaw. Use this basis only when acquiring a heading.
+    let yaw = if forward[0].hypot(forward[2]) < 0.1 {
+        let right = crate::spatial::rotate(q, [1., 0., 0.]);
+        (-right[2]).atan2(right[0])
+    } else {
+        (-forward[0]).atan2(-forward[2])
+    };
+    [0., (-yaw / 2.).sin(), 0., (-yaw / 2.).cos()]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,7 +91,8 @@ pub enum Motion {
     Ready,
     Waiting,
     Unavailable,
-    Recenter,
+    Calibrating,
+    Recovering,
     Tracking,
 }
 
@@ -241,7 +246,7 @@ fn catalog(available: [bool; 3]) -> Capabilities {
             3,
             2,
             vec![1],
-            "Press-and-hold clutch. False on release/cancel/pause/focus loss/hand switch/orientation loss. Requires a new touch after cancellation.",
+            "Press-and-hold clutch. False on release/cancel/pause/focus loss/hand switch. Requires a new touch after cancellation.",
         );
         descriptor(
             &mut c,
@@ -308,7 +313,7 @@ impl State {
             && self.fresh(sensor, at)
             && self.last[sensor].is_some_and(|t| t >= self.hold_started)
     }
-    fn can_hold(&self, at: u64) -> bool {
+    fn motion_ready(&self, at: u64) -> bool {
         self.foreground
             && self.focused
             && self.fresh(0, at)
@@ -317,6 +322,15 @@ impl State {
                 .displacement
                 .as_ref()
                 .is_none_or(|d| self.fresh(1, at) && d.ready(at))
+    }
+    fn begin_displacement_if_ready(&mut self, at: u64) {
+        if self.held
+            && self.motion_ready(at)
+            && let Some(d) = &mut self.displacement
+            && !d.has_hold()
+        {
+            d.begin(self.hold_started.max(at), self.heading);
+        }
     }
     fn cancel(&mut self) {
         if self.held {
@@ -528,7 +542,8 @@ impl Hub {
             return;
         }
         let at = s.transition_time(at);
-        s.cancel();
+        // An automatic source transition retains the actual touch. Explicit
+        // source selection and activity lifecycle events cancel it in the UI.
         s.spatial = spatial.then(|| crate::spatial::SpatialState {
             generation: at,
             ..Default::default()
@@ -579,8 +594,8 @@ impl Hub {
                 | Action::Resume
                 | Action::Focus(false)
                 | Action::Recenter => {
-                    spatial.invalidate("Origin cleared — recenter after tracking is ready");
-                    spatial.recenter = matches!(action, Action::Recenter);
+                    spatial.invalidate("Waiting for camera calibration");
+                    spatial.recenter_since = matches!(action, Action::Recenter).then_some(at);
                     if matches!(action, Action::Resume) {
                         spatial.clock = Default::default();
                     }
@@ -596,15 +611,12 @@ impl Hub {
                 s.selected = hand;
             }
             Action::Hold => {
-                if !s.held && s.can_hold(at) {
+                if !s.held && s.foreground && s.focused {
                     s.held = true;
                     s.hold_started = at;
                     let hand = s.selected as usize;
                     s.presses[hand] = s.presses[hand].wrapping_add(1);
-                    let heading = s.heading;
-                    if let Some(d) = &mut s.displacement {
-                        d.begin(at, heading);
-                    }
+                    s.begin_displacement_if_ready(at);
                 }
             }
             Action::Release | Action::Cancel => s.cancel(),
@@ -632,7 +644,7 @@ impl Hub {
                 s.cancel();
                 if s.spatial.is_none()
                     && s.fresh(0, at)
-                    && let Some(q) = s.orientation.and_then(heading_inverse)
+                    && let Some(q) = s.orientation.map(heading_inverse)
                 {
                     s.heading = q;
                     s.heading_set = true;
@@ -685,13 +697,12 @@ impl Hub {
         s.last[kind] = Some(timestamp);
         s.good[kind] = valid;
         if !valid {
-            s.cancel();
-            s.publish_all(received, &self.capabilities);
+            s.publish(kind, received, &self.capabilities);
         } else {
             if kind == 0 {
                 s.orientation = quaternion;
                 if !s.heading_set
-                    && let Some(h) = quaternion.and_then(heading_inverse)
+                    && let Some(h) = quaternion.map(heading_inverse)
                 {
                     s.heading = h;
                     s.heading_set = true;
@@ -739,7 +750,7 @@ impl Hub {
         {
             Some("Invalid IMU source value")
         } else if kind < 2
-            && s.held
+            && s.displacement.as_ref().unwrap().has_hold()
             && s.last[kind].is_some_and(|t| timestamp - t > crate::displacement::MAX_GAP_NS)
         {
             Some("Required IMU source gap exceeds 50 ms")
@@ -749,9 +760,11 @@ impl Hub {
         if let Some(reason) = error {
             s.good[kind] = false;
             if kind < 2 {
-                s.cancel();
                 s.displacement.as_mut().unwrap().invalidate(reason);
-                s.publish_all(received, &self.capabilities);
+                s.publish(0, received, &self.capabilities);
+                if kind == 1 {
+                    s.publish(1, received, &self.capabilities);
+                }
             } else {
                 s.publish(2, s.transition_time(received), &self.capabilities);
             }
@@ -763,7 +776,7 @@ impl Hub {
         let result = if kind == 0 {
             s.orientation = q;
             if !s.heading_set
-                && let Some(h) = q.and_then(heading_inverse)
+                && let Some(h) = q.map(heading_inverse)
             {
                 s.heading = h;
                 s.heading_set = true;
@@ -785,6 +798,7 @@ impl Hub {
         };
         match result {
             Ok(estimate) => {
+                s.begin_displacement_if_ready(timestamp);
                 // A late sensor still refreshes source availability. Only its
                 // publication is skipped if a newer UI placeholder already won.
                 if kind != 0 && timestamp >= s.snapshots[kind].timestamp {
@@ -797,9 +811,8 @@ impl Hub {
                 }
             }
             Err(reason) => {
-                s.cancel();
                 s.displacement.as_mut().unwrap().invalidate(reason);
-                s.publish_all(received, &self.capabilities);
+                s.publish(0, received, &self.capabilities);
             }
         }
         self.updates.send_replace(s.serial);
@@ -808,12 +821,11 @@ impl Hub {
         let mut s = self.state.lock().unwrap();
         let at = s.transition_time(at);
         if s.displacement.as_ref().is_some_and(|d| d.expired(at)) {
-            s.cancel();
             s.displacement
                 .as_mut()
                 .unwrap()
-                .invalidate("Aligned IMU source stalled; new hold required");
-            s.publish_all(at, &self.capabilities);
+                .invalidate("Waiting for fresh aligned IMU measurements");
+            s.publish(0, at, &self.capabilities);
             self.updates.send_replace(s.serial);
         }
         let stale: [bool; 3] = std::array::from_fn(|i| s.good[i] && !s.fresh(i, at));
@@ -823,20 +835,22 @@ impl Hub {
                     s.good[i] = false;
                 }
             }
-            if stale[0] || (stale[1] && s.displacement.is_some()) {
-                if let Some(spatial) = &mut s.spatial {
-                    spatial.invalidate("Camera frame stalled — recenter required");
-                }
-                s.cancel();
-                if let Some(d) = &mut s.displacement {
-                    d.invalidate("Required IMU source stale; new hold required");
-                }
-                s.publish_all(at, &self.capabilities);
-            } else {
-                for (i, stale) in stale.iter().enumerate() {
-                    if *stale {
-                        s.publish(i, at, &self.capabilities);
-                    }
+            if stale[0]
+                && let Some(spatial) = &mut s.spatial
+            {
+                spatial.pose = None;
+                spatial.status = "Waiting for fresh camera observations".into();
+            }
+            let estimate_lost = (stale[0] || stale[1]) && s.displacement.is_some();
+            if estimate_lost {
+                s.displacement
+                    .as_mut()
+                    .unwrap()
+                    .invalidate("Waiting for fresh aligned IMU measurements");
+            }
+            for (i, stale) in stale.into_iter().enumerate() {
+                if stale || (i == 0 && estimate_lost) {
+                    s.publish(i, at, &self.capabilities);
                 }
             }
             self.updates.send_replace(s.serial);
@@ -857,22 +871,27 @@ impl Hub {
             pose.values.get(s.selected as usize * 5 + 2),
             Some(Value::Bit(true))
         );
-        let motion = if s.held {
-            if orientation_valid && at.saturating_sub(pose.timestamp) <= STALE_NS {
-                Motion::Tracking
-            } else {
-                Motion::Waiting
-            }
-        } else if !s.available[0] || (mode == TrackingMode::Displacement && !s.available[1]) {
+        let motion = if !s.available[0] || (mode == TrackingMode::Displacement && !s.available[1]) {
             Motion::Unavailable
-        } else if s.spatial.as_ref().is_some_and(|a| {
-            !a.origin
-                && !a.recenter
-                && a.camera_ready_at
-                    .is_some_and(|t| at.saturating_sub(t) <= STALE_NS)
-        }) {
-            Motion::Recenter
-        } else if s.can_hold(at) {
+        } else if s.held && orientation_valid && at.saturating_sub(pose.timestamp) <= STALE_NS {
+            Motion::Tracking
+        } else if s.held
+            && let Some(a) = &s.spatial
+        {
+            if !a.origin {
+                Motion::Calibrating
+            } else if s.fresh(0, at) {
+                Motion::Waiting
+            } else {
+                Motion::Recovering
+            }
+        } else if !s.held
+            && (s.motion_ready(at)
+                || s.spatial.as_ref().is_some_and(|a| {
+                    a.camera_ready_at
+                        .is_some_and(|t| at.saturating_sub(t) <= STALE_NS)
+                }))
+        {
             Motion::Ready
         } else {
             Motion::Waiting
@@ -889,7 +908,7 @@ impl Hub {
         let s = self.state.lock().unwrap();
         if let Some(d) = &s.displacement {
             return format!(
-                "{:?} hand · {}\nIMU displacement estimate — position NOT TRACKED\n{}\nPosition (m): {:?}\nVelocity estimate (m/s): {:?}\nEach hold starts at zero displacement/velocity on first aligned sample.\nGravity:9.80665m/s² · heading fixed during hold\nA quiet half-second before a hold calibrates the accelerometer offset. Displacement can drift. No prediction.\nAlignment: orientation brackets acceleration within25ms each side. Gaps>50ms cancel.\nAccelerometer/orientation loss cancels hold; press again after recovery.",
+                "{:?} hand · {}\nIMU displacement estimate — position NOT TRACKED\n{}\nPosition (m): {:?}\nVelocity estimate (m/s): {:?}\nEach hold starts at zero displacement/velocity on first aligned sample.\nGravity:9.80665m/s² · heading fixed during hold\nA quiet half-second before a hold calibrates the accelerometer offset. Displacement can drift. No prediction.\nAlignment: orientation brackets acceleration within 25 ms each side.\nAn IMU gap interrupts the estimate. A continuous hold starts a new estimate when aligned measurements return.",
                 s.selected,
                 if s.held { "HELD" } else { "INACTIVE" },
                 d.status,
@@ -899,14 +918,14 @@ impl Hub {
         }
         if let Some(spatial) = &s.spatial {
             return format!(
-                "{:?} hand · {}\n{}\nOrigin: {} · camera pose: {}\nSensor-origin position (m): {:?}\nGrip quaternion xyzw: {:?}\n{}\nNo prediction. Raw IMU available as advertised.\nKeep rear camera unobstructed. Recenter upright, then hold.\nExperimental local reference; not a fixed robot frame.",
+                "{:?} hand · {}\n{}\nOrigin: {} · camera pose: {}\nSensor-origin position (m): {:?}\nGrip quaternion xyzw: {:?}\n{}\nNo prediction. Raw IMU available as advertised.\nHold to calibrate automatically. Recenter starts a new local reference.\nExperimental local reference; not a fixed robot frame.",
                 s.selected,
                 if s.held { "HELD" } else { "INACTIVE" },
                 spatial.status,
                 if spatial.origin {
                     "established"
                 } else {
-                    "recenter required"
+                    "awaiting calibration"
                 },
                 if s.fresh(0, at) {
                     "fresh"
@@ -928,14 +947,16 @@ impl Hub {
             }
         };
         format!(
-            "{} hand · {}\nOrientation: {}{}\nAccelerometer: {} · Gyroscope: {}\nPosition: UNAVAILABLE · Prediction: NONE\nGrip forward (-Z): phone top / thumb.\nRecenter upright, rear camera facing forward.\nResume resets local heading; yaw may drift.\nRelease, cancel, hand switch or leaving the app stops tracking.",
+            "{} hand · {}\nOrientation: {}{}\nAccelerometer: {} · Gyroscope: {}\nPosition: UNAVAILABLE · Prediction: NONE\nGrip forward (-Z): phone top / thumb.\nHeading calibrates automatically. Recenter resets it.\nResume resets local heading; yaw may drift.\nRelease, cancel, hand switch or leaving the app stops tracking.",
             if s.selected == Hand::Left {
                 "LEFT"
             } else {
                 "RIGHT"
             },
-            if s.held {
+            if s.held && s.active(s.selected as usize, 0, at) && s.heading_set {
                 "HELD — tracking orientation"
+            } else if s.held {
+                "HELD — waiting for orientation"
             } else {
                 "INACTIVE — hold to track"
             },
@@ -956,28 +977,19 @@ impl Hub {
         self.state.lock().unwrap().selected
     }
     /// Worker token rejects results crossing pause, focus loss or recenter.
-    pub fn spatial_context(&self) -> (u64, bool, bool) {
+    pub fn spatial_context(&self) -> (u64, bool, Option<u64>) {
         let s = self.state.lock().unwrap();
         let Some(a) = &s.spatial else {
-            return (0, false, false);
+            return (0, false, None);
         };
-        (a.generation, s.foreground && s.focused, a.recenter)
-    }
-    pub fn spatial_failure(&self, generation: u64, reason: &str, at: u64) {
-        let mut s = self.state.lock().unwrap();
-        let Some(a) = &mut s.spatial else { return };
-        if a.generation != generation {
-            return;
-        }
-        a.invalidate(reason);
-        s.good[0] = false;
-        s.heading_set = false;
-        s.cancel();
-        s.publish_all(at, &self.capabilities);
-        self.updates.send_replace(s.serial);
+        (
+            a.generation,
+            s.foreground && s.focused,
+            a.recenter_since.or(s.held.then_some(s.hold_started)),
+        )
     }
     pub fn spatial_frame(&self, f: crate::spatial::Frame) {
-        use crate::spatial::{Acquisition, relative_grip};
+        use crate::spatial::{Acquisition, FrameAnchor, relative_grip};
         let mut s = self.state.lock().unwrap();
         if !s.foreground || !s.focused {
             return;
@@ -999,30 +1011,29 @@ impl Hub {
             f.query_finished,
             capture_age
         );
+        a.origin = !matches!(f.anchor, FrameAnchor::Missing);
         let result = if !f.tracking {
-            Err("Camera PAUSED/STOPPED — recenter required")
-        } else if a.origin && f.anchor.is_none() {
-            Err("Origin anchor PAUSED/STOPPED — recenter required")
+            Err("Waiting for ARCore camera tracking")
         } else {
             a.clock.observe(&f)
         };
         let result = result.and_then(|acquisition| {
+            if let Acquisition::New(capture_time) = acquisition {
+                a.camera_ready_at = Some(capture_time);
+            }
+            let anchor = match f.anchor {
+                FrameAnchor::Missing => return Err("Waiting for an origin anchor"),
+                FrameAnchor::Paused => {
+                    return Err("Waiting for the origin anchor to resume tracking");
+                }
+                FrameAnchor::Tracking(pose) => pose,
+            };
             let Acquisition::New(capture_time) = acquisition else {
                 return Ok(None);
             };
-            a.camera_ready_at = Some(capture_time);
-            if f.created_origin && a.recenter {
-                a.origin = true;
-                a.recenter = false;
-            }
-            if !a.origin {
-                a.status = "Camera ready — press Recenter to establish origin".into();
-                return Ok(None);
-            }
-            let pose = f
-                .anchor
-                .and_then(|anchor| relative_grip(f.sensor, anchor))
-                .ok_or("Invalid sensor/origin pose — recenter required")?;
+            let pose = relative_grip(f.sensor, anchor)
+                .ok_or("Waiting for a valid sensor and anchor pose")?;
+            a.recenter_since = None;
             Ok(Some((capture_time, pose)))
         });
         match result {
@@ -1046,12 +1057,17 @@ impl Hub {
             }
             Ok(None) => {} // Cached frames never refresh acquisition/freshness.
             Err(reason) => {
-                s.spatial.as_mut().unwrap().invalidate(reason);
-                s.good[0] = false;
-                s.heading_set = false;
-                s.cancel();
-                s.publish_all(f.query_finished, &self.capabilities);
-                self.updates.send_replace(s.serial);
+                let a = s.spatial.as_mut().unwrap();
+                a.status = reason.into();
+                a.pose = None;
+                if !f.tracking {
+                    a.camera_ready_at = None;
+                }
+                if s.good[0] {
+                    s.good[0] = false;
+                    s.publish(0, f.query_finished, &self.capabilities);
+                    self.updates.send_replace(s.serial);
+                }
             }
         }
     }
@@ -1125,26 +1141,14 @@ mod tests {
         );
         h.action(Action::Hold, 7);
         h.sensor(0, 10, upright(), 10);
-        // An invalid sample from another acquisition group also cannot backdate release.
+        // Bad raw acceleration clears only that group. Rotation retains its
+        // actual acquisition timestamp and the finger remains down.
         h.sensor(1, 8, [f64::NAN, 0., 0., 0.], 8);
-        assert!(!h.held());
-        assert!(
-            h.state
-                .lock()
-                .unwrap()
-                .snapshots
-                .iter()
-                .all(|s| s.timestamp == 10)
-        );
+        assert!(h.held());
+        assert!(!bit(&h, 1, 1));
         h.tick(9);
-        assert!(
-            h.state
-                .lock()
-                .unwrap()
-                .snapshots
-                .iter()
-                .all(|s| s.timestamp == 10)
-        );
+        assert!(bit(&h, 0, 2));
+        assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 10);
     }
     #[test]
     fn resume_requires_a_fresh_heading_without_grv_yaw_continuity() {
@@ -1153,10 +1157,11 @@ mod tests {
         h.action(Action::Resume, 4);
         assert!(!h.state.lock().unwrap().heading_set);
         h.action(Action::Hold, 5);
-        assert!(!h.held());
+        assert!(h.held());
+        assert!(!bit(&h, 0, 2));
         let restarted = multiply([0., 0., 0.5f64.sqrt(), 0.5f64.sqrt()], upright());
         h.sensor(0, 6, restarted, 6);
-        h.action(Action::Hold, 7);
+        assert!(bit(&h, 0, 2));
         h.sensor(0, 8, restarted, 8);
         let p = pose(&h, 0);
         for (actual, expected) in p[3..].iter().zip(upright()) {
@@ -1194,7 +1199,7 @@ mod tests {
         assert_eq!(s.releases, [1, 2]);
     }
     #[test]
-    fn pause_focus_loss_shutdown_and_stale_cancel_without_reactivation() {
+    fn lifecycle_cancels_touch_while_sensor_stall_only_invalidates_rotation() {
         for action in [Action::Pause, Action::Focus(false), Action::Shutdown] {
             let h = hub();
             h.action(Action::Hold, 3);
@@ -1211,10 +1216,10 @@ mod tests {
         h.action(Action::Hold, 3);
         h.sensor(0, 4, upright(), 4);
         h.tick(STALE_NS + 5);
-        assert!(!h.held());
+        assert!(h.held());
         assert!(!bit(&h, 0, 2));
         h.sensor(0, STALE_NS + 6, upright(), STALE_NS + 6);
-        assert!(!h.held());
+        assert!(bit(&h, 0, 2));
     }
     #[test]
     fn coordinate_mapping_and_recenter_preserve_gravity_and_grip_axes() {
@@ -1267,13 +1272,13 @@ mod tests {
         h.sensor(0, 99, upright(), 8);
         assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 4);
         h.sensor(0, 9, [f64::NAN, 0., 0., 1.], 9);
-        assert!(!h.held());
+        assert!(h.held());
         assert!(!bit(&h, 0, 2));
         let missing = Hub::at([false, false, false], "missing", 0);
         missing.action(Action::Resume, 1);
         missing.action(Action::Focus(true), 1);
         missing.action(Action::Hold, 2);
-        assert!(!missing.held());
+        assert_eq!(missing.handset_status(2).motion, Motion::Unavailable);
         assert!(
             !missing
                 .capabilities
@@ -1347,27 +1352,28 @@ mod spatial_tests {
                 position: [1., 2., 3.],
                 ..Pose::IDENTITY
             },
-            anchor: Some(Pose::IDENTITY),
-            created_origin: false,
+            anchor: crate::spatial::FrameAnchor::Tracking(Pose::IDENTITY),
         }
     }
     #[test]
-    fn switching_sources_releases_hold_and_rejects_old_camera_frames() {
+    fn automatic_source_changes_preserve_contact_and_reject_old_camera_frames() {
         let hub = ready();
         hub.action(Action::Hold, 20);
         assert!(hub.held());
         let old = frame(&hub, 21);
         hub.set_tracking_mode(TrackingMode::Orientation, true, 22);
         hub.spatial_frame(old);
-        assert!(!hub.held());
+        assert!(hub.held());
         assert!(!position_valid(&hub, 0));
 
-        hub.action(Action::Hold, 23);
-        assert!(!hub.held());
         let upright = std::f64::consts::FRAC_1_SQRT_2;
         hub.sensor(0, 24, [upright, 0., 0., upright], 24);
-        hub.action(Action::Hold, 25);
+        assert!(matches!(
+            hub.state.lock().unwrap().snapshots[0].values[2],
+            Value::Bit(true)
+        ));
         assert!(hub.held());
+        hub.action(Action::Cancel, 25); // explicit source picker
         hub.set_tracking_mode(TrackingMode::Displacement, true, 26);
         assert!(!hub.held());
         hub.set_tracking_mode(TrackingMode::Spatial, true, 27);
@@ -1381,9 +1387,7 @@ mod spatial_tests {
         h.action(Action::Resume, 1);
         h.action(Action::Focus(true), 2);
         h.action(Action::Recenter, 3);
-        let mut f = frame(&h, 10);
-        f.created_origin = true;
-        h.spatial_frame(f);
+        h.spatial_frame(frame(&h, 10));
         h.action(Action::Hold, 11);
         h.spatial_frame(frame(&h, 20));
         h
@@ -1409,7 +1413,6 @@ mod spatial_tests {
                 h.action(Action::Focus(true), 2);
                 h.action(Action::Recenter, 3);
                 let mut first = frame(&h, 1000 * MS);
-                first.created_origin = true;
                 first.query_started = 1000 * MS + delay - MS;
                 first.query_finished = 1000 * MS + delay;
                 h.spatial_frame(first);
@@ -1452,7 +1455,11 @@ mod spatial_tests {
                     );
                 }
                 h.tick(latest_return + STALE_NS + 1);
-                assert!(!h.held(), "A real camera stall must still cancel");
+                assert!(h.held());
+                assert!(
+                    !position_valid(&h, 0),
+                    "A real camera stall invalidates the pose"
+                );
             }
         }
     }
@@ -1465,7 +1472,6 @@ mod spatial_tests {
         let capture = 1_000_000_000;
         let mut f = frame(&h, capture);
         f.timestamp += 21_636_872;
-        f.created_origin = true;
         h.spatial_frame(f);
         h.action(Action::Hold, capture + 10);
         assert!(h.held());
@@ -1502,40 +1508,55 @@ mod spatial_tests {
         f.query_started = 2000 + STALE_NS;
         f.query_finished = f.query_started + 1;
         h.spatial_frame(f);
-        assert!(!h.held());
+        assert!(h.held());
         assert!(!position_valid(&h, 0));
         h.spatial_frame(frame(&h, 3000 + STALE_NS));
-        h.action(Action::Hold, 3002 + STALE_NS);
-        assert!(!h.held()); // explicit recenter still required
+        assert!(position_valid(&h, 0));
     }
     #[test]
-    fn camera_and_anchor_loss_require_recenter_and_new_press() {
-        for anchor_loss in [false, true] {
-            let h = ready();
-            let mut f = frame(&h, 30);
+    fn one_press_calibrates_then_recovers_camera_and_anchor_without_losing_reference() {
+        use crate::spatial::FrameAnchor;
+        let h = Hub::spatial_at([true; 3], "camera", 0);
+        h.action(Action::Resume, 1);
+        h.action(Action::Focus(true), 2);
+        assert!(h.spatial_context().2.is_none());
+        h.action(Action::Hold, 3);
+        assert_eq!(h.spatial_context().2, Some(3));
+        let generation = h.spatial_context().0;
+        let mut startup = frame(&h, 4);
+        startup.tracking = false;
+        startup.anchor = FrameAnchor::Missing;
+        h.spatial_frame(startup);
+        assert_eq!(h.handset_status(5).motion, Motion::Calibrating);
+        h.spatial_frame(frame(&h, 10));
+        assert_eq!(h.handset_status(11).motion, Motion::Tracking);
+        for (i, anchor_loss) in [false, true].into_iter().enumerate() {
+            let at = 20 + 20 * i as u64;
+            let mut lost = frame(&h, at);
             if anchor_loss {
-                f.anchor = None;
+                lost.anchor = FrameAnchor::Paused;
             } else {
-                f.tracking = false;
+                lost.tracking = false;
             }
-            h.spatial_frame(f);
-            assert!(!h.held());
-            h.spatial_frame(frame(&h, 40));
-            h.action(Action::Hold, 42);
-            assert!(!h.held());
-            h.action(Action::Recenter, 43);
-            let mut f = frame(&h, 50);
-            f.created_origin = true;
-            h.spatial_frame(f);
-            assert!(!h.held());
-            h.action(Action::Hold, 52);
-            h.spatial_frame(frame(&h, 60));
-            assert!(h.held());
+            h.spatial_frame(lost);
+            assert_eq!(h.handset_status(at + 1).motion, Motion::Recovering);
+            assert!(!position_valid(&h, 0));
+            assert_eq!(h.spatial_context().0, generation);
+            h.spatial_frame(frame(&h, at + 10));
             assert!(position_valid(&h, 0));
-            let s = h.state.lock().unwrap();
-            assert_eq!(s.presses[0], 2);
-            assert_eq!(s.releases[0], 1);
         }
+        let mut stopped = frame(&h, 60);
+        stopped.anchor = FrameAnchor::Missing;
+        h.spatial_frame(stopped);
+        assert_eq!(h.handset_status(61).motion, Motion::Calibrating);
+        h.spatial_frame(frame(&h, 70));
+        assert!(position_valid(&h, 0));
+        h.action(Action::Release, 75);
+        h.spatial_frame(frame(&h, 80));
+        assert!(!position_valid(&h, 0));
+        assert!(h.spatial_context().2.is_none());
+        let s = h.state.lock().unwrap();
+        assert_eq!((s.presses[0], s.releases[0]), (1, 1));
     }
     #[test]
     fn late_worker_results_cannot_cross_lifecycle_or_recenter_generation() {
@@ -1552,8 +1573,6 @@ mod spatial_tests {
             h.spatial_frame(pending);
             assert!(!h.held());
             assert!(!position_valid(&h, 0));
-            h.spatial_failure(pending.generation, "obsolete worker error", 110);
-            assert!(!h.status(110).contains("obsolete worker error"));
         }
     }
     #[test]
@@ -1569,10 +1588,9 @@ mod spatial_tests {
         let mut f = frame(&h, 60);
         f.metadata_timestamp = None;
         h.spatial_frame(f);
-        assert!(!h.held());
+        assert!(h.held());
         h.sensor(0, 70, [0., 0., 0., 1.], 70);
-        h.action(Action::Hold, 80);
-        assert!(!h.held());
+        assert!(h.held());
         assert!(!position_valid(&h, 1));
         let h = ready();
         h.action(Action::Cancel, 25);
@@ -1580,7 +1598,7 @@ mod spatial_tests {
         assert!(!h.held());
         let h = ready();
         h.tick(STALE_NS + 100);
-        assert!(!h.held());
+        assert!(h.held());
         assert!(!position_valid(&h, 0));
     }
     #[test]

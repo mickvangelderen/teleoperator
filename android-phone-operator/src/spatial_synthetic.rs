@@ -2,7 +2,7 @@
 use phone_operator::{
     phone::{self, Action, Hand, Hub},
     server,
-    spatial::{Frame, Pose},
+    spatial::{Frame, FrameAnchor, Pose},
 };
 use tokio::{net::TcpListener, sync::watch};
 #[tokio::main]
@@ -41,20 +41,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     source.action(Action::Release,at);
                     if phase==3 { source.action(Action::Pause,at); } else {
                         source.action(Action::Resume,at);source.action(Action::Focus(true),at);
-                        source.action(Action::Select(if phase==2 {Hand::Right}else{Hand::Left}),at);source.action(Action::Recenter,at);
+                        source.action(Action::Select(if phase==2 {Hand::Right}else{Hand::Left}),at);
+                        if phase==1 || phase==2 {source.action(Action::Hold,at);}
                     }
                     cached=None;
                 }
                 if phase!=3 {
                     if cached.is_none_or(|f|at-f.query_finished>=30_000_000) {
-                        let t=(at-start) as f64/1e9;let yaw=0.3*t.sin();
-                        // The SDK frame clock can have a different epoch from Camera2 BOOTTIME.
-                        cached=Some(Frame{generation:source.spatial_context().0,timestamp:(at-start) as i64+1,metadata_timestamp:Some(at as i64),realtime:true,query_started:at,query_finished:at,
-                            tracking:true,sensor:Pose{position:[0.25*t.sin(),0.2+0.05*(t*0.7).cos(),-0.3],orientation:[0.,(yaw/2.).sin(),0.,(yaw/2.).cos()]},anchor:Some(Pose::IDENTITY),created_origin:source.spatial_context().2});
+                        let elapsed = at - start;
+                        let t = elapsed as f64 / 1e9;
+                        let yaw = 0.3 * t.sin();
+                        let (generation, _, request) = source.spatial_context();
+                        // Briefly lose camera tracking during each hold, retaining the reference.
+                        let dropout = (800_000_000..1_000_000_000).contains(&(elapsed % 2_000_000_000));
+                        cached = Some(Frame {
+                            generation,
+                            timestamp: elapsed as i64 + 1, // distinct SDK time base
+                            metadata_timestamp: Some(at as i64),
+                            realtime: true,
+                            query_started: at,
+                            query_finished: at,
+                            tracking: !dropout,
+                            sensor: Pose {
+                                position: [0.25 * t.sin(), 0.2 + 0.05 * (t * 0.7).cos(), -0.3],
+                                orientation: [0., (yaw / 2.).sin(), 0., (yaw / 2.).cos()],
+                            },
+                            anchor: if request.is_some() {
+                                FrameAnchor::Tracking(Pose::IDENTITY)
+                            } else {
+                                FrameAnchor::Missing
+                            },
+                        });
                     }
                     let mut f=cached.unwrap();f.query_started=at;f.query_finished=at;source.spatial_frame(f);
                     source.sensor(1,at,[0.,9.81,0.,0.],at);source.sensor(2,at,[0.,0.3,0.,0.],at);
-                    if phase!=previous && (phase==1||phase==2) {source.action(Action::Hold,at);}
                 }
                 source.tick(at);previous=phase;
             }}

@@ -111,26 +111,25 @@ fn every_clutch_lifecycle_exit_discards_velocity_and_never_reactivates() {
     }
 }
 #[test]
-fn required_source_missing_or_lost_cancels_even_with_fresh_orientation() {
+fn missing_source_stays_unavailable_and_recovered_acceleration_restarts_estimate() {
     for available in [[true, false, true], [false, true, true]] {
         let h = Hub::displacement_at(available, "missing", 0);
         h.action(Action::Resume, 1);
         h.action(Action::Focus(true), 2);
         pair(&h, 10 * MS, 10 * MS);
         h.action(Action::Hold, 11 * MS);
-        assert!(!h.held());
+        assert_eq!(h.handset_status(11 * MS).motion, Motion::Unavailable);
     }
     let h = ready();
     for k in 4..31 {
         h.sensor(0, k * 10 * MS, upright(), k * 10 * MS);
         h.tick(k * 10 * MS);
     }
-    assert!(!h.held());
+    assert!(h.held());
     assert!(!valid(&h));
     assert!(h.state.lock().unwrap().fresh(0, 300 * MS));
     h.sensor(1, 300 * MS, [1., GRAVITY, 0., 0.], 300 * MS);
-    assert!(!h.held());
-    h.action(Action::Hold, 301 * MS);
+    assert!(h.held());
     pair(&h, 310 * MS, 310 * MS);
     assert_eq!(
         h.state
@@ -147,7 +146,7 @@ fn required_source_missing_or_lost_cancels_even_with_fresh_orientation() {
     );
 }
 #[test]
-fn invalid_timestamps_nan_skew_and_gaps_release_but_duplicates_do_not() {
+fn invalid_samples_and_gaps_invalidate_the_estimate_without_releasing_the_touch() {
     for (kind, t, received, v) in [
         (1, 29, 40, [1., GRAVITY, 0., 0.]),
         (1, 41, 40, [1., GRAVITY, 0., 0.]),
@@ -158,7 +157,7 @@ fn invalid_timestamps_nan_skew_and_gaps_release_but_duplicates_do_not() {
     ] {
         let h = ready();
         h.sensor(kind, t * MS, v, received * MS);
-        assert!(!h.held(), "{kind} {t}");
+        assert!(h.held(), "{kind} {t}");
         assert!(!valid(&h));
     }
     let h = ready();
@@ -167,7 +166,8 @@ fn invalid_timestamps_nan_skew_and_gaps_release_but_duplicates_do_not() {
     assert!(h.held());
     assert_eq!(h.state.lock().unwrap().serial, serial);
     h.tick(30 * MS + STALE_NS + 1);
-    assert!(!h.held());
+    assert!(h.held());
+    assert!(!valid(&h));
 }
 #[test]
 fn sensor_phase_warmup_and_fault_recovery_do_not_require_exact_timestamp_matches() {
