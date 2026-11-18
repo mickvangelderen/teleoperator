@@ -13,9 +13,33 @@ test("unknown-layout gamepad inputs go on change without moving unrelated sample
   assert.equal(isGamepadGroup(c, 0), true);
   assert.equal(isGamepadGroup(c, 1), false);
   const indices = (group: number, rest = false) => defaultBundles(c, group, rest).map(b => b.map(s => s.descriptor));
-  assert.deepEqual(indices(0), [[3], [0, 1, 2]]);
+  assert.deepEqual(indices(0), [[3], [0], [1, 2]]);
   assert.deepEqual(indices(1), [[4]]);
   assert.deepEqual(indices(1, true), [[], [4]]);
+});
+
+test("mapped analogs keep their own activity while stick clicks and extension buttons stay digital", () => {
+  const mapped = "/user/gamepad/input/";
+  const digital = ["/gamepad/connected", "/gamepad/activity", mapped + "thumbstick_left/click",
+    mapped + "thumbstick_left/click/active", mapped + "thumbstick_left/click/press_count",
+    mapped + "thumbstick_left/click/release_count", "/gamepad/input/paddle1/click"];
+  const analog = ["trigger_left/value", "trigger_right/value", "thumbstick_left/y", "thumbstick_right"]
+    .map(control => [mapped + control, mapped + control + "/active"]);
+  const descriptors = [...analog[3], ...digital, ...analog[2], ...analog[0], ...analog[1]].map(id => sample(id));
+  const c: Capabilities = { groups: [100], skeletons: [], descriptors };
+  const ids = defaultBundles(c, 0, false).map(bundle => bundle.map(s => descriptors[s.descriptor].id));
+  assert.deepEqual(ids, [[], digital, ...analog]);
+});
+
+test("sparse raw axes get independent bundles in numeric order, including beyond eight on-change bundles", () => {
+  const digital = ["/gamepad/connected", "/gamepad/raw/hat/0/up", "/gamepad/raw/hat/0/up/release_count",
+    "/gamepad/raw/button/1", "/gamepad/raw/button/1/active"];
+  const axis = (n: number) => ["/gamepad/raw/axis/" + n, "/gamepad/raw/axis/" + n + "/active"];
+  const numbers = [0, 2, 3, 4, 7, 12, 19, 24];
+  const descriptors = [...numbers.toReversed().flatMap(axis), ...digital].map(id => sample(id));
+  const c: Capabilities = { groups: [100], skeletons: [], descriptors };
+  const ids = defaultBundles(c, 0, false).map(bundle => bundle.map(s => descriptors[s.descriptor].id));
+  assert.deepEqual(ids, [[], digital, ...numbers.map(axis)]);
 });
 
 test("SDL Guide and its companions go on change with or without a continuous virtual pose", () => {

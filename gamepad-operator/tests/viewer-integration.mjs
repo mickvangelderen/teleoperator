@@ -119,7 +119,7 @@ try {
     const {Connection}=await import('/src/connection.ts');
     const {currentValues}=await import('/src/tracking-view.ts');
     const errors=[],buttonStates=new Set();let packets=0,samples=0,presses=0n,releases=0n,initialCounts;
-    let quietSince=0,longestQuiet=0;
+    let quietSince=0,longestQuiet=0,bundleSizes;
     const c=new Connection(state=>{if(state.status==='Error')errors.push(state.detail);});
     try {
       await c.connect();const end=performance.now()+5500;
@@ -147,7 +147,9 @@ try {
           }
           for(const sub of c.session.active.values()){
             const bundles=sub.request.bundles;
-            if(bundles.length!==2 || bundles[0].length || bundles[1].length!==caps.descriptors.length ||
+            bundleSizes=bundles.map(b=>b.length);
+            if(bundles.length!==6 || bundles[0].length || bundles.flat().length!==caps.descriptors.length ||
+              bundleSizes.slice(2).some(n=>n!==2) ||
               sub.request.sequenceNumberFormat===null || !c.isAutomatic(sub.request.id))throw Error('Wrong raw default subscription');
             if(sub.packet?.predictedFor!=null)throw Error('Invented prediction');
             if(sub.packet){
@@ -158,7 +160,7 @@ try {
         }
         await new Promise(r=>setTimeout(r,25));
       }
-      return {groups:c.session.active.size,descriptors:c.session.capabilities?.descriptors.length,clock:!!c.session.clockEstimate(performance.now()),packets,samples,longestQuiet,
+      return {groups:c.session.active.size,descriptors:c.session.capabilities?.descriptors.length,bundleSizes,clock:!!c.session.clockEstimate(performance.now()),packets,samples,longestQuiet,
         buttonStates:[...buttonStates],presses:String(presses-initialCounts[0]),releases:String(releases-initialCounts[1]),
         freshnessStreams:c.session.freshness(performance.now()).streams.length,errors};
     }finally{c.close();}
@@ -168,6 +170,7 @@ try {
   assert.ok(BigInt(normal.presses)>0n);assert.ok(BigInt(normal.releases)>0n);assert.deepEqual(normal.errors,[]);
   const protocol=await page.evaluate(async()=>{
     const {Session}=await import('/src/session.ts');const {timing,decodeTracking}=await import('/src/protocol.ts');
+    const {defaultBundles}=await import('/src/default-bundles.ts');
     const s=new Session(),pc=new RTCPeerConnection({iceServers:[]});
     const reliable=pc.createDataChannel('reliable',{ordered:true,protocol:'xrop'}),unreliable=pc.createDataChannel('unreliable',{ordered:false,maxRetransmits:0,protocol:'xrop'});
     const errors=[],wire=new Map(),reports=[];let drop=true;
@@ -204,23 +207,24 @@ try {
       // slot after a release so the next complete press falls between publications.
       const buttonId=s.allocateId(),a=c.descriptors.findIndex(d=>d.id==='/user/gamepad/input/a/click');
       const {press_count_sample,release_count_sample}=c.descriptors[a];
-      const selected=[a,press_count_sample,release_count_sample].map(descriptor=>({
-        descriptor,format:c.descriptors[descriptor].formats[0],space:0
-      }));
-      reliable.send(s.request({id:buttonId,group:0,delivery:1,...timing(60),sequenceNumberFormat:2,bundles:[[],selected]}));
-      const buttonPackets=()=>wire.get(buttonId)??[];
-      await wait(()=>buttonPackets().some(p=>p.bundles[1][0]),'A down');
-      await wait(()=>buttonPackets().at(-1).bundles[1][0]===false,'A released');
+      const bundles=defaultBundles(c,0,false);
+      const digital=bundles.findIndex(bundle=>bundle.some(b=>b.descriptor===a));
+      const [held,press,release]=[a,press_count_sample,release_count_sample].map(d=>bundles[digital].findIndex(b=>b.descriptor===d));
+      reliable.send(s.request({id:buttonId,group:0,delivery:1,...timing(60),sequenceNumberFormat:2,bundles}));
+      const buttonPackets=()=>(wire.get(buttonId)??[]).filter(p=>p.bundles[digital]!==null);
+      await wait(()=>buttonPackets().some(p=>p.bundles[digital][held]),'A down');
+      await wait(()=>buttonPackets().at(-1).bundles[digital][held]===false,'A released');
       const released=buttonPackets().at(-1),start=buttonPackets().length;
       const slow=timing(0.2);
       reliable.send(s.changeSchedule(buttonId,{...slow,phase:released.timestamp%slow.interval}));
       await wait(()=>buttonPackets().at(-1).timestamp>released.timestamp+4_500_000_000n,'slot following a complete press');
-      const after=buttonPackets().at(-1).bundles[1],before=released.bundles[1];
-      if(buttonPackets().slice(start).some(p=>p.bundles[1][0]) ||
-        Number(after[1])!==Number(before[1])+1 || Number(after[2])!==Number(before[2])+1)throw Error('Between-slot A edges lost');
+      const after=buttonPackets().at(-1).bundles[digital],before=released.bundles[digital];
+      const betweenSlots={held:after[held],pressDelta:Number(after[press])-Number(before[press]),releaseDelta:Number(after[release])-Number(before[release])};
+      if(buttonPackets().slice(start).some(p=>p.bundles[digital][held]) ||
+        betweenSlots.pressDelta!==1 || betweenSlots.releaseDelta!==1)throw Error('Between-slot A edges lost');
       reliable.send(s.stop(buttonId));await wait(()=>!s.stopping.has(buttonId),'stop slow slots');
       for(let i=0;i<4;i++){unreliable.send(s.requestClock(performance.now()));await pause(100);}await wait(()=>!!s.clockEstimate(performance.now()),'clock');
-      return {reports,clock:true,betweenSlots:{held:after[0],pressDelta:Number(after[1])-Number(before[1]),releaseDelta:Number(after[2])-Number(before[2])},errors};
+      return {reports,clock:true,betweenSlots,errors};
     }finally{pc.close();s.retire();}
   });
   assert.deepEqual(protocol.errors,[]);assert.ok(protocol.reports.every(r=>r.predictedFor===null&&r.packets>=3));
@@ -233,7 +237,9 @@ try {
   assert.match(await page.locator('#sample-summary').innerText(),new RegExp('^'+normal.descriptors+' samples'));
   const editor=page.locator('subscription-editor');
   assert.match(await editor.locator('[data-bundle-index="0"] summary').innerText(),/0 bindings/);
-  assert.match(await editor.locator('[data-bundle-index="1"] summary').innerText(),new RegExp('On change[\\s\\S]*'+normal.descriptors+' bindings'));
+  for(const [i,size] of normal.bundleSizes.entries())if(i){
+    assert.match(await editor.locator('[data-bundle-index="'+i+'"] summary').innerText(),new RegExp('On change[\\s\\S]*'+size+' bindings'));
+  }
   const stickRow='tr[data-descriptor="/user/gamepad/input/thumbstick_left"]';
   // Live samples replace rows while rendering; query and scroll the current row
   // in one browser task instead of retaining an element across layout frames.
@@ -262,26 +268,29 @@ try {
   await editor.locator('[data-field="automatic"]').uncheck();
   await editor.locator('[data-field="delivery"]').selectOption('2');
   await editor.locator('[data-action="add-bundle"]').click();
-  const bundle=editor.locator('[data-bundle-index="2"]');
+  const addedIndex=normal.bundleSizes.length;
+  const bundleSelector='[data-bundle-index="'+addedIndex+'"]';
+  const bundle=editor.locator(bundleSelector);
   await bundle.locator('[data-action="catalogue"]').click();
   await bundle.locator('[data-field="search"]').fill('/user/gamepad/input/trigger_left/value');
   await bundle.locator('[data-action="add-matches"]').click();
   await editor.locator('[data-action="close-catalogue"]').click();
   await editor.locator('[data-action="apply"]').click();
   await page.waitForFunction(()=>document.querySelector('subscription-editor .subscription-message')?.textContent.includes('packets'));
-  await scrollRow('[data-bundle-index="2"] tr[data-descriptor="/user/gamepad/input/trigger_left/value"]');
-  await page.waitForFunction(()=>{
-    const row=document.querySelector('[data-bundle-index="2"] tr[data-descriptor="/user/gamepad/input/trigger_left/value"]');
+  const addedTrigger=bundleSelector+' tr[data-descriptor="/user/gamepad/input/trigger_left/value"]';
+  await scrollRow(addedTrigger);
+  await page.waitForFunction(selector=>{
+    const row=document.querySelector(selector);
     return row?.dataset.available==='true' && Math.abs(Number(row.querySelector('.sample-value')?.textContent)-0.25)<0.01;
-  });
+  },addedTrigger);
   const picker = page.getByRole('combobox', {name:'Visualization', exact:true});
   await picker.selectOption('values');
   const inspector = page.locator('#sample-inspector');
   const accepted = inspector.locator('.inspect-selector select');
-  const bundleKey = await accepted.locator('option').filter({hasText:'Bundle 2'}).getAttribute('value');
+  const bundleKey = await accepted.locator('option').filter({hasText:'Bundle '+addedIndex}).getAttribute('value');
   await accepted.selectOption(bundleKey);
   const observed = inspector.locator('.observed-sample');
-  // The old bundle also contains this trigger. Wait for its other rows to leave.
+  // Wait for the inspector to finish replacing the previous bundle's rows.
   await observed.nth(1).waitFor({state:'detached'});
   await observed.locator('[data-sample-id$="/trigger_left/value/active"] .sample-value').filter({hasText:'true'}).waitFor();
   assert.equal(await observed.count(), 1);
@@ -350,8 +359,47 @@ async function verifyControllerButton(page, picker) {
 async function verifyVirtual(page) {
   const report=await page.evaluate(async()=>{
     const {Connection}=await import('/src/connection.ts');
+    const {decodeTracking}=await import('/src/protocol.ts');
     const {currentValues,spatialFrames}=await import('/src/tracking-view.ts');
-    const c=new Connection(()=>{}),reports={};let segment,resetSeen=false,samples=0,retainedRaw=false;
+    const wire={}, reports={};
+    let previousStick,previousMenu,menuDown,segment,resetSeen=false,samples=0,retainedRaw=false;
+    const c=new Connection(()=>{}, {
+      packet(direction,channel,bytes){
+        if(direction!=='received'||bytes[0]!==9)return;
+        const id=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint32(1,true);
+        const request=c.session.active.get(id)?.request, caps=c.session.capabilities;
+        if(!request||!caps)return;
+        const packet=decodeTracking(bytes.subarray(1),caps,request);
+        const included=packet.bundles.flatMap((values,i)=>values===null?[]:[i]);
+        if(included.length===request.bundles.length)wire.fullBytes=bytes.length;
+        if(included.length===1)wire.poseOnlyBytes=bytes.length;
+        // The synthetic demo taps Menu for five 10 ms observations.
+        const digital=packet.bundles[1];
+        if(digital && !wire.menuTap){
+          const menu='/user/gamepad/input/menu/click';
+          const read=suffix=>digital[request.bundles[1].findIndex(b=>caps.descriptors[b.descriptor].id===menu+suffix)];
+          const next={held:read(''),presses:Number(read('/press_count')),releases:Number(read('/release_count'))};
+          if(previousMenu?.held===false && next.held && next.presses===previousMenu.presses+1 && next.releases===previousMenu.releases){
+            menuDown={before:previousMenu,down:next,timestamp:packet.timestamp};
+          }
+          if(menuDown && previousMenu.held && !next.held && next.releases===menuDown.down.releases+1 && next.presses===menuDown.down.presses){
+            wire.menuTap={before:menuDown.before,down:menuDown.down,up:next,observedMs:Number(packet.timestamp-menuDown.timestamp)/1e6};
+          }
+          previousMenu=next;
+        }
+        const stickId='/user/gamepad/input/thumbstick_left';
+        const group=request.bundles.findIndex(b=>b.some(s=>caps.descriptors[s.descriptor].id===stickId));
+        const readings=packet.bundles[group];
+        if(!readings)return;
+        const ids=request.bundles[group].map(s=>caps.descriptors[s.descriptor].id);
+        const stick=readings[ids.indexOf(stickId)];
+        if(!wire.leftStick && included.length===2 && previousStick && stick.some((v,i)=>v!==previousStick[i])) {
+          wire.leftStick={included,ids,before:previousStick,after:stick,bytes:bytes.length};
+        }
+        previousStick=stick;
+      },
+      stop(){}
+    });
     const requirements=['forward','back','right','left','up','down','yawRight','yawLeft','pitchUp','pitchDown','rollRight','rollLeft','neutral','paused','combined'];
     const delta={forward:[2,-1],back:[2,1],right:[0,1],left:[0,-1],up:[1,1],down:[1,-1],yawRight:[4,-1],yawLeft:[4,1],pitchUp:[3,1],pitchDown:[3,-1],rollRight:[5,-1],rollLeft:[5,1]};
     try {
@@ -366,9 +414,9 @@ async function verifyVirtual(page) {
           if(pose?.packet) {
             const bundles=pose.subscription.request.bundles;
             const continuous=caps.descriptors.filter(d=>d.id.startsWith('/gamepad/virtual/')).map(d=>d.id);
-            if(bundles.length!==2 || bundles[0].length!==continuous.length ||
+            if(bundles.length!==6 || bundles[0].length!==continuous.length ||
               bundles[0].some(b=>!continuous.includes(caps.descriptors[b.descriptor].id)) ||
-              bundles[1].length!==caps.descriptors.length-continuous.length)throw Error('Wrong mixed default subscription');
+              bundles.flat().length!==caps.descriptors.length)throw Error('Wrong mixed default subscription');
             samples++;if(pose.stale)throw Error('Virtual pose stale while idle/paused');
             const desc=caps.descriptors.find(d=>d.id==='/gamepad/virtual/pose');
             if(desc.kind!==10||desc.spaces.length!==1||desc.spaces[0]!==6)throw Error('Virtual pose is not model-space kind10');
@@ -385,7 +433,7 @@ async function verifyVirtual(page) {
               const v=get('/user/gamepad/input/'+suffix),active=get('/user/gamepad/input/'+suffix+'/active');
               if(!v?.packet || v.stale || v.packet.timestamp>pose.packet.timestamp ||
                 active?.value!==true || active.packet.timestamp!==v.packet.timestamp)throw Error('Invalid retained raw input '+suffix);
-              if(!pose.packet.bundles[1] && v.packet.timestamp<pose.packet.timestamp)retainedRaw=true;
+              if(pose.packet.bundles.slice(1).every(bundle=>bundle===null) && v.packet.timestamp<pose.packet.timestamp)retainedRaw=true;
               return v.value;
             };
             const l=raw('thumbstick_left'),r=raw('thumbstick_right'),lt=raw('trigger_left/value'),rt=raw('trigger_right/value'),lb=raw('shoulder_left/click'),rb=raw('shoulder_right/click');
@@ -422,9 +470,13 @@ async function verifyVirtual(page) {
       }
       if(!resetSeen||!requirements.every(key=>reports[key]))throw Error('Missing virtual coverage '+requirements.filter(key=>!reports[key]).join(','));
       if(!retainedRaw)throw Error('Continuous pose never advanced independently of acknowledged inputs');
-      return {samples,reports,reset:true,modelSpace:true,tracked:false,predictedFor:null,retainedRaw};
+      return {samples,reports,wire,reset:true,modelSpace:true,tracked:false,predictedFor:null,retainedRaw};
     }finally{c.close();}
   });
+  assert.deepEqual(report.wire.leftStick?.included,[0,4]);
+  assert.deepEqual(report.wire.leftStick.ids,['/user/gamepad/input/thumbstick_left','/user/gamepad/input/thumbstick_left/active']);
+  assert.ok(report.wire.poseOnlyBytes<report.wire.leftStick.bytes && report.wire.leftStick.bytes<report.wire.fullBytes);
+  assert.ok(report.wire.menuTap?.observedMs>0 && report.wire.menuTap.observedMs<200,'Decoded both edges of a scripted 50 ms Menu tap');
   await page.getByRole('dialog').getByRole('button',{name:'Connect',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
   await page.getByRole('combobox', {name:'Visualization', exact:true}).selectOption('spatial');
