@@ -8,7 +8,8 @@ import type { Material, Object3D } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
-import type { PoseFrame, JointHierarchy } from "./body-model";
+import { BodyModel } from "./body-model";
+import type { PoseFrame, JointHierarchy, BodyMeshFrame } from "./body-model";
 import { profiler } from "./performance";
 import { RollingRate } from "./statistics";
 
@@ -30,7 +31,9 @@ export class SpatialView {
   private view = "iso";
   private zoom = 1;
   private poses = new Map<string, { group: Group; shape: Group }>();
-  private bodyPoints = new Points(new BufferGeometry(), new PointsMaterial({ vertexColors: true, size: 0.018, sizeAttenuation: true }));
+  private body?: BodyModel;
+  private meshEnabled = true;
+  private bodyPoints = new Points(new BufferGeometry(), new PointsMaterial({ vertexColors: true, size: 0.018, sizeAttenuation: true, depthTest: false }));
   private bodyPositions = new Float32BufferAttribute(new Float32Array(70 * 3), 3);
   private bodyColors = new Float32BufferAttribute(new Float32Array(70 * 3), 3);
   private joints = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.75, depthTest: false }));
@@ -62,6 +65,8 @@ export class SpatialView {
     this.joints.geometry.setDrawRange(0, 0);
     this.scene.add(this.joints);
     this.bodyPoints.frustumCulled = false;
+    this.bodyPoints.visible = false;
+    this.bodyPoints.renderOrder = 1; // Keep joint markers readable over the skin.
     this.bodyPoints.geometry.setAttribute("position", this.bodyPositions);
     this.bodyPoints.geometry.setAttribute("color", this.bodyColors);
     this.bodyPoints.geometry.setDrawRange(0, 0);
@@ -102,6 +107,12 @@ export class SpatialView {
         else alignTouchPlusToGrip(scene);
         scene.traverse(object => { if (/batteryindicator/i.test(object.name)) object.visible = false; });
         this.poses.get(name)!.shape.add(scene);
+      }),
+      loader.loadAsync("/assets/meta/body.glb").then(({ scene }) => {
+        if (this.disposed) { dispose(scene); return; }
+        this.body = new BodyModel(scene);
+        scene.visible = false;
+        this.scene.add(scene);
       }),
       new HDRLoader().loadAsync("/assets/environment/studio_small_09_1k.hdr").then(hdr => {
         if (this.disposed) { hdr.dispose(); return; }
@@ -168,20 +179,22 @@ export class SpatialView {
     this.invalidate();
   }
 
-  showJoints(show: boolean) { this.joints.visible = show; this.invalidate(); }
+  showJoints(show: boolean) { this.joints.visible = show; this.bodyPoints.visible = show; this.invalidate(); }
+
+  showBodyMesh(show: boolean) { this.meshEnabled = show; this.stateDirty = true; this.invalidate(); }
 
   reframe() { this.framed = 0; this.invalidate(); }
 
-  update(sample: PoseFrame | null, sources: string[], late: boolean, body: PoseFrame | null = null, skeleton?: JointHierarchy) {
+  update(sample: PoseFrame | null, sources: string[], late: boolean, body: PoseFrame | null = null, skeleton?: JointHierarchy, bodyMesh?: BodyMeshFrame) {
     const previous = this.latest;
-    if (sample === previous[0] && sources.length === previous[1].length && sources.every((source, i) => source === previous[1][i]) && late === previous[2] && body === previous[3] && skeleton === previous[4]) return;
-    this.latest = [sample, sources, late, body, skeleton];
+    if (sample === previous[0] && sources.length === previous[1].length && sources.every((source, i) => source === previous[1][i]) && late === previous[2] && body === previous[3] && skeleton === previous[4] && bodyMesh === previous[5]) return;
+    this.latest = [sample, sources, late, body, skeleton, bodyMesh];
     this.stateDirty = true;
     this.invalidate();
   }
 
   private applyState() {
-    const [sample, sources, late, body = null, skeleton] = this.latest;
+    const [sample, sources, late, body = null, skeleton, bodyMesh] = this.latest;
     let count = 0;
     for (const name of sources) {
       if (this.poses.has(name)) continue;
@@ -199,6 +212,9 @@ export class SpatialView {
       tintLate(object.group, late);
     }
     this.surface.dataset.poseCount = String(count);
+    this.body?.update(this.meshEnabled ? bodyMesh?.sample ?? null : null, bodyMesh?.skeleton);
+    if (this.body) tintLate(this.body.root, late);
+    this.surface.dataset.bodyMesh = String(!!this.body?.root.visible);
     // Connectivity and joint count come from the advertised skeleton.
     const visible = body?.active ? body.poses.filter(p => p.flags & 2) : [];
     const points = visible.flatMap(p => p.position);
@@ -251,6 +267,7 @@ export class SpatialView {
     this.observer.disconnect(); this.controls.dispose();
     document.removeEventListener("visibilitychange", this.invalidate);
     this.environment?.dispose(); dispose(this.scene); this.renderer.dispose();
+    this.renderer.domElement.remove();
   }
 }
 
@@ -284,7 +301,13 @@ function tintLate(object: Object3D, late: boolean) {
   });
 }
 function dispose(object: Object3D) {
-  object.traverse(child => (child as Mesh).geometry?.dispose());
+  const skeletons = new Set<import("three").Skeleton>();
+  object.traverse(child => {
+    (child as Mesh).geometry?.dispose();
+    const skeleton = (child as import("three").SkinnedMesh).skeleton;
+    if (skeleton) skeletons.add(skeleton);
+  });
+  skeletons.forEach(skeleton => skeleton.dispose());
   materials(object, material => {
     for (const value of Object.values(material)) if (value?.isTexture) value.dispose();
     material.dispose();

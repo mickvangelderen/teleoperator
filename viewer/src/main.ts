@@ -48,7 +48,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </section>
     <section class="panel workspace">
       <div class="viewport"><div id="poses"></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Ready to connect</h3><p id="workspace-note">Connect to inspect the device’s tracking data.</p></div></div>
-      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="0" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><div class="prediction-timing" aria-label="Prediction timing"><span id="prediction-offset-label">Prediction timing</span><span id="requested-prediction-offset" title="Requested offset from the publication slot to the desired device target. This does not establish actual prediction.">Requested: unavailable</span><span id="measured-prediction-offset" title="Actual device target minus acquisition time (predicted_for − acquired_at), when the source reports a target. Publication time is not supplied, so this is not measured publication-to-consumption delay.">Device target − acquisition: unavailable</span></div><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
+      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Meta upper-body skin, when matching live and rest poses are available"><input id="show-body-mesh" type="checkbox" checked> Body mesh</label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="0" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><div class="prediction-timing" aria-label="Prediction timing"><span id="prediction-offset-label">Prediction timing</span><span id="requested-prediction-offset" title="Requested offset from the publication slot to the desired device target. This does not establish actual prediction.">Requested: unavailable</span><span id="measured-prediction-offset" title="Actual device target minus acquisition time (predicted_for − acquired_at), when the source reports a target. Publication time is not supplied, so this is not measured publication-to-consumption delay.">Device target − acquisition: unavailable</span></div><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
     </section>
     <section class="panel subscriptions-panel"><span id="sample-summary" class="tag">No capabilities</span><p id="publication-status" class="publication-status status-message" role="status"></p><div id="subscriptions" class="subscriptions"><p>Connect to discover selectable samples.</p></div></section>
     <section class="panel performance-panel" id="performance" aria-label="Performance profiling"></section>
@@ -94,7 +94,7 @@ const animate = (frameTime: number) => {
     spatialKey = key;
     trackingView = spatialFrames(session, now, rest);
   }
-  spatial?.update(trackingView.poses, trackingView.sources, !rest && current.freshness.status === "Late", trackingView.body, trackingView.hierarchy);
+  spatial?.update(trackingView.poses, trackingView.sources, !rest && current.freshness.status === "Late", trackingView.body, trackingView.hierarchy, trackingView.bodyMesh);
   const started = profiler.begin();
   try { renderState(current, trackingView, now); } finally { profiler.end("ui", started); }
   spatial?.renderFrame();
@@ -112,6 +112,7 @@ const ageGroups = mountGroupLegend(ageChart.tooltip);
 let metricSession: Session | undefined;
 void import("./spatial").then(({ SpatialView }) => {
   spatial = new SpatialView(element("poses"), setGraphicsStatus);
+  spatial.showBodyMesh(element<HTMLInputElement>("show-body-mesh").checked);
   spatial.showJoints(element<HTMLInputElement>("show-joints").checked);
   spatialKey = "uninitialized";
   spatial.setContinuousRendering(element<HTMLInputElement>("continuous-render").checked);
@@ -257,5 +258,6 @@ element<HTMLInputElement>("render-to-photon").oninput = () => {
 };
 
 element("skeleton-view").onchange = () => spatial?.reframe();
+element("show-body-mesh").onchange = () => spatial?.showBodyMesh(element<HTMLInputElement>("show-body-mesh").checked);
 element("show-joints").onchange = () => spatial?.showJoints(element<HTMLInputElement>("show-joints").checked);
 if (import.meta.hot) import.meta.hot.dispose(() => { cancelAnimationFrame(frame); connection?.close(); spatial?.dispose(); performancePanel.dispose(); });

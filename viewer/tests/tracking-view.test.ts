@@ -178,3 +178,105 @@ test("confidence summaries honor arbitrary-id validity companions without confus
   publish(s,2,5n,[true],1004);assert.equal(spatialFrames(s,1005).confidence,undefined,"Newer status cannot validate an older confidence");
   publish(s,1,5n,[pose,0],1006);assert.equal(spatialFrames(s,1007).confidence,0,"Separate subscriptions may join the same acquisition");
 });
+
+function metaSetup() {
+  const s = setup(), c = structuredClone(s.capabilities!);
+  c.descriptors[0].id = "/body/FB/7";
+  c.descriptors[1].id = "/body/FB/6";
+  // Advertised indices deliberately differ from asset IDs and descriptor indices.
+  c.skeletons[0].joints = [
+    { parent: 1, pose_sample: 1, rest_pose_sample: 3 },
+    { parent: 1, pose_sample: 0, rest_pose_sample: 2 },
+  ];
+  s.capabilities = c;
+  return s;
+}
+test("body mesh maps advertised Meta identities and resolves independent rest/live frames", () => {
+  const s = metaSetup(), live = spatialFrames(s, 101), mesh = live.bodyMesh!;
+  assert.deepEqual(mesh.skeleton.joints.map(j => [j.id, j.parent]), [[6, 7], [7, -1]]);
+  assert.deepEqual(mesh.skeleton.joints[0].rest.position, [2, 0, 0]);
+  [1, 3, 3].forEach((n, i) => assert.ok(Math.abs(mesh.sample.poses[0].position[i] - n) < 1e-6));
+  const rest = spatialFrames(s, 101, true).bodyMesh!;
+  assert.deepEqual(rest.sample.poses, rest.skeleton.joints.map(j => j.rest));
+  assert.equal(spatialFrames(s, 1000).bodyMesh, undefined, "Stale live acquisitions cannot retain skin");
+  assert.ok(spatialFrames(s, 1000, true).bodyMesh, "Reliable rest definitions remain available");
+  assert.equal(spatialFrames(setup(), 101).bodyMesh, undefined, "An arbitrary skeleton is not a Meta body");
+});
+test("body mesh requires current rest calibration and rejects mixed or ambiguous frames", () => {
+  const s = metaSetup();
+  publish(s, 0, 3n, [...s.active.get(0)!.packet!.bundles[0]!.slice(0, -1), 2], 200);
+  assert.equal(spatialFrames(s, 201).bodyMesh, undefined, "Revision mismatch hides the live mesh as well as the rest view");
+  assert.equal(spatialFrames(s, 201).body.active, true, "Current live joint overlay remains usable");
+  publish(s, 1, 4n, [...s.active.get(1)!.packet!.bundles[1]!.slice(0, -1), 258], 202);
+  assert.ok(spatialFrames(s, 203).bodyMesh);
+  s.stop(1); assert.equal(spatialFrames(s, 204).bodyMesh, undefined);
+  s.retire(); assert.equal(spatialFrames(s, 205).bodyMesh, undefined);
+
+  const mixed = metaSetup();
+  mixed.capabilities!.descriptors[1].spaces = [3];
+  mixed.active.get(0)!.request.bundles[0][1].space = 3;
+  assert.equal(spatialFrames(mixed, 101).mixedSpaces, true);
+  assert.equal(spatialFrames(mixed, 101).bodyMesh, undefined);
+  const mixedRest = metaSetup();
+  mixedRest.capabilities!.descriptors[3].spaces = [6];
+  mixedRest.active.get(1)!.request.bundles[1][1].space = 6;
+  assert.equal(spatialFrames(mixedRest, 101).bodyMesh, undefined);
+  const duplicate = metaSetup();
+  duplicate.capabilities!.skeletons.push(structuredClone(duplicate.capabilities!.skeletons[0]));
+  assert.equal(spatialFrames(duplicate, 101).bodyMesh, undefined, "Never merge separate skeletons onto one skin");
+});
+
+test("live skin requires positive revision agreement in both directions and after counter wrap", () => {
+  const s = metaSetup(), live = s.active.get(0)!.packet!.bundles[0]!.slice(0, -1);
+  const rest = s.active.get(1)!.packet!.bundles[1]!.slice(0, -1);
+  publish(s, 1, 3n, [...rest, 258], 200);
+  assert.equal(spatialFrames(s, 201).bodyMesh, undefined, "New rest cannot calibrate still-fresh older live poses");
+  assert.equal(spatialFrames(s, 201).body.active, true);
+  assert.ok(spatialFrames(s, 201, true).bodyMesh, "New self-consistent rest remains independently visible");
+  publish(s, 0, 4n, [...live, 2], 202);
+  assert.ok(spatialFrames(s, 203).bodyMesh, "Matching new live acquisition restores skin");
+  publish(s, 0, 5n, [...live, 3], 204);
+  assert.equal(spatialFrames(s, 205).bodyMesh, undefined, "New live cannot use older rest either");
+  publish(s, 1, 6n, [...rest, 259], 206);
+  assert.ok(spatialFrames(s, 207).bodyMesh);
+  publish(s, 1, 7n, [...rest, 511], 208);
+  publish(s, 0, 8n, [...live, 255], 209);
+  assert.ok(spatialFrames(s, 210).bodyMesh, "Compare selected u8 and u32 at their common width");
+  publish(s, 1, 9n, [...rest, 512], 211);
+  assert.equal(spatialFrames(s, 212).bodyMesh, undefined);
+  publish(s, 0, 10n, [...live, 0], 213);
+  assert.ok(spatialFrames(s, 214).bodyMesh, "Wrapping the selected live counter preserves agreement");
+});
+test("live skin never guesses revisions from unselected companions or another acquisition", () => {
+  for (const group of [0, 1]) {
+    const s = metaSetup(), sub = s.active.get(group)!, bundle = group;
+    const revision = sub.request.bundles[bundle].pop()!;
+    const values = sub.packet!.bundles[bundle]!;
+    const version = values.pop()!;
+    assert.equal(spatialFrames(s, 101).bodyMesh, undefined, `Unselected ${group === 0 ? "live" : "rest"} revision must hide skin`);
+    assert.equal(spatialFrames(s, 101).body.active, true);
+    // A separately selected revision must come from exactly its poses' acquisition.
+    s.request({ id: 2, group, delivery: 1, ...timing(60), sequenceNumberFormat: null, bundles: [[revision]] });
+    s.receive({ tag: 5, id: 2 });
+    const timestamp = sub.packet!.timestamp;
+    publish(s, 2, timestamp - 1n, [version]);
+    assert.equal(spatialFrames(s, 101).bodyMesh, undefined, "An older companion cannot validate fresh geometry");
+    publish(s, 2, timestamp + 1n, [version]);
+    assert.equal(spatialFrames(s, 101).bodyMesh, undefined, "A newer companion cannot validate older geometry");
+    publish(s, group, timestamp + 1n, values);
+    assert.ok(spatialFrames(s, 101).bodyMesh, "Same-acquisition companion can arrive through a separate subscription");
+  }
+  const s = metaSetup(), live = s.active.get(0)!, revision = live.request.bundles[0].pop()!;
+  live.packet!.bundles[0]!.pop();
+  s.request({ id: 2, group: 0, delivery: 1, ...timing(60), sequenceNumberFormat: null, bundles: [[revision]] }); s.receive({ tag: 5, id: 2 });
+  publish(s, 2, live.packet!.timestamp, [1], 0);
+  // Fresh reception of a previously acquired pose cannot refresh a stale revision.
+  live.acquiredAtArrival = 1000; live.bundles[0]!.acquiredAtArrival = 1000;
+  assert.equal(spatialFrames(s, 1001).bodyMesh, undefined);
+  assert.equal(spatialFrames(s, 1001).body.active, true);
+});
+test("standalone rest skin has no live subscription dependency", () => {
+  const s = metaSetup(); s.stop(0);
+  assert.ok(spatialFrames(s, 60_000, true).bodyMesh);
+  assert.equal(spatialFrames(s, 60_000).bodyMesh, undefined);
+});

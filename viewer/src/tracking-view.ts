@@ -1,9 +1,9 @@
 import { Quaternion, Vector3 } from "three";
-import type { Pose, PoseFrame, JointHierarchy } from "./body-model";
+import type { Pose, PoseFrame, JointHierarchy, BodyMeshFrame } from "./body-model";
 import type { Session, Subscription } from "./session";
 import { selectedBundle } from "./session";
 import { width, publicationRate, bindings, restGroup, changedOnly } from "./protocol";
-import type { Packet, Value } from "./protocol";
+import type { Capabilities, Packet, Value } from "./protocol";
 
 export const poseSources = new Map([
   ["/user/head/input/pose", "head"],
@@ -47,10 +47,43 @@ export function currentValues(session: Session | undefined, now: number) {
 }
 const missingPose = (): Pose => ({ position: [0, 0, 0], orientation: [0, 0, 0, 1], flags: 0, active: false });
 type LocatedPose = { pose: Pose; space: number };
+const meshMappings = new WeakMap<Capabilities, (number[] | undefined)[]>();
+function bodyJointMappings(c: Capabilities) {
+  const cached = meshMappings.get(c);
+  if (cached) return cached;
+  const mappings = c.skeletons.map(skeleton => {
+    // Operator/asset convention only: generic skeletons still use the overlay.
+    const ids = skeleton.joints.map(j => {
+      const match = /^\/body\/FB\/(0|[1-9]\d*)$/.exec(c.descriptors[j.pose_sample].id);
+      return match ? Number(match[1]) : undefined;
+    });
+    return ids.every((id): id is number => id !== undefined) && new Set(ids).size === ids.length ? ids : undefined;
+  });
+  // Session freezes discovery deeply. Do not retain mutable packet or pose data.
+  if (Object.isFrozen(c)) meshMappings.set(c, mappings);
+  return mappings;
+}
 export function spatialFrames(session: Session | undefined, now: number, rest = false) {
   const poses: Pose[] = [], sources: string[] = [], body: PoseFrame = { poses: [], active: false }, hierarchy: JointHierarchy = { joints: [] };
+  let bodyMesh: BodyMeshFrame | undefined;
+  let mappedSkeletons = 0;
   const current = currentValues(session, now), c = session?.capabilities, spaces = new Set<number>();
   const read = (index: number | null | undefined) => index == null || current.get(index)?.stale ? null : current.get(index)?.value ?? null;
+  const mappings = c ? bodyJointMappings(c) : [];
+  const revisions = [...current].flatMap(([index, sample]) => {
+    const d = c!.descriptors[index];
+    if (d.kind !== 11 || d.revision_of == null || sample.stale || !sample.packet || (typeof sample.value !== "number" && typeof sample.value !== "bigint")) return [];
+    const format = bindings(sample.subscription.request)[sample.selection].format;
+    return [{ group: d.group, target: d.revision_of, timestamp: sample.packet.timestamp, value: BigInt(sample.value), bits: 8 * width(format) }];
+  });
+  const matchingRevision = (live: number, definition: number) => {
+    const liveSample = current.get(live), restSample = current.get(definition);
+    if (!liveSample?.packet || liveSample.stale || !restSample?.packet || restSample.stale) return false;
+    const target = c!.descriptors[definition].group;
+    const a = revisions.find(r => r.group === c!.descriptors[live].group && r.target === target && r.timestamp === liveSample.packet!.timestamp);
+    const b = revisions.find(r => r.group === target && r.target === target && r.timestamp === restSample.packet!.timestamp);
+    return !!a && !!b && BigInt.asUintN(Math.min(a.bits, b.bits), a.value) === BigInt.asUintN(Math.min(a.bits, b.bits), b.value);
+  };
   const outdated = new Set<number>();
   if (c) {
     for (const s of session?.active.values() ?? []) {
@@ -82,35 +115,39 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
   };
   const skeletonSamples = new Set<number>();
   c?.skeletons.forEach((skeleton, skeletonIndex) => {
-    const resolved = new Map<number, LocatedPose | undefined>();
-    const resolve = (start: number): LocatedPose | undefined => {
-      const path: { index: number; result: LocatedPose }[] = [], visiting = new Set<number>();
-      let i = start;
-      while (!resolved.has(i)) {
-        if (visiting.has(i)) { resolved.set(i, undefined); break; }
-        visiting.add(i);
-        const joint = skeleton.joints[i], result = located(rest ? joint.rest_pose_sample : joint.pose_sample);
-        if (!result || result.space !== 5) { resolved.set(i, result); break; }
-        if (joint.parent === i) {
-          // A self-relative root anchors a rest skeleton only in its own frame.
-          const p = result.pose;
-          const identity = p.position.every(n => Math.abs(n) < 1e-6) && p.orientation.slice(0, 3).every(n => Math.abs(n) < 1e-6);
-          resolved.set(i, rest && identity ? { pose: p, space: -skeletonIndex - 1 } : undefined); break;
+    const resolver = (rest: boolean) => {
+      const resolved = new Map<number, LocatedPose | undefined>();
+      const resolve = (start: number): LocatedPose | undefined => {
+        const path: { index: number; result: LocatedPose }[] = [], visiting = new Set<number>();
+        let i = start;
+        while (!resolved.has(i)) {
+          if (visiting.has(i)) { resolved.set(i, undefined); break; }
+          visiting.add(i);
+          const joint = skeleton.joints[i], result = located(rest ? joint.rest_pose_sample : joint.pose_sample);
+          if (!result || result.space !== 5) { resolved.set(i, result); break; }
+          if (joint.parent === i) {
+            // A self-relative root anchors a rest skeleton only in its own frame.
+            const p = result.pose;
+            const identity = p.position.every(n => Math.abs(n) < 1e-6) && p.orientation.slice(0, 3).every(n => Math.abs(n) < 1e-6);
+            resolved.set(i, rest && identity ? { pose: p, space: -skeletonIndex - 1 } : undefined); break;
+          }
+          path.push({ index: i, result }); i = joint.parent;
         }
-        path.push({ index: i, result }); i = joint.parent;
-      }
-      for (const { index, result } of path.reverse()) {
-        const parent = resolved.get(skeleton.joints[index].parent);
-        if (!parent || (parent.pose.flags & 3) !== 3) resolved.set(index, undefined);
-        else {
-          const rotation = new Quaternion().fromArray(parent.pose.orientation);
-          const position = new Vector3().fromArray(result.pose.position).applyQuaternion(rotation).add(new Vector3().fromArray(parent.pose.position));
-          const orientation = rotation.multiply(new Quaternion().fromArray(result.pose.orientation));
-          resolved.set(index, { pose: { ...result.pose, position: position.toArray(), orientation: orientation.toArray() }, space: parent.space });
+        for (const { index, result } of path.reverse()) {
+          const parent = resolved.get(skeleton.joints[index].parent);
+          if (!parent || (parent.pose.flags & 3) !== 3) resolved.set(index, undefined);
+          else {
+            const rotation = new Quaternion().fromArray(parent.pose.orientation);
+            const position = new Vector3().fromArray(result.pose.position).applyQuaternion(rotation).add(new Vector3().fromArray(parent.pose.position));
+            const orientation = rotation.multiply(new Quaternion().fromArray(result.pose.orientation));
+            resolved.set(index, { pose: { ...result.pose, position: position.toArray(), orientation: orientation.toArray() }, space: parent.space });
+          }
         }
-      }
-      return resolved.get(start);
+        return resolved.get(start);
+      };
+      return resolve;
     };
+    const resolve = resolver(rest);
     const offset = body.poses.length;
     skeleton.joints.forEach((joint, i) => {
       skeletonSamples.add(joint.pose_sample); skeletonSamples.add(joint.rest_pose_sample);
@@ -119,6 +156,21 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
       hierarchy.joints.push({ id: offset + i, parent: joint.parent === i ? -1 : offset + joint.parent });
       if (result && result.pose.flags & 2) { spaces.add(result.space); body.active = true; }
     });
+    const ids = mappings[skeletonIndex];
+    if (ids) {
+      mappedSkeletons++;
+      // Live skinning combines two acquisitions. Positive agreement is required
+      // in both directions, even when the newer rest snapshot is already known.
+      // A standalone rest view does not combine live data and needs no live revision.
+      if (!rest && !skeleton.joints.every(j => matchingRevision(j.pose_sample, j.rest_pose_sample))) return;
+      const resolveRest = rest ? resolve : resolver(true), restSpaces = new Set<number>();
+      const joints = skeleton.joints.map((joint, i) => {
+        const result = resolveRest(i);
+        if (result && (result.pose.flags & 3) === 3) restSpaces.add(result.space);
+        return { id: ids[i], parent: joint.parent === i ? -1 : ids[joint.parent], rest: result?.pose ?? missingPose() };
+      });
+      if (restSpaces.size === 1) bodyMesh = { sample: { active: true, poses: body.poses.slice(offset) }, skeleton: { joints } };
+    }
   });
   if (!rest) for (const [index] of current) {
     const d = c!.descriptors[index];
@@ -143,7 +195,8 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
   const trackedJoints = body.poses.filter(p => (p.flags & 14) === 14).length;
   const mixedSpaces = spaces.size > 1;
   if (mixedSpaces) { poses.length = 0; sources.length = 0; body.active = false; }
-  return { values: current, poses: { poses }, sources, body, hierarchy, mixedSpaces, space: spaces.size === 1 ? [...spaces][0] : undefined, outdated, confidence, trackedJoints, rest };
+  if (mixedSpaces || !body.active || mappedSkeletons !== 1) bodyMesh = undefined;
+  return { values: current, poses: { poses }, sources, body, hierarchy, bodyMesh, mixedSpaces, space: spaces.size === 1 ? [...spaces][0] : undefined, outdated, confidence, trackedJoints, rest };
 }
 export function valueText(value: Value | null) {
   if (value === null) return "Unavailable";
