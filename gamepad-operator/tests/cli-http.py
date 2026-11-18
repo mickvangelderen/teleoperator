@@ -29,16 +29,16 @@ def request(port, path, payload=None, origin=None):
         return error.code, error.read()
 
 
-for arguments in [['--unknown'], ['--listen', 'invalid'], ['--synthetic-lifecycle'], ['--synthetic', '--device', 'unrelated']]:
+for arguments in [['--unknown'], ['--listen', 'invalid'], ['--synthetic-lifecycle'], ['--synthetic', '--device', 'unrelated'], ['--virtual-linear-speed','2'], ['--synthetic-virtual-demo'], ['--synthetic','--synthetic-virtual-demo'], ['--virtual-pose','--virtual-linear-speed','NaN'], ['--virtual-pose','--virtual-angular-speed','inf'], ['--virtual-pose','--virtual-linear-speed','0'], ['--virtual-pose','--virtual-angular-speed','721']]:
     result = subprocess.run([BINARY, *arguments], capture_output=True, timeout=5)
     assert result.returncode == 2, (arguments, result)
 
 inventory = json.loads(subprocess.check_output([BINARY, '--list'], timeout=5))
 print('Physical inventory:', json.dumps(inventory))
 
-for synthetic in [False, True]:
+for synthetic, virtual in [(False, False), (True, False), (True, True)]:
     child = subprocess.Popen(
-        [BINARY, '--listen', '127.0.0.1:0', '--run-for', '15', *(['--synthetic'] if synthetic else [])],
+        [BINARY, '--listen', '127.0.0.1:0', '--run-for', '15', *(['--synthetic'] if synthetic else []), *(['--virtual-pose'] if virtual else [])],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
@@ -57,7 +57,11 @@ for synthetic in [False, True]:
                 break
             assert time.monotonic() < deadline
             time.sleep(.025)
-        assert health['pose'] is False and health['prediction'] is False
+        assert health['pose'] is virtual and health['prediction'] is False
+        if virtual:
+            assert health['selected']['virtual_pose']['supported'] is True
+            assert health['selected']['virtual_pose']['enabled'] is False
+            assert health['selected']['virtual_pose']['physical_tracking'] is False
         assert request(port, '/offer', {'type': 'offer', 'sdp': ''}, 'https://example.invalid')[0] == 403
         assert request(port, '/offer', {'type': 'answer', 'sdp': ''})[0] == 400
         if synthetic:

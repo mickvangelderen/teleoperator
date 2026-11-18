@@ -36,7 +36,7 @@ const unusedPort=async()=>{
 const wait=async(fn)=>{const end=Date.now()+15000;while(Date.now()<end){try{if(await fn())return;}catch{}await new Promise(r=>setTimeout(r,50));}throw Error('Startup timeout');};
 let browser;
 try {
-  const source=start(resolve(root,'target/debug/gamepad-operator'),['--synthetic','--listen','127.0.0.1:0',...(process.env.LIFECYCLE?['--synthetic-lifecycle']:[])]);
+  const source=start(resolve(root,'target/debug/gamepad-operator'),['--synthetic','--listen','127.0.0.1:0',...(process.env.LIFECYCLE?['--synthetic-lifecycle']:[]),...(process.env.VIRTUAL?['--virtual-pose','--synthetic-virtual-demo']:[])]);
   const sourceReady=await ready(source,/Gamepad Operator SYNTHETIC http:\/\/127\.0\.0\.1:(\d+)/);
   serverPort=Number(sourceReady[1]);
   await wait(async()=>{if(source.exitCode!==null)throw Error('Owned source exited');const r=await fetch(`http://127.0.0.1:${serverPort}/health`);return r.ok&&(await r.json()).selected?.device.synthetic===true;});
@@ -48,8 +48,10 @@ try {
   browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE||'/opt/google/chrome/chrome',headless:true});
   const page=await browser.newPage({viewport:{width:1400,height:1000}});
   await page.goto(url);
-  if(process.env.LIFECYCLE) {
-    const lifecycle=await page.evaluate(async()=>{
+  if(process.env.VIRTUAL && !process.env.LIFECYCLE) {
+    await verifyVirtual(page);
+  } else if(process.env.LIFECYCLE) {
+    const lifecycle=await page.evaluate(async(virtual)=>{
       const {Connection}=await import('/src/connection.ts');
       const {currentValues}=await import('/src/tracking-view.ts');
       const pause=ms=>new Promise(r=>setTimeout(r,ms));
@@ -69,6 +71,15 @@ try {
               for(const [i,d] of caps.descriptors.entries()) if(d.id.endsWith('/active')) {
                 const value=values.get(i);if(value?.value!==false||value.packet.timestamp!==connected.packet.timestamp)throw Error('Input remained valid after disconnect');
               }
+              if(virtual) {
+                const pose=get('/gamepad/virtual/pose');
+                if(pose.value.some((n,i)=>n!==(i===6?1:0)))throw Error('Disconnected virtual pose not an identity placeholder');
+                for(const name of ['position_valid','orientation_valid','position_tracked','orientation_tracked']) {
+                  const quality=get('/gamepad/virtual/pose/'+name);
+                  if(quality.value!==false||quality.packet.timestamp!==pose.packet.timestamp)throw Error('Disconnected virtual quality was not false/matched');
+                }
+                if(get('/gamepad/virtual/enabled').value!==false)throw Error('Disconnect did not pause virtual pose');
+              }
               const stick=get('/user/gamepad/input/thumbstick_left');
               if(stick.value.some(n=>n!==0))throw Error('Disconnected stick not a qualified zero placeholder');
             } else if(connected?.value===true)beforeRelease=releases;
@@ -85,14 +96,21 @@ try {
             const caps=replacement.session.capabilities;
             const counter=caps.descriptors.findIndex(d=>d.id==='/user/gamepad/input/a/click/press_count');
             // Negotiation creates pending entries before their first sample arrives.
-            if(values.get(counter)?.packet){reset=BigInt(values.get(counter).value)===0n;break;}
+            if(values.get(counter)?.packet){
+              reset=BigInt(values.get(counter).value)===0n;
+              if(virtual) {
+                const enabled=caps.descriptors.findIndex(d=>d.id==='/gamepad/virtual/enabled');
+                if(values.get(enabled)?.value!==false)throw Error('New epoch automatically resumed virtual motion');
+              }
+              break;
+            }
           }
           await pause(10);
         }
         if(!reset)throw Error('New connection did not establish fresh counter epoch');
-        return {inactive,disconnectAt,closedOldEpoch:true,newHandshake:true,countersReset:true};
+        return {inactive,disconnectAt,closedOldEpoch:true,newHandshake:true,countersReset:true,virtualPaused:virtual};
       }finally{c.close();replacement?.close();}
-    });
+    },!!process.env.VIRTUAL);
     console.log('PASS gamepad lifecycle',JSON.stringify(lifecycle));
   } else {
   const normal=await page.evaluate(async()=>{
@@ -213,4 +231,81 @@ try {
     const timer=setTimeout(()=>p.kill('SIGKILL'),5000);
     await exited;clearTimeout(timer);
   }
+}
+
+
+async function verifyVirtual(page) {
+  const report=await page.evaluate(async()=>{
+    const {Connection}=await import('/src/connection.ts');
+    const {currentValues,spatialFrames}=await import('/src/tracking-view.ts');
+    const c=new Connection(()=>{}),reports={};let segment,resetSeen=false,samples=0;
+    const requirements=['forward','back','right','left','up','down','yawRight','yawLeft','pitchUp','pitchDown','rollRight','rollLeft','neutral','paused','combined'];
+    const delta={forward:[2,-1],back:[2,1],right:[0,1],left:[0,-1],up:[1,1],down:[1,-1],yawRight:[4,-1],yawLeft:[4,1],pitchUp:[3,1],pitchDown:[3,-1],rollRight:[5,-1],rollLeft:[5,1]};
+    try {
+      await c.connect();const deadline=performance.now()+22000;
+      while(performance.now()<deadline) {
+        if(c.state.status==='Error')throw Error(c.state.detail);
+        const caps=c.session.capabilities;
+        if(caps) {
+          const values=currentValues(c.session,performance.now());
+          const get=id=>values.get(caps.descriptors.findIndex(d=>d.id===id));
+          const pose=get('/gamepad/virtual/pose');
+          if(pose?.packet) {
+            samples++;if(pose.stale)throw Error('Virtual pose stale while idle/paused');
+            const desc=caps.descriptors.find(d=>d.id==='/gamepad/virtual/pose');
+            if(desc.kind!==10||desc.spaces.length!==1||desc.spaces[0]!==6)throw Error('Virtual pose is not model-space kind10');
+            if(pose.packet.predictedFor!==null)throw Error('Virtual pose fabricated prediction');
+            const p=pose.value;
+            if(p.length!==7||p.some(v=>!Number.isFinite(v))||Math.abs(p.slice(3).reduce((s,x)=>s+x*x,0)-1)>1e-5)throw Error('Invalid quaternion/position');
+            for(const [suffix,expected] of [['position_valid',true],['orientation_valid',true],['position_tracked',false],['orientation_tracked',false]]) {
+              const quality=get('/gamepad/virtual/pose/'+suffix);
+              if(quality?.value!==expected||quality.packet.timestamp!==pose.packet.timestamp)throw Error('Untruthful virtual quality '+suffix);
+            }
+            const spatial=spatialFrames(c.session,performance.now());
+            if(spatial.space!==6||spatial.sources[0]!=='/gamepad/virtual/pose'||spatial.poses.poses[0]?.flags!==3)throw Error('Generic viewer failed to interpret virtual pose');
+            const raw=suffix=>{const v=get('/user/gamepad/input/'+suffix);if(!v?.packet||v.packet.timestamp!==pose.packet.timestamp)throw Error('Raw/pose acquisition mismatch');return v.value;};
+            const l=raw('thumbstick_left'),r=raw('thumbstick_right'),lt=raw('trigger_left/value'),rt=raw('trigger_right/value'),lb=raw('shoulder_left/click'),rb=raw('shoulder_right/click');
+            const enabled=get('/gamepad/virtual/enabled').value;
+            const reset=raw('view/click');
+            let label;
+            const moving=l.some(x=>x!==0)||r.some(x=>x!==0)||lt!==0||rt!==0||lb||rb;
+            if(reset) {
+              if(enabled||p.some((x,i)=>x!==(i===6?1:0)))throw Error('Reset failed to pause and restore origin');
+              resetSeen=true;label='reset';
+            } else if(!enabled&&moving)label='paused';
+            else if(!enabled)label='disabled';
+            else if(l[0]>0&&l[1]>0&&r[0]>0)label='combined';
+            else if(l[1]===1)label='forward';else if(l[1]===-1)label='back';
+            else if(l[0]===1)label='right';else if(l[0]===-1)label='left';
+            else if(rt===1)label='up';else if(lt===1)label='down';
+            else if(r[0]===1)label='yawRight';else if(r[0]===-1)label='yawLeft';
+            else if(r[1]===1)label='pitchUp';else if(r[1]===-1)label='pitchDown';
+            else if(rb)label='rollRight';else if(lb)label='rollLeft';else label='neutral';
+            const at=Number(pose.packet.timestamp)/1e9;
+            if(!segment||segment.label!==label)segment={label,p:[...p],at};
+            if(at-segment.at>0.2&&!reports[label]&&requirements.includes(label)) {
+              if(delta[label]){const [axis,sign]=delta[label];if((p[axis]-segment.p[axis])*sign<0.03)throw Error('Wrong axis/direction '+label);}
+              else if(label==='neutral'||label==='paused'){if(p.some((x,i)=>Math.abs(x-segment.p[i])>1e-5))throw Error('Motion while '+label);}
+              else if(label==='combined'){if(Math.hypot(...p.slice(0,3).map((x,i)=>x-segment.p[i]))<0.05||Math.hypot(...p.slice(3).map((x,i)=>x-segment.p[i+3]))<0.05)throw Error('Combined motion did not translate and rotate');}
+              reports[label]={seconds:at-segment.at,delta:p.map((x,i)=>x-segment.p[i])};
+            }
+            if(resetSeen&&requirements.every(key=>reports[key]))break;
+          }
+        }
+        await new Promise(r=>setTimeout(r,15));
+      }
+      if(!resetSeen||!requirements.every(key=>reports[key]))throw Error('Missing virtual coverage '+requirements.filter(key=>!reports[key]).join(','));
+      return {samples,reports,reset:true,modelSpace:true,tracked:false,predictedFor:null,rawAcquisitionsMatched:true};
+    }finally{c.close();}
+  });
+  await page.getByRole('button',{name:'Connect',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
+  await page.waitForFunction(()=>document.querySelector('[data-pose-count="1"]'));
+  await page.waitForFunction(()=>{
+    const row=document.querySelector('tr[data-descriptor="/gamepad/virtual/pose"]');
+    if(!row)return false;row.scrollIntoView({block:'center'});return true;
+  });
+  await page.waitForFunction(()=>document.querySelector('tr[data-descriptor="/gamepad/virtual/pose"]')?.dataset.available==='true');
+  if(process.env.SCREENSHOT)await page.screenshot({path:process.env.SCREENSHOT,fullPage:true});
+  console.log('PASS virtual gamepad current-viewer integration',JSON.stringify({...report,uiRenderedPoseCount:1}));
 }

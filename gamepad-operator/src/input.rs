@@ -3,6 +3,7 @@
 use crate::protocol::{
     self, Capabilities, Descriptor, EncodedAcquisition, PublicationState, Request, Value,
 };
+use crate::virtual_pose::{self, VirtualPose};
 use serde::Serialize;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
@@ -79,6 +80,7 @@ struct Demand {
     publication: Weak<Mutex<PublicationState>>,
 }
 struct State {
+    virtual_pose: Option<VirtualPose>,
     connected: bool,
     active: Vec<bool>,
     values: Vec<InputValue>,
@@ -90,6 +92,7 @@ struct State {
     demands: Vec<Demand>,
 }
 pub struct Hub {
+    virtual_unavailable: Option<String>,
     pub capabilities: Arc<Capabilities>,
     pub definitions: Vec<Definition>,
     pub device: DeviceInfo,
@@ -178,6 +181,9 @@ impl State {
                 out.push(Value::Unsigned(self.releases[i]));
             }
         }
+        if let Some(pose) = &self.virtual_pose {
+            out.extend(pose.wire_values());
+        }
         out
     }
     fn encode(&self, c: &Capabilities, r: &Request) -> protocol::Result<EncodedAcquisition> {
@@ -228,10 +234,33 @@ impl Hub {
         clock: Arc<Clock>,
         at: u64,
     ) -> protocol::Result<Arc<Self>> {
+        Self::with_virtual(device, definitions, initial, clock, at, None)
+    }
+    pub fn with_virtual(
+        device: DeviceInfo,
+        definitions: Vec<Definition>,
+        initial: Vec<InputValue>,
+        clock: Arc<Clock>,
+        at: u64,
+        virtual_config: Option<virtual_pose::Config>,
+    ) -> protocol::Result<Arc<Self>> {
         if definitions.len() != initial.len() || initial.is_empty() {
             return Err("Empty or inconsistent device controls".into());
         }
-        let c = catalog(&definitions, &device);
+        let mut c = catalog(&definitions, &device);
+        if let Some(config) = virtual_config {
+            config.validate()?;
+        }
+        let (virtual_pose, virtual_unavailable) = match virtual_config {
+            Some(config) => match VirtualPose::new(&definitions, &initial, config, at) {
+                Ok(pose) => {
+                    virtual_pose::append_descriptors(&mut c, config);
+                    (Some(pose), None)
+                }
+                Err(reason) => (None, Some(reason)),
+            },
+            None => (None, None),
+        };
         c.validate()?;
         for (d, v) in definitions.iter().zip(&initial) {
             if !valid(d, v) {
@@ -240,6 +269,7 @@ impl Hub {
         }
         let count = initial.len();
         Ok(Arc::new(Self {
+            virtual_unavailable,
             capabilities: Arc::new(c),
             definitions,
             device,
@@ -247,6 +277,7 @@ impl Hub {
             updates: watch::channel(1).0,
             retired: watch::channel(false).0,
             state: Mutex::new(State {
+                virtual_pose,
                 connected: true,
                 active: vec![true; count],
                 values: initial,
@@ -258,6 +289,9 @@ impl Hub {
                 demands: vec![],
             }),
         }))
+    }
+    pub(crate) fn virtual_unavailable(&self) -> Option<&str> {
+        self.virtual_unavailable.as_deref()
     }
     pub fn now(&self) -> i64 {
         self.clock.now() as i64
@@ -303,6 +337,9 @@ impl Hub {
         {
             return Err("Invalid native event".into());
         }
+        if let Some(pose) = &mut s.virtual_pose {
+            pose.begin(at, values);
+        }
         s.demands.retain(|d| d.publication.strong_count() > 0);
         let publications = s
             .demands
@@ -326,6 +363,9 @@ impl Hub {
                 {
                     if !old && *new {
                         s.presses[index] = s.presses[index].wrapping_add(1);
+                        if let Some(pose) = &mut s.virtual_pose {
+                            pose.press(index);
+                        }
                     } else if *old && !new {
                         s.releases[index] = s.releases[index].wrapping_add(1);
                     }
@@ -348,6 +388,9 @@ impl Hub {
                 s.values[i] = v.clone();
             }
         }
+        if let Some(pose) = &mut s.virtual_pose {
+            pose.finish(values);
+        }
         s.at = at;
         s.number += 1;
         for ((r, _), p) in publications.iter().zip(guards.iter_mut()) {
@@ -360,6 +403,9 @@ impl Hub {
         let mut s = self.state.lock().unwrap();
         s.connected = false;
         s.active.fill(false);
+        if let Some(pose) = &mut s.virtual_pose {
+            pose.disconnect();
+        }
         s.publish(&self.capabilities, at);
         self.updates.send_replace(s.number);
     }
@@ -368,7 +414,7 @@ impl Hub {
     }
     pub fn status(&self) -> serde_json::Value {
         let s = self.state.lock().unwrap();
-        serde_json::json!({"device":self.device,"connected":s.connected,"controls":self.definitions.len(),"observed_at_ns":s.at,"last_activity_at_ns":s.last_activity,"retired":*self.retired.borrow()})
+        serde_json::json!({"device":self.device,"connected":s.connected,"controls":self.definitions.len(),"observed_at_ns":s.at,"last_activity_at_ns":s.last_activity,"retired":*self.retired.borrow(),"virtual_pose":s.virtual_pose.as_ref().map(VirtualPose::status).unwrap_or_else(||serde_json::json!({"supported":false,"requested":self.virtual_unavailable.is_some(),"status":self.virtual_unavailable.as_deref().unwrap_or("Disabled; use --virtual-pose to opt in")}))})
     }
 }
 fn valid(d: &Definition, v: &InputValue) -> bool {
@@ -399,7 +445,8 @@ impl Source {
         *self.report.lock().unwrap() = value;
     }
     pub fn status(&self) -> serde_json::Value {
-        serde_json::json!({"application":"Gamepad Operator","source":self.current().map(|h|h.device.name.clone()).unwrap_or_else(||"No selected gamepad".into()),"pose":false,"prediction":false,"backend":self.report.lock().unwrap().clone(),"selected":self.current().map(|h|h.status())})
+        let current = self.current();
+        serde_json::json!({"application":"Gamepad Operator","source":current.as_ref().map(|h|h.device.name.clone()).unwrap_or_else(||"No selected gamepad".into()),"pose":current.as_ref().is_some_and(|h|h.capabilities.descriptors.iter().any(|d|d.kind==10)),"prediction":false,"backend":self.report.lock().unwrap().clone(),"selected":current.map(|h|h.status())})
     }
 }
 
@@ -599,5 +646,157 @@ mod tests {
                 );
             }
         }
+    }
+    fn virtual_hub(initial: Vec<InputValue>, at: u64) -> Arc<Hub> {
+        Hub::with_virtual(
+            backend::synthetic_device(),
+            backend::synthetic_definitions(),
+            initial,
+            Arc::new(Clock::default()),
+            at,
+            Some(virtual_pose::Config::default()),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn virtual_script_preserves_every_raw_value_and_counter_and_encodes_truthful_pose() {
+        let mut previous = backend::synthetic_virtual_values(0);
+        let virtual_hub = virtual_hub(previous.clone(), 0);
+        let raw = Hub::new(
+            backend::synthetic_device(),
+            backend::synthetic_definitions(),
+            previous.clone(),
+            Arc::new(Clock::default()),
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            virtual_hub.capabilities.descriptors[..raw.capabilities.descriptors.len()],
+            raw.capabilities.descriptors
+        );
+        let request = Request {
+            bundles: vec![
+                raw.capabilities
+                    .descriptors
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| SampleBinding {
+                        descriptor: i as u32,
+                        format: d.formats[0],
+                        space: 0,
+                    })
+                    .collect(),
+            ],
+            ..request(&raw)
+        };
+        let all = Request {
+            bundles: vec![
+                virtual_hub
+                    .capabilities
+                    .descriptors
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| SampleBinding {
+                        descriptor: i as u32,
+                        format: d.formats[0],
+                        space: d.spaces.first().copied().unwrap_or(0),
+                    })
+                    .collect(),
+            ],
+            ..request.clone()
+        };
+        for tick in 1..1000 {
+            let values = backend::synthetic_virtual_values(tick);
+            let events = values
+                .iter()
+                .enumerate()
+                .filter(|(i, v)| previous[*i] != **v)
+                .map(|(i, v)| (i, v.clone()))
+                .collect::<Vec<_>>();
+            for h in [&raw, &virtual_hub] {
+                h.batch(&events, &values, tick * 10_000_000).unwrap();
+            }
+            let a = raw
+                .state
+                .lock()
+                .unwrap()
+                .encode(&raw.capabilities, &request)
+                .unwrap();
+            let state = virtual_hub.state.lock().unwrap();
+            let b = state.encode(&virtual_hub.capabilities, &request).unwrap();
+            assert_eq!(a.bundles, b.bundles);
+            assert_eq!(a.acquired_at, b.acquired_at);
+            let full = state.encode(&virtual_hub.capabilities, &all).unwrap();
+            assert_eq!(full.predicted_for, None);
+            let pose = state.virtual_pose.as_ref().unwrap().wire_values();
+            assert!(matches!(pose[1], Value::Bit(true)));
+            assert!(matches!(pose[2], Value::Bit(true)));
+            assert!(matches!(pose[3], Value::Bit(false)));
+            assert!(matches!(pose[4], Value::Bit(false)));
+            if let Value::Numbers(values) = &pose[0] {
+                assert!(protocol::valid_numbers(10, 11, values));
+            } else {
+                panic!("Missing virtual pose")
+            }
+            if tick == 800 {
+                assert!(matches!(pose[5], Value::Bit(true)));
+            }
+            if tick >= 855 {
+                assert!(matches!(pose[5], Value::Bit(false)));
+                if let Value::Numbers(v) = &pose[0] {
+                    assert_eq!(v, &[0., 0., 0., 0., 0., 0., 1.]);
+                }
+            }
+            previous = values;
+        }
+        let pose_index = raw.capabilities.descriptors.len();
+        let mut invalid = all;
+        invalid.bundles[0][pose_index].space = 2;
+        assert!(virtual_hub.capabilities.validate_request(&invalid).is_err());
+    }
+    #[test]
+    fn virtual_disconnect_epoch_and_initial_held_toggle_never_resume_motion() {
+        let held = backend::synthetic_virtual_values(800);
+        let h = virtual_hub(held.clone(), 0);
+        h.batch(&[], &held, 10_000_000).unwrap();
+        assert_eq!(h.status()["virtual_pose"]["enabled"], false);
+        h.disconnect(20_000_000);
+        let s = h.state.lock().unwrap();
+        let values = s.virtual_pose.as_ref().unwrap().wire_values();
+        assert!(matches!(values[1], Value::Bit(false)));
+        assert!(matches!(values[2], Value::Bit(false)));
+        assert_eq!(s.at, 20_000_000);
+        drop(s);
+        let fresh = virtual_hub(held.clone(), 30_000_000);
+        fresh.batch(&[], &held, 40_000_000).unwrap();
+        assert_eq!(fresh.status()["virtual_pose"]["enabled"], false);
+        let neutral = backend::synthetic_virtual_values(0);
+        fresh
+            .batch(&[(5, InputValue::Button(false))], &neutral, 50_000_000)
+            .unwrap();
+        fresh
+            .batch(&[(5, InputValue::Button(true))], &held, 60_000_000)
+            .unwrap();
+        assert_eq!(fresh.status()["virtual_pose"]["enabled"], true);
+    }
+    #[test]
+    fn unsupported_virtual_mapping_keeps_raw_catalog_and_diagnostic() {
+        let h = Hub::with_virtual(
+            backend::synthetic_device(),
+            vec![Definition::new("/gamepad/raw/axis/0", "raw", 1, "unknown")],
+            vec![InputValue::Scalar(0.)],
+            Arc::new(Clock::default()),
+            0,
+            Some(virtual_pose::Config::default()),
+        )
+        .unwrap();
+        assert!(!h.capabilities.descriptors.iter().any(|d| d.kind == 10));
+        assert_eq!(h.status()["virtual_pose"]["requested"], true);
+        assert!(
+            h.status()["virtual_pose"]["status"]
+                .as_str()
+                .unwrap()
+                .contains("missing mapped")
+        );
     }
 }

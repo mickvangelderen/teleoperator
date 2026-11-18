@@ -692,11 +692,20 @@ impl Selection {
         self.needs_restart = !info.reconnectable;
     }
 }
+fn selected_status(hub: &Hub) -> String {
+    let mut status = format!("Selected {} ({})", hub.device.name, hub.device.id);
+    if let Some(reason) = hub.virtual_unavailable() {
+        status.push_str("; ");
+        status.push_str(reason);
+    }
+    status
+}
 pub fn run_sdl(
     source: Arc<Source>,
     stop: Arc<AtomicBool>,
     device: Option<String>,
     mapping: Option<PathBuf>,
+    virtual_config: Option<crate::virtual_pose::Config>,
 ) -> Result<(), String> {
     let mut sdl = Sdl::new(mapping.as_deref())?;
     let mut selection = Selection {
@@ -768,16 +777,17 @@ pub fn run_sdl(
                 match selection.choose(&items) {
                     Ok(Some(item)) => match sdl.open(item) {
                         Ok(pad) => {
-                            let hub = Hub::new(
+                            let hub = Hub::with_virtual(
                                 pad.info.clone(),
                                 pad.controls.iter().map(|(_, d)| d.clone()).collect(),
                                 pad.values.clone(),
                                 source.clock.clone(),
                                 source.clock.now(),
+                                virtual_config,
                             )?;
                             selection.selected(&pad.info);
                             source.install(hub.clone());
-                            status = format!("Selected {} ({})", pad.info.name, pad.info.id);
+                            status = selected_status(&hub);
                             open = Some((pad, hub));
                         }
                         Err(e) => status = e,
@@ -861,15 +871,53 @@ pub fn synthetic_values(tick: u64) -> Vec<InputValue> {
     ]);
     v
 }
+/// Explicit opt-in scripted software controls; the ordinary synthetic sequence is unchanged.
+/// 10-second cycle at nominal 100 Hz, all motion/command edges visible on raw inputs.
+pub fn synthetic_virtual_values(tick: u64) -> Vec<InputValue> {
+    let t = tick % 1000;
+    let mut values = vec![InputValue::Button(false); 14];
+    values.extend([
+        InputValue::Stick([0.; 2]),
+        InputValue::Stick([0.; 2]),
+        InputValue::Scalar(0.),
+        InputValue::Scalar(0.),
+    ]);
+    match t {
+        50..=54 | 700..=704 | 800..=804 => values[5] = InputValue::Button(true),
+        60..=109 => values[14] = InputValue::Stick([0., 1.]),
+        110..=159 => values[14] = InputValue::Stick([1., 0.]),
+        160..=209 => values[17] = InputValue::Scalar(1.),
+        210..=259 => values[16] = InputValue::Scalar(1.),
+        260..=309 => values[15] = InputValue::Stick([1., 0.]),
+        310..=359 => values[15] = InputValue::Stick([0., 1.]),
+        360..=409 => values[7] = InputValue::Button(true),
+        410..=459 => values[6] = InputValue::Button(true),
+        460..=509 => values[15] = InputValue::Stick([-1., 0.]),
+        510..=559 => values[15] = InputValue::Stick([0., -1.]),
+        560..=609 => values[14] = InputValue::Stick([0., -1.]),
+        610..=659 => values[14] = InputValue::Stick([-1., 0.]),
+        705..=749 | 805..=849 => {
+            values[14] = InputValue::Stick([0.6, 0.8]);
+            values[15] = InputValue::Stick([0.6, 0.8]);
+            values[17] = InputValue::Scalar(1.);
+            values[7] = InputValue::Button(true);
+        }
+        750..=754 | 850..=854 => values[4] = InputValue::Button(true),
+        _ => {}
+    }
+    values
+}
 pub fn run_synthetic(
     source: Arc<Source>,
     stop: Arc<AtomicBool>,
     lifecycle: bool,
+    virtual_config: Option<crate::virtual_pose::Config>,
+    virtual_demo: bool,
 ) -> Result<(), String> {
     let mut tick = 0;
     let mut hub: Option<Arc<Hub>> = None;
     let mut previous = vec![];
-    source.report(serde_json::json!({"name":"SYNTHETIC","status":"Deterministic software events, no physical input opened","lifecycle":lifecycle}));
+    source.report(serde_json::json!({"name":"SYNTHETIC","status":"Deterministic software events, no physical input opened","lifecycle":lifecycle,"virtual_demo":virtual_demo}));
     while !stop.load(Ordering::Relaxed) {
         let disconnected = lifecycle && (tick % 1200 >= 600 && tick % 1200 < 800);
         if disconnected {
@@ -877,14 +925,19 @@ pub fn run_synthetic(
                 h.disconnect(source.clock.now());
             }
         } else {
-            let values = synthetic_values(tick);
+            let values = if virtual_demo {
+                synthetic_virtual_values(tick)
+            } else {
+                synthetic_values(tick)
+            };
             if hub.is_none() {
-                let h = Hub::new(
+                let h = Hub::with_virtual(
                     synthetic_device(),
                     synthetic_definitions(),
                     values.clone(),
                     source.clock.clone(),
                     source.clock.now(),
+                    virtual_config,
                 )?;
                 source.install(h.clone());
                 hub = Some(h);
@@ -1173,6 +1226,24 @@ mod tests {
         assert!(mac_shaped_uniq("AA:BB:CC:DD:EE:FF"));
     }
     #[test]
+    fn selection_status_explains_unsupported_virtual_controls() {
+        let hub = Hub::with_virtual(
+            synthetic_device(),
+            vec![Definition::new("/gamepad/raw/axis/0", "raw", 1, "unknown")],
+            vec![InputValue::Scalar(0.)],
+            Arc::new(crate::input::Clock::default()),
+            0,
+            Some(crate::virtual_pose::Config::default()),
+        )
+        .unwrap();
+        let message = selected_status(&hub);
+        assert!(message.starts_with("Selected SYNTHETIC"));
+        assert!(message.contains(
+            "Virtual pose unavailable: missing mapped /user/gamepad/input/thumbstick_left"
+        ));
+        assert!(message.contains("raw inputs remain available"));
+    }
+    #[test]
     fn identity_selection_never_switches_or_guesses_duplicate_serials() {
         let mut selection = Selection::default();
         let a = item("a", true);
@@ -1242,12 +1313,13 @@ mod sdl_tests {
         sdl.events.pump_events();
         for _ in sdl.events.poll_iter() {}
         pad.values = pad.snapshot().unwrap();
-        let hub = Hub::new(
+        let hub = Hub::with_virtual(
             pad.info.clone(),
             pad.controls.iter().map(|(_, d)| d.clone()).collect(),
             pad.values.clone(),
             Arc::new(crate::input::Clock::default()),
             1,
+            Some(crate::virtual_pose::Config::default()),
         )
         .unwrap();
         // Borrow pointer from the still-live virtual joystick, never an arbitrary ID.
@@ -1304,6 +1376,111 @@ mod sdl_tests {
         assert_eq!(values[left], InputValue::Stick([1., 1.]));
         assert_eq!(values[trig], InputValue::Scalar(1.));
         hub.batch(&events, &values, 2).unwrap();
+        // Drive the entire mapped virtual-control script through real SDL events,
+        // then the same hub/publication encoder used by HTTP/WebRTC.
+        let controller_ptr = unsafe {
+            sdl2::sys::SDL_GameControllerFromInstanceID(
+                pad.controller.as_ref().unwrap().instance_id() as i32,
+            )
+        };
+        let definitions = synthetic_definitions();
+        for tick in 0..1000 {
+            let desired = synthetic_virtual_values(tick);
+            let set_axis = |axis: Axis, value: f64| {
+                let binding = unsafe {
+                    sdl2::sys::SDL_GameControllerGetBindForAxis(controller_ptr, axis.to_ll())
+                };
+                let native = unsafe { binding.value.axis };
+                let value = (value * if value < 0. { 32768. } else { 32767. }).round() as i16;
+                assert_eq!(
+                    unsafe { sdl2::sys::SDL_JoystickSetVirtualAxis(ptr, native, value) },
+                    0
+                );
+            };
+            for (control, definition) in &pad.controls {
+                let desired = definitions
+                    .iter()
+                    .position(|d| d.id == definition.id)
+                    .map(|i| &desired[i]);
+                match control {
+                    Control::Button(button) => {
+                        let binding = unsafe {
+                            sdl2::sys::SDL_GameControllerGetBindForButton(
+                                controller_ptr,
+                                button.to_ll(),
+                            )
+                        };
+                        let pressed = matches!(desired, Some(InputValue::Button(true)));
+                        assert_eq!(
+                            unsafe {
+                                sdl2::sys::SDL_JoystickSetVirtualButton(
+                                    ptr,
+                                    binding.value.button,
+                                    u8::from(pressed),
+                                )
+                            },
+                            0
+                        );
+                    }
+                    Control::Stick(x, y) => {
+                        let Some(InputValue::Stick(v)) = desired else {
+                            panic!("Missing scripted stick")
+                        };
+                        set_axis(*x, v[0]);
+                        set_axis(*y, -v[1]);
+                    }
+                    Control::Trigger(axis) => {
+                        let Some(InputValue::Scalar(v)) = desired else {
+                            panic!("Missing scripted trigger")
+                        };
+                        set_axis(*axis, 2. * v - 1.);
+                    }
+                    _ => {}
+                }
+            }
+            sdl.events.pump_events();
+            let events = sdl
+                .events
+                .poll_iter()
+                .flat_map(|e| pad.event(e))
+                .collect::<Vec<_>>();
+            let values = pad.snapshot().unwrap();
+            hub.batch(&events, &values, (tick + 1) * 10_000_000)
+                .unwrap();
+            if tick == 60 {
+                assert_eq!(hub.status()["virtual_pose"]["enabled"], true);
+            }
+        }
+        assert_eq!(hub.status()["virtual_pose"]["enabled"], false);
+        assert_eq!(hub.status()["virtual_pose"]["valid"], true);
+        let request = crate::protocol::Request {
+            id: 1,
+            group: 0,
+            channel: 1,
+            interval: 10_000_000,
+            phase: 0,
+            prediction_offset: 0,
+            sequence_number_format: None,
+            bundles: vec![
+                hub.capabilities
+                    .descriptors
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| crate::protocol::SampleBinding {
+                        descriptor: i as u32,
+                        format: d.formats[0],
+                        space: d.spaces.first().copied().unwrap_or(0),
+                    })
+                    .collect(),
+            ],
+        };
+        hub.capabilities.validate_request(&request).unwrap();
+        hub.check(&request).unwrap();
+        let publication = Arc::new(std::sync::Mutex::new(
+            crate::protocol::PublicationState::new(&request, 0),
+        ));
+        hub.observe(&request, &publication).unwrap();
+        assert!(publication.lock().unwrap().candidate().is_some());
         // Reject binding metadata outside this real SDL virtual device's counts.
         use sdl2::sys::{
             SDL_GameControllerBindType::*, SDL_GameControllerButtonBind as Bind,

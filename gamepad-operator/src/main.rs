@@ -1,5 +1,5 @@
 use clap::Parser;
-use gamepad_operator::{backend, input::Source, server};
+use gamepad_operator::{backend, input::Source, server, virtual_pose::Config};
 use std::{
     net::SocketAddr,
     path::PathBuf,
@@ -14,8 +14,8 @@ use std::{
 #[command(
     version,
     about = "Local gamepad INPUT proxy using the current tracking protocol over HTTP/WebRTC",
-    long_about = "Local gamepad INPUT proxy. Linux SDL2 evdev supports mapped Xbox/PlayStation and raw-index fallback for unknown layouts. No pose, rumble or hardware outputs. Use the current viewer's signaling proxy (XR_OPERATOR_URL). Defaults select exactly one eligible gamepad; multiple gamepads require --device.",
-    after_help = "Identity: only a nonzero MAC-shaped kernel input uniq is eligible for reconnect with a new capability epoch; duplicate identities are rejected. USB/receiver serials, including non-MAC uniq values copied by USB HID, use current input-slot IDs and require restart after unplug; run --list again because slot IDs may change. MAC shape is an identity heuristic, not hardware authentication; sequential devices claiming the same MAC cannot be distinguished.\nTiming: 100 Hz software observations of retained SDL state; idle is valid. Native event order drives counters. Initial held states/disconnects do not create edges. Prediction requests are advisory; actual prediction timestamps are always absent.\nBuild: Cargo bundles SDL2; a C compiler and CMake are required. Linux evdev read access is required for a physical gamepad. No permission or udev changes are performed.\nExamples:\n  gamepad-operator --list\n  gamepad-operator --device 'ID from --list'\n  gamepad-operator --synthetic --listen 127.0.0.1:8082"
+    long_about = "Local gamepad INPUT proxy. Linux SDL2 evdev supports mapped Xbox/PlayStation and raw-index fallback for unknown layouts. Raw input is the default; optional --virtual-pose generates a software pose. No rumble or hardware outputs. Use the current viewer's signaling proxy (XR_OPERATOR_URL). Defaults select exactly one eligible gamepad; multiple gamepads require --device.",
+    after_help = "Identity: only a nonzero MAC-shaped kernel input uniq is eligible for reconnect with a new capability epoch; duplicate identities are rejected. USB/receiver serials, including non-MAC uniq values copied by USB HID, use current input-slot IDs and require restart after unplug; run --list again because slot IDs may change. MAC shape is an identity heuristic, not hardware authentication; sequential devices claiming the same MAC cannot be distinguished.\nTiming: 100 Hz software observations of retained SDL state; idle is valid. Native event order drives counters. Initial held states/disconnects do not create edges. Prediction requests are advisory; actual prediction timestamps are always absent.\nVirtual pose (--virtual-pose): starts PAUSED. Start/Options toggles motion; View/Back (Xbox), Share (PS4) or Create (PS5) resets position/orientation and pauses (reset wins simultaneous commands). The separate Xbox Series Share button is unused. Left stick: yaw-relative horizontal movement, up = forward. RT/LT: up/down. Right stick: right = yaw right, up = pitch up; pitch clamped to +/-90 degrees. LB/RB: roll left/right. Defaults: 1 m/s each for horizontal and vertical movement, 90 degrees/s rotation. Model frame: +X right, +Y up, -Z forward, origin [0,0,0], initial identity orientation; no real-world placement. Heading remains independent of pitch/roll, including vertical pitch. Virtual-only radial stick deadzone 0.15 and trigger deadzone 0.05, rescaled; raw values/counters unchanged. Paused pose remains valid software state; tracked flags always false and actual prediction absent. Disconnect, missing controls or observation gaps >100 ms pause; fresh Start/Options press required to resume. New device epochs start at the origin paused. Missing mapped controls leave raw mode with a health diagnostic.\nBuild: Cargo bundles SDL2; a C compiler and CMake are required. Linux evdev read access is required for a physical gamepad. No permission or udev changes are performed.\nExamples:\n  gamepad-operator --list\n  gamepad-operator --device 'ID from --list'\n  gamepad-operator --synthetic --listen 127.0.0.1:8082"
 )]
 struct Args {
     /// Print metadata, eligibility, mapping/access diagnostics and selection IDs, then exit
@@ -36,12 +36,36 @@ struct Args {
     /// Synthetic unplug at 6s/reconnect at 8s of each 12s cycle; closes old peers on reconnect
     #[arg(long, requires = "synthetic")]
     synthetic_lifecycle: bool,
+    /// Opt in to a software model-frame pose; requires all mapped controls described below
+    #[arg(long)]
+    virtual_pose: bool,
+    /// Maximum horizontal and vertical speeds, each in metres/second, range (0,10], default 1
+    #[arg(long, requires = "virtual_pose")]
+    virtual_linear_speed: Option<f64>,
+    /// Maximum virtual yaw/pitch/roll speed in degrees/second, range (0,720], default 90
+    #[arg(long, requires = "virtual_pose")]
+    virtual_angular_speed: Option<f64>,
+    /// Script all virtual controls over 10s cycles, including explicit enable/reset presses (software only)
+    #[arg(long, requires_all = ["synthetic", "virtual_pose"])]
+    synthetic_virtual_demo: bool,
     /// Stop cleanly after this many seconds (useful for unattended validation)
     #[arg(long,value_parser=clap::value_parser!(u64).range(1..))]
     run_for: Option<u64>,
 }
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
+    let virtual_config = args.virtual_pose.then(|| Config {
+        linear_metres_per_second: args.virtual_linear_speed.unwrap_or(1.),
+        angular_degrees_per_second: args.virtual_angular_speed.unwrap_or(90.),
+    });
+    if let Some(config) = virtual_config
+        && let Err(message) = config.validate()
+    {
+        use clap::CommandFactory;
+        Args::command()
+            .error(clap::error::ErrorKind::ValueValidation, message)
+            .exit();
+    }
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("gamepad_operator=info"),
     )
@@ -94,9 +118,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
     // SDL remains on the main OS thread; the runtime handles network I/O separately.
     let outcome = if args.synthetic {
-        backend::run_synthetic(source, stop, args.synthetic_lifecycle)
+        backend::run_synthetic(
+            source,
+            stop,
+            args.synthetic_lifecycle,
+            virtual_config,
+            args.synthetic_virtual_demo,
+        )
     } else {
-        backend::run_sdl(source, stop, args.device, args.mappings)
+        backend::run_sdl(source, stop, args.device, args.mappings, virtual_config)
     };
     shutdown.send_replace(true);
     signal.abort();
