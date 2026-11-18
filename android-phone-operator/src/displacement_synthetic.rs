@@ -1,7 +1,7 @@
 //! Synthetic SENSOR input through the real estimator; never injects pose values.
 use phone_operator::{
     displacement::GRAVITY,
-    phone::{self, Action, Hand, Hub},
+    phone::{self, Action, Hub},
     server,
 };
 use tokio::{net::TcpListener, sync::watch};
@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<_> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "phone-operator-displacement-synthetic [--port PORT]\nLoopback SYNTHETIC IMU sensor input through the displacement estimator. Default18085;0 allocates a free port.\nConstant0.2m/s² local X acceleration, stationary portrait orientation,5ms sensor phase difference. Cycles inactive/left/right/pause each2s. No hardware accuracy claim."
+            "phone-operator-displacement-synthetic [--port PORT]\nLoopback SYNTHETIC IMU sensor input through the displacement estimator. Default18085;0 allocates a free port.\nConstant0.2m/s² local X acceleration, stationary portrait orientation,5ms sensor phase difference. Cycles controls every 2s. No hardware accuracy claim."
         );
         return Ok(());
     }
@@ -33,28 +33,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let start = phone::now();
         let mut timer = tokio::time::interval(std::time::Duration::from_millis(10));
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        source.action(Action::Resume, start);
+        source.action(Action::Focus(true), start);
         let mut previous = 99;
         loop {
-            tokio::select! {_=stopped.changed()=>break,_=timer.tick()=>{
-                let at=phone::now();let phase=((at-start)/2_000_000_000)%4;
-                if phase!=previous {
-                    source.action(Action::Release,at);
-                    if phase==3 {source.action(Action::Pause,at);} else {
-                        source.action(Action::Resume,at);source.action(Action::Focus(true),at);source.action(Action::Select(if phase==2 {Hand::Right}else{Hand::Left}),at);
-                    }
-                }
-                if phase!=3 {
-                    let h=std::f64::consts::FRAC_1_SQRT_2;
-                    source.sensor(0,at,[h,0.,0.,h],at);
-                    // First seed is simultaneous; later acceleration lies between
-                    // consecutive orientations so the real bounded SLERP path runs.
-                    let acceleration_at=if phase!=previous {at}else{at-5_000_000};
-                    source.sensor(1,acceleration_at,[0.2,GRAVITY,0.,0.],at);
-                    source.sensor(2,at,[0.,0.,0.,0.],at);
-                    if phase!=previous && (phase==1||phase==2) {source.action(Action::Hold,at);}
-                }
-                source.tick(at);previous=phase;
-            }}
+            tokio::select! {
+                _ = stopped.changed() => break,
+                _ = timer.tick() => {}
+            }
+            let at = phone::now();
+            let phase = ((at - start) / 2_000_000_000) % 4;
+            if phase != previous {
+                source.action(Action::SetInput(if phase < 2 { -7 } else { 42 }), at);
+                source.action(Action::SetTrigger([0., 0.25, 0.75, 1.][phase as usize]), at);
+                source.action(
+                    if phase == 1 || phase == 2 {
+                        Action::Hold
+                    } else {
+                        Action::Release
+                    },
+                    at,
+                );
+            }
+            let h = std::f64::consts::FRAC_1_SQRT_2;
+            source.sensor(0, at, [h, 0., 0., h], at);
+            // First seed is simultaneous; later acceleration lies between
+            // consecutive orientations so the real bounded SLERP path runs.
+            let acceleration_at = if phase != previous {
+                at
+            } else {
+                at - 5_000_000
+            };
+            source.sensor(1, acceleration_at, [0.2, GRAVITY, 0., 0.], at);
+            source.sensor(2, at, [0., 0., 0., 0.], at);
+            source.tick(at);
+            previous = phase;
         }
     });
     println!("SYNTHETIC IMU displacement server http://127.0.0.1:{port}");

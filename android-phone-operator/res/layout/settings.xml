@@ -30,7 +30,5 @@
             android:layout_marginTop="8dp" android:textSize="15sp" android:textColor="#515D74" />
         <Button android:id="@+id/retry" style="@style/TextAction" android:layout_width="wrap_content"
             android:layout_height="wrap_content" android:text="@string/retry" android:visibility="gone" />
-        <Button android:id="@+id/recenter" style="@style/TextAction" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="@string/recenter" />
     </LinearLayout>
 </ScrollView>

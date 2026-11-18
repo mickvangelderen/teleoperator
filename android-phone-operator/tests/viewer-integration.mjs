@@ -58,66 +58,86 @@ async function run(mode) {
     await page.getByRole('dialog').getByLabel('Operator address').fill(`http://127.0.0.1:${serverPort}`);
     const normal=await page.evaluate(async mode=>{
       const {Connection}=await import('/src/connection.ts');
-      const {currentValues,poseSources,spatialFrames}=await import('/src/tracking-view.ts');
-      const seen=new Set(),errors=[];let packets=0,rawMeasurements=0,closedFormChecks=0;
-      const previous = new Map();
-      const gravity = mode === 'displacement' ? 9.80665 : 9.81;
+      const {currentValues,spatialFrames}=await import('/src/tracking-view.ts');
+      const controls=new Set(), qualities=new Set(), errors=[];
+      let packets=0, rawMeasurements=0, closedFormChecks=0, previous;
+      const gravity=mode==='displacement' ? 9.80665 : 9.81;
       const c=new Connection(state=>{if(state.status==='Error')errors.push(state.detail);});
       try {
-        await c.connect();const end=performance.now()+11000;
-        while(performance.now()<end){
+        await c.connect();
+        const end=performance.now()+10500;
+        while(performance.now()<end) {
           if(errors.length)throw Error(errors.join(';'));
-          if(c.session.phase==='ready'){
-            const values=currentValues(c.session,performance.now()),caps=c.session.capabilities;
-            const active=[];
-            for(const [index,d] of caps.descriptors.entries()){
-              if(d.id.endsWith('/phone/accelerometer/y')){
-                const v=values.get(index),valid=values.get(index+1);
-                if(valid?.value===true){if(v.packet.timestamp!==valid.packet.timestamp||Math.abs(v.value-gravity)>0.0001)throw Error('Raw measurement/validity mismatch');rawMeasurements++;}
-              }
-              if(d.kind!==10)continue;const sample=values.get(index),quality=values.get(d.orientation_valid_sample),position=values.get(d.position_valid_sample);
-              if(!sample?.packet)continue;
-              if(position?.value !== (mode === 'orientation' ? false : quality?.value)) throw Error('Incorrect position validity');
-              if(quality?.value===true){
-                if(sample.packet.timestamp!==quality.packet.timestamp)throw Error('Mismatched orientation acquisition');
-                const [x,y,z] = sample.value;
-                const tracked = values.get(d.position_tracked_sample);
-                if (tracked?.value !== (mode === 'spatial') || tracked.packet.timestamp !== sample.packet.timestamp)
-                  throw Error('Incorrect position tracking');
-                if (position.packet.timestamp !== sample.packet.timestamp) throw Error('Position timestamp mismatch');
-                if (mode === 'orientation' && (x || y || z)) throw Error('Invented position');
-                if (mode === 'spatial' && (Math.abs(z+0.3)>0.0001 || Math.abs(x)>0.251 || y<0.149 || y>0.251))
-                  throw Error('Wrong synthetic spatial position');
-                if (mode === 'displacement') {
-                  if (!sample.value.every(Number.isFinite) || x<0 || x>0.5 || Math.abs(y)>0.0001 || Math.abs(z)>0.0001)
-                    throw Error('Wrong displacement');
-                  const prior = previous.get(d.id), t = sample.packet.timestamp;
-                  if (prior && x>prior.x && prior.x>0.00001 && t>prior.t) {
-                    // The fixture accelerates from rest at 0.2 m/s², so x=0.1t².
-                    if (Math.abs(Math.sqrt(x/0.1)-Math.sqrt(prior.x/0.1)-Number(t-prior.t)/1e9)>0.003)
-                      throw Error('Displacement/time mismatch');
+          const now=performance.now();
+          if(c.session.phase==='ready' && c.session.active.size === 4) {
+            const values=currentValues(c.session,now), caps=c.session.capabilities;
+            const index=id=>caps.descriptors.findIndex(d=>d.id===id);
+            const sample=id=>values.get(index(id));
+            const grip='/phone/input/grip/pose', pose=sample(grip);
+            const input=sample('/phone/input/integer'), trigger=sample('/phone/input/trigger/value');
+            const click='/phone/input/deadman/click', held=sample(click);
+            const raw='/phone/accelerometer/y', acceleration=sample(raw), active=sample(raw+'/active');
+            if(active?.value && !active.stale){
+              if(acceleration.packet.timestamp!==active.packet.timestamp || Math.abs(acceleration.value-gravity)>0.0001)
+                throw Error('Raw acceleration or acquisition mismatch');
+              const gyro=sample('/phone/gyroscope/y'), gyroActive=sample('/phone/gyroscope/y/active');
+              if(gyroActive?.value && gyro?.packet.timestamp===gyroActive.packet.timestamp)rawMeasurements++;
+            }
+            const view=spatialFrames(c.session,now);
+            if(view.sources.length!==1 || view.sources[0]!==grip)throw Error('Expected one subscribed phone pose');
+            if(pose?.packet && !pose.stale) {
+              const quality=['position_valid','orientation_valid','position_tracked','orientation_tracked']
+                .map(suffix=>sample(grip+'/'+suffix));
+              if(quality.some(q=>q.packet.timestamp!==pose.packet.timestamp))throw Error('Mismatched pose acquisition');
+              const [p,o,pt,ot]=quality.map(q=>q.value);
+              const flags=Number(o)+Number(p)*2+Number(ot)*4+Number(pt)*8;
+              if(view.poses.poses[0].flags!==flags)throw Error('Viewer quality disagrees with wire flags');
+              if(o){
+                const [x,y,z]=pose.value;
+                if(!ot || (pt && (!p || mode!=='spatial')) || (p && mode==='orientation'))throw Error('Unexpected pose quality');
+                if(!p && (x||y||z))throw Error('Invalid position is not a zero placeholder');
+                if(mode==='spatial' && p && (Math.abs(z+0.3)>0.0001 || Math.abs(x)>0.251 || y<0.149 || y>0.251))
+                  throw Error('Incorrect synthetic spatial position');
+                if(mode==='displacement' && p){
+                  if(x<0 || Math.abs(y)>0.0001 || Math.abs(z)>0.0001)throw Error('Incorrect estimated displacement');
+                  const t=pose.packet.timestamp;
+                  if(previous && x>previous.x && t>previous.t){
+                    // Continuous acceleration 0.2 m/s² from rest gives x = 0.1t².
+                    if(Math.abs(Math.sqrt(x/0.1)-Math.sqrt(previous.x/0.1)-Number(t-previous.t)/1e9)>0.003)
+                      throw Error('Displacement restarted or time mismatch');
                     closedFormChecks++;
                   }
-                  previous.set(d.id, {x,t});
+                  previous={x,t};
                 }
-                active.push(poseSources.get(d.id));
+                qualities.add(flags);
+                if(held?.packet && input?.packet && trigger?.packet && active?.value) {
+                  const presses=Number(sample(click+'/press_count').value);
+                  const releases=Number(sample(click+'/release_count').value);
+                  if(presses-releases!==Number(held.value))throw Error('Deadman edges disagree with current state');
+                  controls.add([held.value,Number(input.value),trigger.value].join('/'));
+                }
               }
             }
-            if(active.length>1)throw Error('Both hands active');
-            const view = spatialFrames(c.session, performance.now());
-            const flags = mode === 'orientation' ? 5 : mode === 'spatial' ? 15 : 7;
-            if (view.sources.length !== active.length || view.poses.poses.some(p=>p.flags !== flags))
-              throw Error('Viewer pose/quality mismatch');
-            if(active.length)seen.add(active[0]);else seen.add('inactive');
-            for(const sub of c.session.active.values()){if(sub.packet?.predictedFor!=null)throw Error('Invented prediction');packets=Math.max(packets,sub.packets);}
+            for(const sub of c.session.active.values()){
+              if(sub.packet?.predictedFor!=null)throw Error('Invented prediction');
+              packets=Math.max(packets,sub.packets);
+            }
           }
           await new Promise(r=>setTimeout(r,25));
         }
-        return {seen:[...seen],groups:c.session.active.size,descriptors:c.session.capabilities?.descriptors.length,clock:!!c.session.clockEstimate(performance.now()),packets,rawMeasurements,closedFormChecks,errors};
+        return {controls:[...controls],qualities:[...qualities],groups:c.session.active.size,
+          descriptors:c.session.capabilities?.descriptors.length,clock:!!c.session.clockEstimate(performance.now()),
+          packets,rawMeasurements,closedFormChecks,errors};
       }finally{c.close();}
     },mode);
-    if (mode === 'displacement') assert.ok(normal.closedFormChecks > 0);
-    assert.deepEqual(normal.seen.sort(),['inactive','left/grip','right/grip']);assert.equal(normal.groups,4);assert.equal(normal.clock,true);assert.ok(normal.packets>0);assert.ok(normal.rawMeasurements>0);assert.deepEqual(normal.errors,[]);
+    for(const input of ['false/-7/0','true/-7/0.25','true/42/0.75','false/42/1'])
+      assert.ok(normal.controls.includes(input), 'Expected active sensor measurements with '+input);
+    for(const flags of mode==='orientation'?[5]:mode==='spatial'?[5,15]:[7])
+      assert.ok(normal.qualities.includes(flags),'Expected pose flags '+flags);
+    if(mode==='displacement')assert.ok(normal.closedFormChecks>0);
+    assert.equal(normal.groups,4);assert.equal(normal.descriptors,22);
+    assert.equal(normal.clock,true);assert.ok(normal.packets>0);assert.ok(normal.rawMeasurements>0);
+    assert.deepEqual(normal.errors,[]);
     const protocol=await page.evaluate(async()=>{
       const {Session}=await import('/src/session.ts');const {timing,decodeTracking}=await import('/src/protocol.ts');
       const s=new Session(),pc=new RTCPeerConnection({iceServers:[]});
@@ -136,7 +156,7 @@ async function run(mode) {
         const answer=await fetch('/api/offer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(pc.localDescription)});if(!answer.ok)throw Error('Signaling '+answer.status);
         await pc.setRemoteDescription(await answer.json());await wait(()=>reliable.readyState==='open'&&unreliable.readyState==='open','channels');
         reliable.send(s.start());await wait(()=>s.phase==='ready','negotiation');
-        const c=s.capabilities;const index=c.descriptors.findIndex(d=>d.id==='/user/hand/left/input/grip/pose/position_valid');if(index<0)throw Error('Standard pose missing');
+        const c=s.capabilities;const index=c.descriptors.findIndex(d=>d.id==='/phone/input/grip/pose/orientation_valid');if(index<0)throw Error('Standard pose missing');
         const binding={descriptor:index,format:1,space:0};
         for(const delivery of [1,2]){
           const id=s.allocateId(),request={id,group:0,delivery,...timing(50,7_000_000n,35_000_000n),sequenceNumberFormat:2,bundles:[[],[binding]]};
@@ -161,12 +181,9 @@ async function run(mode) {
     await page.getByRole('dialog').getByRole('button',{name:'Connect',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
     await page.waitForFunction(()=>document.querySelector('#poses')?.dataset.poseCount==='1');
-    if (mode === 'orientation')
-      await page.waitForFunction(()=>document.querySelector('#poses')?.dataset.poseCount==='0');
-    // The current editor displays one acquisition group's subscription at a time.
     await page.locator('subscription-editor [data-action="select"][data-group="0"]').first().click();
-    for(const hand of ['left','right']) {
-      const poseRow=`tr[data-descriptor="/user/hand/${hand}/input/grip/pose"]`;
+    {
+      const poseRow='tr[data-descriptor="/phone/input/grip/pose"]';
       await page.locator(poseRow).scrollIntoViewIfNeeded();
       await page.waitForFunction(({selector,mode})=>{
         const row = document.querySelector(selector);
@@ -180,7 +197,7 @@ async function run(mode) {
       },{selector:poseRow,mode});
     }
     await page.locator('subscription-editor [data-action="select"][data-group="1"]').first().click();
-    const rawRow='tr[data-descriptor="/user/hand/left/phone/accelerometer/y"]';
+    const rawRow='tr[data-descriptor="/phone/accelerometer/y"]';
     await page.locator(rawRow).scrollIntoViewIfNeeded();
     await page.waitForFunction(selector=>document.querySelector(selector)?.dataset.available==='true',rawRow);
     console.log('PASS '+mode+' viewer integration',JSON.stringify({normal,protocol},(_,v)=>typeof v==='bigint'?v.toString():v));

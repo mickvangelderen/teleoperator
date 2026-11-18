@@ -1,15 +1,15 @@
 //! Framework Views, inflated and updated on the Activity's main looper.
 use super::{activity::ActivityId, camera::Tracking, sensors::Sensors};
-use crate::phone::{self, Action, Hand, HandsetStatus, Hub, Motion, TrackingMode};
+use crate::phone::{self, Action, Hub, Motion, TrackingMode};
 use jni::{
     JNIEnv,
     errors::Result,
-    objects::{GlobalRef, JObject},
+    objects::{GlobalRef, JObject, JString},
 };
 use jni_min_helper::{JObjectNew, JniProxy};
 use ndk_sys::{
     AMOTION_EVENT_ACTION_CANCEL, AMOTION_EVENT_ACTION_DOWN, AMOTION_EVENT_ACTION_MOVE,
-    AMOTION_EVENT_ACTION_POINTER_DOWN, AMOTION_EVENT_ACTION_POINTER_UP, AMOTION_EVENT_ACTION_UP,
+    AMOTION_EVENT_ACTION_POINTER_UP, AMOTION_EVENT_ACTION_UP,
 };
 use std::{
     sync::Arc,
@@ -28,10 +28,15 @@ pub(super) struct Ui {
     address: GlobalRef,
     source_detail: GlobalRef,
     retry: GlobalRef,
-    hands: [GlobalRef; 2],
+    input: GlobalRef,
     hold: GlobalRef,
-    contact: bool,
-    last_controls: Option<(HandsetStatus, bool)>,
+    gripper: GlobalRef,
+    gripper_value: GlobalRef,
+    deadman_pointer: Option<i32>,
+    gripper_pointer: Option<i32>,
+    last_deadman: Option<(bool, bool)>,
+    last_motion: Option<(Motion, TrackingMode)>,
+    last_progress: Option<i32>,
     last_source: String,
     last_address: String,
     next_address_check: Instant,
@@ -154,10 +159,15 @@ impl Ui {
             address: view(env, "address")?,
             source_detail: view(env, "source_detail")?,
             retry: view(env, "retry")?,
-            hands: [view(env, "left")?, view(env, "right")?],
+            input: view(env, "input")?,
             hold: view(env, "hold")?,
-            contact: false,
-            last_controls: None,
+            gripper: view(env, "gripper")?,
+            gripper_value: view(env, "gripper_value")?,
+            deadman_pointer: None,
+            gripper_pointer: None,
+            last_deadman: None,
+            last_motion: None,
+            last_progress: None,
             last_source: String::new(),
             last_address: String::new(),
             next_address_check: Instant::now(),
@@ -182,23 +192,83 @@ impl Ui {
                 Ok(())
             },
         )?;
-        for (v, action) in [
-            (ui.hands[0].clone(), Action::Select(Hand::Left)),
-            (ui.hands[1].clone(), Action::Select(Hand::Right)),
-            (view(env, "recenter")?, Action::Recenter),
-        ] {
-            ui.listen(
-                env,
-                "android/view/View$OnClickListener",
-                &v,
-                "setOnClickListener",
-                move |ui, env, _| {
-                    ui.contact = false;
-                    ui.action(action);
-                    ui.render_controls(env)
-                },
-            )?;
-        }
+        let recenter = view(env, "recenter")?;
+        ui.listen(
+            env,
+            "android/view/View$OnClickListener",
+            &recenter,
+            "setOnClickListener",
+            |ui, env, _| {
+                ui.action(Action::Recenter);
+                ui.render_controls(env)
+            },
+        )?;
+        let input = ui.input.clone();
+        let hub = ui.hub.clone();
+        let watcher = JniProxy::build(
+            env,
+            None,
+            ["android/text/TextWatcher"],
+            move |env, _, args| {
+                // afterTextChanged is the only TextWatcher method with one argument.
+                if let [editable] = args
+                    && owner.is_active()
+                {
+                    let value = JString::from(
+                        env.call_method(*editable, "toString", "()Ljava/lang/String;", &[])?
+                            .l()?,
+                    );
+                    let value: String = env.get_string(&value)?.into();
+                    let error = match value.parse::<i32>() {
+                        Ok(number) => {
+                            hub.action(Action::SetInput(number), phone::now());
+                            JObject::null()
+                        }
+                        Err(_) => env.new_string("Enter a signed 32-bit integer")?.into(),
+                    };
+                    env.call_method(
+                        &input,
+                        "setError",
+                        "(Ljava/lang/CharSequence;)V",
+                        &[(&error).into()],
+                    )?;
+                }
+                JniProxy::void(env)
+            },
+        )?;
+        env.call_method(
+            &ui.input,
+            "addTextChangedListener",
+            "(Landroid/text/TextWatcher;)V",
+            &[watcher.as_ref().into()],
+        )?;
+        ui.listeners.push(watcher);
+        // Native keyboard and accessibility adjustments also command the gripper.
+        let hub = ui.hub.clone();
+        let progress = JniProxy::build(
+            env,
+            None,
+            ["android/widget/SeekBar$OnSeekBarChangeListener"],
+            move |env, _, args| {
+                if let [_, progress, from_user] = args
+                    && owner.is_active()
+                    && env
+                        .call_method(*from_user, "booleanValue", "()Z", &[])?
+                        .z()?
+                {
+                    let value = env.call_method(*progress, "intValue", "()I", &[])?.i()?;
+                    hub.action(Action::SetTrigger(f64::from(value) / 100.0), phone::now());
+                }
+                JniProxy::void(env)
+            },
+        )?;
+        env.call_method(
+            &ui.gripper,
+            "setOnSeekBarChangeListener",
+            "(Landroid/widget/SeekBar$OnSeekBarChangeListener;)V",
+            &[progress.as_ref().into()],
+        )?;
+        ui.listeners.push(progress);
         ui.listen(
             env,
             "android/view/View$OnClickListener",
@@ -233,24 +303,26 @@ impl Ui {
                 },
             )?;
         }
-        let hold = JniProxy::build(
-            env,
-            None,
-            ["android/view/View$OnTouchListener"],
-            move |env, _, args| {
-                if let [view, event] = args {
-                    owner.with_active_ui(|ui| ui.touch(env, view, event))?;
-                }
-                true.new_jobject(env)
-            },
-        )?;
-        env.call_method(
-            &ui.hold,
-            "setOnTouchListener",
-            "(Landroid/view/View$OnTouchListener;)V",
-            &[hold.as_ref().into()],
-        )?;
-        ui.listeners.push(hold);
+        for (view, gripper) in [(&ui.hold, false), (&ui.gripper, true)] {
+            let listener = JniProxy::build(
+                env,
+                None,
+                ["android/view/View$OnTouchListener"],
+                move |env, _, args| {
+                    if let [view, event] = args {
+                        owner.with_active_ui(|ui| ui.touch(env, view, event, gripper))?;
+                    }
+                    true.new_jobject(env)
+                },
+            )?;
+            env.call_method(
+                view,
+                "setOnTouchListener",
+                "(Landroid/view/View$OnTouchListener;)V",
+                &[listener.as_ref().into()],
+            )?;
+            ui.listeners.push(listener);
+        }
         Ok(ui)
     }
     fn listen(
@@ -281,73 +353,135 @@ impl Ui {
         }
         // Detachment can deliver a final ACTION_CANCEL after Activity.onDestroy.
         // Remove the boolean-returning proxy while its handler is still alive.
-        env.call_method(
-            &self.hold,
-            "setOnTouchListener",
-            "(Landroid/view/View$OnTouchListener;)V",
-            &[(&JObject::null()).into()],
-        )?;
+        for view in [&self.hold, &self.gripper] {
+            env.call_method(
+                view,
+                "setOnTouchListener",
+                "(Landroid/view/View$OnTouchListener;)V",
+                &[(&JObject::null()).into()],
+            )?;
+        }
         Ok(())
     }
     fn action(&self, action: Action) {
         self.hub.action(action, phone::now());
     }
 
-    fn touch(&mut self, env: &mut JNIEnv, view: &JObject, event: &JObject) -> Result<()> {
-        match env.call_method(event, "getActionMasked", "()I", &[])?.i()? as u32 {
-            AMOTION_EVENT_ACTION_DOWN => {
-                let parent = env
-                    .call_method(view, "getParent", "()Landroid/view/ViewParent;", &[])?
-                    .l()?;
-                env.call_method(
-                    parent,
-                    "requestDisallowInterceptTouchEvent",
-                    "(Z)V",
-                    &[true.into()],
-                )?;
-                self.contact = true;
-                self.action(Action::Hold);
+    fn touch(
+        &mut self,
+        env: &mut JNIEnv,
+        view: &JObject,
+        event: &JObject,
+        gripper: bool,
+    ) -> Result<()> {
+        let action = env.call_method(event, "getActionMasked", "()I", &[])?.i()? as u32;
+        let pointer = if gripper {
+            &mut self.gripper_pointer
+        } else {
+            &mut self.deadman_pointer
+        };
+        if action == AMOTION_EVENT_ACTION_CANCEL {
+            *pointer = None;
+            if !gripper {
+                self.action(Action::Cancel);
             }
-            AMOTION_EVENT_ACTION_MOVE if self.contact => {
-                let width = env.call_method(view, "getWidth", "()I", &[])?.i()? as f32;
-                let height = env.call_method(view, "getHeight", "()I", &[])?.i()? as f32;
-                let inside = |x, y| (0.0..width).contains(&x) && (0.0..height).contains(&y);
-                let x = env.call_method(event, "getX", "()F", &[])?.f()?;
-                let y = env.call_method(event, "getY", "()F", &[])?.f()?;
-                if !inside(x, y) {
-                    self.cancel_contact();
-                } else {
-                    for i in 0..env.call_method(event, "getHistorySize", "()I", &[])?.i()? {
-                        let x = env
-                            .call_method(event, "getHistoricalX", "(I)F", &[i.into()])?
-                            .f()?;
-                        let y = env
-                            .call_method(event, "getHistoricalY", "(I)F", &[i.into()])?
-                            .f()?;
-                        if !inside(x, y) {
-                            self.cancel_contact();
-                            break;
-                        }
-                    }
+            return self.render_controls(env);
+        }
+        // The layout sends each thumb to its own View. Keep its pointer ID even
+        // when a second finger lands on the same View or Android renumbers indices.
+        if action == AMOTION_EVENT_ACTION_DOWN {
+            if !self.focused {
+                return Ok(());
+            }
+            let parent = env
+                .call_method(view, "getParent", "()Landroid/view/ViewParent;", &[])?
+                .l()?;
+            env.call_method(
+                parent,
+                "requestDisallowInterceptTouchEvent",
+                "(Z)V",
+                &[true.into()],
+            )?;
+            *pointer = Some(
+                env.call_method(event, "getPointerId", "(I)I", &[0.into()])?
+                    .i()?,
+            );
+            if !gripper {
+                self.hub.action(Action::Hold, phone::now());
+            }
+        }
+        let Some(id) = *pointer else { return Ok(()) };
+        let index = env
+            .call_method(event, "findPointerIndex", "(I)I", &[id.into()])?
+            .i()?;
+        let up = matches!(
+            action,
+            AMOTION_EVENT_ACTION_UP | AMOTION_EVENT_ACTION_POINTER_UP
+        );
+        if index < 0 {
+            *pointer = None;
+            if !gripper {
+                self.action(Action::Cancel);
+            }
+            return self.render_controls(env);
+        }
+        if up && env.call_method(event, "getActionIndex", "()I", &[])?.i()? != index {
+            return Ok(());
+        }
+        if action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_MOVE || up {
+            let x = env
+                .call_method(event, "getX", "(I)F", &[index.into()])?
+                .f()?;
+            let width = env.call_method(view, "getWidth", "()I", &[])?.i()?;
+            if gripper {
+                let left = env.call_method(view, "getPaddingLeft", "()I", &[])?.i()?;
+                let right = env.call_method(view, "getPaddingRight", "()I", &[])?.i()?;
+                let span = (width - left - right).max(1);
+                let value = ((f64::from(x) - f64::from(left)) / f64::from(span)).clamp(0.0, 1.0);
+                let rtl = env
+                    .call_method(view, "getLayoutDirection", "()I", &[])?
+                    .i()?
+                    == 1;
+                let value = if rtl { 1.0 - value } else { value };
+                self.hub.action(
+                    Action::SetTrigger((value * 100.0).round() / 100.0),
+                    phone::now(),
+                );
+                if up {
+                    *pointer = None;
                 }
-            }
-            AMOTION_EVENT_ACTION_UP => {
-                let inside = self.contact;
-                self.contact = false;
+            } else if up {
+                *pointer = None;
                 self.action(Action::Release);
-                if inside {
-                    env.call_method(view, "performClick", "()Z", &[])?;
+                env.call_method(view, "performClick", "()Z", &[])?;
+            } else {
+                let height = env.call_method(view, "getHeight", "()I", &[])?.i()? as f32;
+                let inside = |x, y| (0.0..width as f32).contains(&x) && (0.0..height).contains(&y);
+                let y = env
+                    .call_method(event, "getY", "(I)F", &[index.into()])?
+                    .f()?;
+                let mut escaped = !inside(x, y);
+                for sample in 0..env.call_method(event, "getHistorySize", "()I", &[])?.i()? {
+                    let args = [index.into(), sample.into()];
+                    let x = env
+                        .call_method(event, "getHistoricalX", "(II)F", &args)?
+                        .f()?;
+                    let y = env
+                        .call_method(event, "getHistoricalY", "(II)F", &args)?
+                        .f()?;
+                    escaped |= !inside(x, y);
+                }
+                if escaped {
+                    *pointer = None;
+                    self.action(Action::Cancel);
                 }
             }
-            AMOTION_EVENT_ACTION_CANCEL
-            | AMOTION_EVENT_ACTION_POINTER_DOWN
-            | AMOTION_EVENT_ACTION_POINTER_UP => self.cancel_contact(),
-            _ => {}
         }
         self.render_controls(env)
     }
     fn cancel_contact(&mut self) {
-        self.contact = false;
+        self.deadman_pointer = None;
+        self.gripper_pointer = None;
         self.action(Action::Cancel);
     }
     fn select(&mut self, env: &mut JNIEnv, source: i32) -> Result<()> {
@@ -370,12 +504,15 @@ impl Ui {
             &[(&key).into(), source.into()],
         )?;
         env.call_method(editor, "apply", "()V", &[])?;
-        self.contact = false;
+        self.deadman_pointer = None;
+        self.gripper_pointer = None;
         self.tracking.select(source);
         self.render_controls(env)
     }
     pub fn resume(&mut self, env: &mut JNIEnv) -> Result<()> {
         self.resumed = true;
+        let input = self.hub.handset_status(phone::now()).input;
+        set_text(env, &self.input, &input.to_string())?;
         self.action(Action::Resume);
         self.action(Action::Focus(self.focused));
         self.tracking.resume();
@@ -384,7 +521,8 @@ impl Ui {
     }
     pub fn pause(&mut self, env: &mut JNIEnv) -> Result<()> {
         self.resumed = false;
-        self.contact = false;
+        self.deadman_pointer = None;
+        self.gripper_pointer = None;
         self.action(Action::Pause);
         self.tracking.stop();
         self.sensors.pause(env)?;
@@ -405,95 +543,94 @@ impl Ui {
         if focused {
             self.tracking.check_soon();
         } else {
-            self.contact = false;
+            self.deadman_pointer = None;
+            self.gripper_pointer = None;
             self.tracking.stop();
         }
     }
     fn render_controls(&mut self, env: &mut JNIEnv) -> Result<()> {
         let state = self.hub.handset_status(phone::now());
-        if self.last_controls == Some((state, self.contact)) {
-            return Ok(());
+        let contact = self.deadman_pointer.is_some();
+        if self.last_deadman != Some((contact, state.held)) {
+            env.call_method(&self.hold, "setPressed", "(Z)V", &[contact.into()])?;
+            env.call_method(&self.hold, "setActivated", "(Z)V", &[state.held.into()])?;
+            let (label, description) = if state.held {
+                ("Deadman\nHeld", "Held")
+            } else if contact {
+                ("Deadman\nLift to retry", "Pressed, inactive")
+            } else {
+                ("Deadman\nPress and hold", "Released")
+            };
+            set_text(env, &self.hold, label)?;
+            let description = env.new_string(description)?;
+            env.call_method(
+                &self.hold,
+                "setStateDescription",
+                "(Ljava/lang/CharSequence;)V",
+                &[(&description).into()],
+            )?;
+            self.last_deadman = Some((contact, state.held));
         }
-        let (title, hint) = match (state.motion, state.mode) {
-            (Motion::Unavailable, _) => ("Tracking unavailable", "Choose another tracking source."),
-            (Motion::Calibrating, _) => (
-                "Calibrating the camera",
-                "Keep holding and move the phone slowly across a well-lit, detailed surface.",
-            ),
-            (Motion::Recovering, _) => (
-                "Recovering tracking",
-                "Keep holding while the camera locates the reference again.",
-            ),
-            (Motion::Waiting, _) if state.held => (
-                "Waiting for motion",
-                "Keep holding for the first fresh measurement.",
-            ),
-            (Motion::Waiting, TrackingMode::Spatial) => (
-                "Waiting for camera",
-                "Slowly move the phone while looking at a well-lit surface with detail.",
-            ),
-            (Motion::Waiting, _) => (
-                "Waiting for sensors",
-                "Hold the phone upright with its rear camera facing forward.",
-            ),
-            (Motion::Ready, _) if self.contact => (
-                "Ready to retry",
-                "Lift your finger, then press and hold again.",
-            ),
-            (Motion::Ready, TrackingMode::Orientation) => {
-                ("Ready to track", "Press and hold to track rotation.")
-            }
-            (Motion::Ready, TrackingMode::Spatial) => (
-                "Ready to track",
-                "Press and hold to track position and rotation.",
-            ),
-            (Motion::Ready, TrackingMode::Displacement) => (
-                "Ready to estimate",
-                "Keep the phone still for half a second, then hold to estimate movement.",
-            ),
-            (Motion::Tracking, TrackingMode::Orientation) => {
-                ("Tracking rotation", "Rotate the phone. Release to stop.")
-            }
-            (Motion::Tracking, TrackingMode::Spatial) => (
-                "Tracking motion",
-                "Move or rotate the phone. Release to stop.",
-            ),
-            (Motion::Tracking, TrackingMode::Displacement) => (
-                "Estimating movement",
-                "Position is estimated from motion sensors. Release to stop.",
-            ),
-        };
-        let pad = if !self.contact {
-            "Press and hold"
-        } else if state.held {
-            "Release to stop"
-        } else {
-            "Release to retry"
-        };
-        env.call_method(&self.hold, "setPressed", "(Z)V", &[self.contact.into()])?;
-        env.call_method(
-            &self.hold,
-            "setActivated",
-            "(Z)V",
-            &[(state.motion == Motion::Tracking).into()],
-        )?;
-        set_text(env, &self.hold, pad)?;
-        set_text(env, &self.status, title)?;
-        set_text(env, &self.hint, hint)?;
-        let description = env.new_string(title)?;
-        env.call_method(
-            &self.hold,
-            "setStateDescription",
-            "(Ljava/lang/CharSequence;)V",
-            &[(&description).into()],
-        )?;
-        env.call_method(
-            &self.hands[state.hand as usize],
-            "setChecked",
-            "(Z)V",
-            &[true.into()],
-        )?;
-        self.last_controls = Some((state, self.contact));
+        let progress = (state.trigger * 100.0).round() as i32;
+        if self.last_progress != Some(progress) {
+            env.call_method(&self.gripper, "setProgress", "(I)V", &[progress.into()])?;
+            let value = format!("{:.2}", f64::from(progress) / 100.0);
+            set_text(env, &self.gripper_value, &value)?;
+            let description = env.new_string(value)?;
+            env.call_method(
+                &self.gripper,
+                "setStateDescription",
+                "(Ljava/lang/CharSequence;)V",
+                &[(&description).into()],
+            )?;
+            self.last_progress = Some(progress);
+        }
+        if self.last_motion != Some((state.motion, state.mode)) {
+            let (title, hint) = match (state.motion, state.mode) {
+                (Motion::Unavailable, _) => {
+                    ("Tracking unavailable", "Choose another tracking source.")
+                }
+                (Motion::OrientationOnly, _) => (
+                    "Tracking rotation only",
+                    "Position is temporarily unavailable.",
+                ),
+                (Motion::Calibrating, TrackingMode::Spatial) => (
+                    "Locating the camera",
+                    "Move slowly near a well-lit, textured surface.",
+                ),
+                (Motion::Calibrating, _) => (
+                    "Calibrating motion sensors",
+                    "Keep the phone still for a moment.",
+                ),
+                (Motion::Recovering, _) => (
+                    "Recovering tracking",
+                    "Move slowly while tracking recovers.",
+                ),
+                (Motion::Waiting, TrackingMode::Spatial) => (
+                    "Waiting for camera",
+                    "Move slowly near a well-lit, textured surface.",
+                ),
+                (Motion::Waiting, _) => (
+                    "Waiting for sensors",
+                    "Waiting for fresh motion measurements.",
+                ),
+                (Motion::Ready, _) => ("Tracking ready", "Waiting for a fresh pose."),
+                (Motion::Tracking, TrackingMode::Orientation) => {
+                    ("Tracking rotation", "Recenter sets the current heading.")
+                }
+                (Motion::Tracking, TrackingMode::Spatial) => (
+                    "Tracking position and rotation",
+                    "Recenter sets the current location and heading.",
+                ),
+                (Motion::Tracking, TrackingMode::Displacement) => (
+                    "Estimating position and rotation",
+                    "Recenter sets the current location and heading.",
+                ),
+            };
+            set_text(env, &self.status, title)?;
+            set_text(env, &self.hint, hint)?;
+            self.last_motion = Some((state.motion, state.mode));
+        }
         Ok(())
     }
     fn refresh(&mut self, env: &mut JNIEnv) -> Result<()> {

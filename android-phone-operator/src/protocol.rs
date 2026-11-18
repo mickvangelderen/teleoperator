@@ -996,7 +996,7 @@ impl PublicationState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Bit(bool),
     Unsigned(u64),

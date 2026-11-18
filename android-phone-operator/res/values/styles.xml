@@ -25,17 +25,4 @@
         <item name="android:minWidth">48dp</item>
         <item name="android:minHeight">48dp</item>
     </style>
-    <style name="HandChoice" parent="@android:style/Widget.Material.Light.CompoundButton.RadioButton">
-        <item name="android:button">@null</item>
-        <item name="android:layout_width">0dp</item>
-        <item name="android:layout_weight">1</item>
-        <item name="android:layout_height">wrap_content</item>
-        <item name="android:minHeight">50dp</item>
-        <item name="android:gravity">center</item>
-        <item name="android:textSize">17sp</item>
-        <item name="android:fontFamily">sans-serif-medium</item>
-        <item name="android:textColor">@color/hand_text</item>
-        <item name="android:background">@drawable/hand_segment</item>
-        <item name="android:saveEnabled">false</item>
-    </style>
 </resources>

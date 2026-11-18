@@ -25,8 +25,12 @@ impl ActivityId {
         })
     }
 
+    pub(super) fn is_active(self) -> bool {
+        ACTIVE.get() == Some(self)
+    }
+
     pub(super) fn with_active_ui(self, f: impl FnOnce(&mut Ui) -> Result<()>) -> Result<()> {
-        if ACTIVE.get() == Some(self) {
+        if self.is_active() {
             self.with_ui(f)
         } else {
             Ok(())

@@ -1,4 +1,4 @@
-//! Relative IMU dead reckoning. A quiet interval before a hold can establish a
+//! Relative IMU dead reckoning. A quiet initialization interval can establish a
 //! fixed accelerometer offset. Position and initial velocity have no external reference.
 use crate::{
     phone::{STALE_NS, multiply, normalized},
@@ -356,8 +356,7 @@ fn slerp(a: [f64; 4], mut b: [f64; 4], t: f64) -> [f64; 4] {
     normalized(q).expect("Interpolation of normalized quaternions")
 }
 
-// These gates apply only to calibration while released. They do not filter
-// acceleration or clamp velocity while the user is moving the held phone.
+// A quiet, stable orientation limits when an accelerometer offset can be learned.
 const QUIET_NS: u64 = 500_000_000;
 const MAX_OFFSET: f64 = 0.15; // m/s², about 1.5% of gravity
 const MAX_VARIATION: f64 = 0.06; // m/s² deviation from the initial residual
@@ -377,7 +376,9 @@ pub struct Estimator {
     observed: [Option<u64>; 2],
     accept_after: u64,
     ready_at: Option<u64>,
-    hold: Option<(u64, [f64; 4])>,
+    reference: Option<(u64, [f64; 4])>,
+    calibrate_until: Option<u64>,
+    recenter_at: Option<u64>,
     integration: Option<Integration>,
     quiet: Option<QuietInterval>,
     device_offset: Option<[f64; 3]>,
@@ -392,18 +393,32 @@ impl Estimator {
         self.ready_at
             .is_some_and(|t| at.saturating_sub(t) <= STALE_NS)
     }
-    pub fn has_hold(&self) -> bool {
-        self.hold.is_some()
+    pub fn has_reference(&self) -> bool {
+        self.reference.is_some()
+    }
+    pub fn begin_continuous(&mut self, at: u64, heading: [f64; 4]) {
+        self.begin(at, heading);
+        // Learn a fixed offset only during startup. Later deliberate slow
+        // motion must not become an offset or reset an ongoing trajectory.
+        self.calibrate_until = Some(at.saturating_add(QUIET_NS + MAX_GAP_NS));
+    }
+    pub fn recenter(&mut self, at: u64) {
+        self.calibrate_until = None;
+        self.recenter_at = Some(at);
+        self.estimate = None;
     }
     pub fn begin(&mut self, at: u64, heading: [f64; 4]) {
         self.end();
-        self.hold = Some((at, heading));
+        self.reference = Some((at, heading));
         self.pending.retain(|a| a.at >= at);
         self.status =
-            "Waiting for first aligned sample after press; initial velocity assumed zero".into();
+            "Waiting for first aligned sample in this reference; initial velocity assumed zero"
+                .into();
     }
     pub fn end(&mut self) {
-        self.hold = None;
+        self.reference = None;
+        self.calibrate_until = None;
+        self.recenter_at = None;
         self.quiet = None;
         self.integration = None;
         self.estimate = None;
@@ -516,7 +531,7 @@ impl Estimator {
             (at - left.at) as f64 / (right.at - left.at) as f64,
         )))
     }
-    fn observe_released(&mut self, a: Acceleration, q: [f64; 4]) {
+    fn observe_quiet(&mut self, a: Acceleration, q: [f64; 4]) {
         let [x, y, z, w] = q;
         let gravity = rotate([-x, -y, -z, w], [0., GRAVITY, 0.]);
         let residual: [f64; 3] = std::array::from_fn(|i| a.value[i] - gravity[i]);
@@ -575,7 +590,7 @@ impl Estimator {
             let q = match self.aligned(a.at) {
                 Ok(Some(q)) => q,
                 Ok(None) => break,
-                Err(reason) if self.hold.is_none() => {
+                Err(reason) if self.reference.is_none() => {
                     // Warm-up can start between sensor phases. Retain the new
                     // orientation as a left bracket for the NEXT acceleration;
                     // clearing it here could otherwise prevent recovery forever.
@@ -589,8 +604,8 @@ impl Estimator {
             };
             self.pending.pop_front();
             self.ready_at = Some(a.at);
-            let Some((hold_at, heading)) = self.hold else {
-                self.observe_released(a, q);
+            let Some((origin_at, mut heading)) = self.reference else {
+                self.observe_quiet(a, q);
                 self.status = if self.device_offset.is_some() {
                     "Aligned IMU ready; accelerometer offset calibrated"
                 } else {
@@ -599,11 +614,29 @@ impl Estimator {
                 .into();
                 continue;
             };
-            if a.at < hold_at {
+            if a.at < origin_at {
                 continue;
             }
-            // The accelerometer is in PHONE axes, not the rotated grip axes.
+            // The accelerometer is in phone axes, before the grip rotation.
             let local_phone = multiply(heading, q);
+            if self.calibrate_until.is_some_and(|until| a.at <= until)
+                && self.device_offset.is_none()
+            {
+                self.observe_quiet(a, q);
+                if let (Some(offset), Some(quiet), Some(previous)) =
+                    (self.device_offset, &self.quiet, &mut self.integration)
+                {
+                    // Remove the bias already integrated during the qualifying
+                    // quiet interval. Attitude varied at most one degree.
+                    let bias = rotate(local_phone, offset);
+                    let dt = previous.at.saturating_sub(quiet.start) as f64 * 1e-9;
+                    for (i, bias) in bias.into_iter().enumerate() {
+                        previous.acceleration[i] -= bias;
+                        previous.velocity[i] -= bias * dt;
+                        previous.position[i] -= 0.5 * bias * dt * dt;
+                    }
+                }
+            }
             let offset = self.device_offset.unwrap_or([0.; 3]);
             let corrected = std::array::from_fn(|i| a.value[i] - offset[i]);
             let mut linear = rotate(local_phone, corrected);
@@ -614,7 +647,7 @@ impl Estimator {
             {
                 return Err("Rotated acceleration overflow");
             }
-            let next = if let Some(previous) = self.integration {
+            let mut next = if let Some(previous) = self.integration {
                 integrate(previous, a.at, linear)?
             } else {
                 Integration {
@@ -624,12 +657,28 @@ impl Estimator {
                     velocity: [0.; 3],
                 }
             };
+            if let Some(at) = self.recenter_at {
+                if a.at < at {
+                    self.integration = Some(next);
+                    continue;
+                }
+                let new_heading = crate::phone::heading_inverse(q);
+                let [x, y, z, w] = heading;
+                let rotation = multiply(new_heading, [-x, -y, -z, w]);
+                next.position = [0.; 3];
+                next.acceleration = rotate(rotation, next.acceleration);
+                next.velocity = rotate(rotation, next.velocity);
+                heading = new_heading;
+                self.reference = Some((at, heading));
+                self.recenter_at = None;
+            }
             let h = std::f64::consts::FRAC_1_SQRT_2;
             let estimate = Estimate {
                 at: a.at,
                 pose: Pose {
                     position: next.position,
-                    orientation: normalized(multiply(local_phone, [h, 0., 0., h])).unwrap(),
+                    orientation: normalized(multiply(multiply(heading, q), [h, 0., 0., h]))
+                        .unwrap(),
                 },
                 velocity: next.velocity,
             };
@@ -637,7 +686,7 @@ impl Estimator {
             self.estimate = Some(estimate);
             output = Some(estimate);
             self.status = if self.device_offset.is_some() {
-                "Using pre-hold accelerometer offset; position can drift"
+                "Using calibrated accelerometer offset; position can drift"
             } else {
                 "No quiet calibration yet; position can drift"
             }
@@ -649,6 +698,6 @@ impl Estimator {
         self.pending
             .front()
             .is_some_and(|a| at.saturating_sub(a.at) > STALE_NS)
-            || (self.hold.is_some() && !self.ready(at))
+            || (self.reference.is_some() && !self.ready(at))
     }
 }

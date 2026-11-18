@@ -2,7 +2,7 @@
     <string name="app_name">Phone Operator</string>
     <string name="tracking_source">Tracking source</string>
     <string name="operator_address">Operator address</string>
-    <string name="control_hand">Control hand</string>
+    <string name="input_number">Input</string>
     <string name="settings">Settings</string>
     <string name="close_settings">Close settings</string>
     <string-array name="sources">
@@ -11,9 +11,8 @@
         <item>Sensors: estimate displacement</item>
     </string-array>
     <string name="retry">Retry ARCore</string>
-    <string name="left">Left</string>
-    <string name="right">Right</string>
-    <string name="hold">Press and hold</string>
-    <string name="hold_hint">Press and hold to track. Release to stop.</string>
+    <string name="hold">Deadman\nPress and hold</string>
+    <string name="deadman">Deadman switch</string>
+    <string name="gripper">Gripper</string>
     <string name="recenter">Recenter</string>
 </resources>
