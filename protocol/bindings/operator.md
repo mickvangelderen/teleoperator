@@ -4,6 +4,9 @@ This page defines the current operator's WebRTC and source-quality policies, not
 
 ## WebRTC
 
+For [endpoint discovery](../overview.md#endpoint-discovery), the instance's SRV target and port identify the HTTP signaling listener that accepts `POST /offer`.
+The WebRTC data channels use a separately negotiated UDP path.
+
 One binary RTCDataChannel message contains one complete [protocol message](../encoding/messages.md).
 The reliable channel is ordered with reliable delivery; the unreliable channel is unordered with zero retransmissions.
 Receiver resource bounds are directional and independent of transport send capacity.

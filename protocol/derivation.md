@@ -3,6 +3,7 @@
 ## Requirement baseline
 
 This specification derives from the hand-written requirements at `da17cd684a906ca77ab66aa90912ccdb8ea0d017` and the applicable explicit user instructions below.
+PRO-0030 adds optional endpoint discovery. Its authored text is available with `git show bfd83667b86835e3ca341e3a44064ae3915fc391:design/requirements/protocol/PRO-0030.md`.
 The requirements define the protocol's scope; implementation considerations supply guidance rather than extra wire features.
 
 ## Concrete choices
@@ -82,6 +83,7 @@ The client clock discipline in PRO-0021 is implementation guidance; the timestam
 | [PRO-0027](../design/requirements/protocol/PRO-0027.md) | Server time | [Instant](types/Instant.md). |
 | [PRO-0028](../design/requirements/protocol/PRO-0028.md) | Publication and actual prediction | [Publication](types/Publication.md), [PublicationAcknowledged](types/PublicationAcknowledged.md), [encoding](encoding/publication.md). |
 | [PRO-0029](../design/requirements/protocol/PRO-0029.md) | Time intervals | [Duration](types/Duration.md). |
+| PRO-0030 | Optional operator endpoint discovery | [DNS-SD service type and local browse domain](overview.md#endpoint-discovery), [HTTP signaling endpoint](bindings/operator.md#webrtc). |
 
 ## Verification
 

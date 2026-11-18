@@ -1,5 +1,12 @@
 # Transport and sessions
 
+## Endpoint discovery
+
+Operator servers are encouraged to advertise one named DNS-SD instance per available LAN endpoint.
+Clients are encouraged to browse `_teleoperator._tcp.local.` on the local link and resolve an instance to its target host and listening port.
+A client can also connect directly to a known endpoint.
+Once connected, it negotiates a version and receives the server's [capabilities](interactions/02-capabilities.md).
+
 ## Channels
 
 A connection provides two logical channels in each direction.
@@ -43,7 +50,7 @@ The negotiated version applies to both channels for the connection.
 Only negotiation messages carry a protocol version.
 Capabilities supply the indices and layouts used by subsequent requests and publications.
 Subscriptions, timing, bundle and acknowledgment state, and pending operations belong to the connection and are discarded when it ends.
-A new connection repeats negotiation and discovery.
+A new connection repeats version negotiation and capability advertising.
 
 Server send order does not establish arrival order across channels.
 An unreliable publication for a new id can overtake its acceptance and is discarded until the id is accepted.

@@ -6,7 +6,7 @@ Sample references associate inputs with edge counters and poses with quality dat
 
 ## Status
 
-This is an unpublished version 1 wire specification derived from requirements at commit `da17cd684a906ca77ab66aa90912ccdb8ea0d017`, with the explicit [feedback overrides](derivation.md#feedback-overrides).
+This is an unpublished version 1 wire specification. Its [derivation](derivation.md#requirement-baseline) records the requirement baseline, subsequent requirements and [feedback overrides](derivation.md#feedback-overrides).
 The transport, interaction, type and encoding definitions are normative, including declarative constraints and imperative rules without capitalized keywords.
 `MUST` and `MUST NOT` emphasize requirements; `SHOULD` identifies a recommendation that permits a justified exception.
 Sections explicitly labeled guidance, examples, derivation and cited design considerations are informative.
