@@ -103,6 +103,12 @@ Once ADB lists the phone as `device`, install or update the APK.
 adb install -r build/android/outputs/apk/debug/phone-operator-debug.apk
 ```
 
+Launch **Phone Operator** from the same terminal.
+
+```sh
+adb shell am start -n dev.xroperator.phone.experimental/dev.xroperator.phone.MainActivity
+```
+
 ## First use
 
 Open **Phone Operator** on an ARM64 phone running Android API 32 or newer.
