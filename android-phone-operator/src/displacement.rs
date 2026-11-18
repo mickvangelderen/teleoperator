@@ -1,5 +1,5 @@
-//! Explicit IMU dead reckoning experiment. No damping, deadband, bias removal,
-//! stationary detection or external position correction. Drift is observable.
+//! Relative IMU dead reckoning. A quiet interval before a hold can establish a
+//! fixed accelerometer offset. Position and initial velocity have no external reference.
 use crate::{
     phone::{STALE_NS, multiply, normalized},
     spatial::{Pose, rotate},
@@ -79,7 +79,7 @@ mod tests {
         }
     }
     #[test]
-    fn bias_is_not_damped_clipped_or_silently_removed() {
+    fn a_cold_hold_preserves_small_sustained_acceleration() {
         let mut e = Estimator::default();
         e.begin(1, I);
         for k in 0..1001 {
@@ -87,6 +87,97 @@ mod tests {
         }
         near(e.estimate.unwrap().pose.position, [1., 0., 0.]);
         near(e.estimate.unwrap().velocity, [0.2, 0., 0.]);
+    }
+    #[test]
+    fn quiet_calibration_preserves_slow_translation_and_rotation_in_place() {
+        // Input is analytic in Android phone axes. The two 100 Hz streams
+        // are separated by 5 ms. The pulse moves 6 cm and ends at rest.
+        for translate in [false, true] {
+            let mut e = Estimator::default();
+            let mut last = None;
+            let tilt = |t: f64| {
+                let frac = ((t - 0.5) / 1.5).clamp(0., 1.);
+                0.6 * (1. - (frac * std::f64::consts::PI).cos())
+            };
+            for k in 0..=602 {
+                let at = (10 * k + 1) * MS;
+                let t = (k as f64 - 100.) * 0.01;
+                let angle = tilt(t);
+                if let Some(p) = e
+                    .orientation(
+                        at,
+                        [0., 0., (angle / 2.).sin(), (angle / 2.).cos()],
+                        at + MS,
+                    )
+                    .unwrap()
+                {
+                    last = Some(p);
+                }
+                if k == 100 {
+                    e.begin(at, I);
+                }
+                let t = t + 0.005;
+                let (sin, cos) = tilt(t).sin_cos();
+                let ax = if translate && (0.0..2.0).contains(&t) {
+                    0.03 * std::f64::consts::PI * (std::f64::consts::PI * t).sin()
+                } else {
+                    0.
+                };
+                let g = GRAVITY + 0.002;
+                let noise = 0.006 * (k as f64 * 1.7).sin();
+                let device = [
+                    ax * cos + g * sin + 0.034 + noise,
+                    -ax * sin + g * cos - 0.023 - noise,
+                    0.016 + noise,
+                ];
+                assert!(
+                    e.acceleration(at + 5 * MS, device, at + 7 * MS)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            let estimate = last.unwrap();
+            let expected = if translate { 0.06 } else { 0. };
+            let [x, y, z] = estimate.pose.position;
+            let error = (x - expected).hypot(y).hypot(z);
+            assert!(
+                error < 0.03,
+                "translate={translate}, estimated {:?}, error {error} m",
+                estimate.pose.position
+            );
+        }
+    }
+    #[test]
+    fn moving_or_interrupted_pre_hold_samples_cannot_establish_an_offset() {
+        let mut e = Estimator::default();
+        for k in 0..100 {
+            let angle = k as f64 * 0.003;
+            let q = [0., (angle / 2.).sin(), 0., (angle / 2.).cos()];
+            sample(&mut e, 1 + k * 10 * MS, q, [0.03, GRAVITY, 0.]);
+        }
+        assert!(
+            e.device_offset.is_none(),
+            "turning the phone is not a quiet interval"
+        );
+        for k in 0..40 {
+            sample(&mut e, (1100 + k * 10) * MS, I, [0.03, GRAVITY, 0.]);
+        }
+        for k in 0..40 {
+            sample(&mut e, (1800 + k * 10) * MS, I, [0.03, GRAVITY, 0.]);
+        }
+        assert!(
+            e.device_offset.is_none(),
+            "a sensor gap breaks the interval"
+        );
+        for k in 40..60 {
+            sample(&mut e, (1800 + k * 10) * MS, I, [0.03, GRAVITY, 0.]);
+        }
+        near(e.device_offset.unwrap(), [0.03, 0., 0.]);
+        e.resume(2500 * MS);
+        assert!(
+            e.device_offset.is_none(),
+            "new sensor epoch needs fresh calibration"
+        );
     }
     #[test]
     fn acceleration_uses_phone_axes_while_pose_orientation_uses_grip_axes() {
@@ -265,6 +356,20 @@ fn slerp(a: [f64; 4], mut b: [f64; 4], t: f64) -> [f64; 4] {
     normalized(q).expect("Interpolation of normalized quaternions")
 }
 
+// These gates apply only to calibration while released. They do not filter
+// acceleration or clamp velocity while the user is moving the held phone.
+const QUIET_NS: u64 = 500_000_000;
+const MAX_OFFSET: f64 = 0.15; // m/s², about 1.5% of gravity
+const MAX_VARIATION: f64 = 0.06; // m/s² deviation from the initial residual
+#[derive(Debug)]
+struct QuietInterval {
+    start: u64,
+    last: u64,
+    orientation: [f64; 4],
+    initial: [f64; 3],
+    mean: [f64; 3],
+}
+
 #[derive(Debug, Default)]
 pub struct Estimator {
     orientations: VecDeque<Orientation>,
@@ -274,6 +379,8 @@ pub struct Estimator {
     ready_at: Option<u64>,
     hold: Option<(u64, [f64; 4])>,
     integration: Option<Integration>,
+    quiet: Option<QuietInterval>,
+    device_offset: Option<[f64; 3]>,
     pub estimate: Option<Estimate>,
     pub status: String,
 }
@@ -294,6 +401,7 @@ impl Estimator {
     }
     pub fn end(&mut self) {
         self.hold = None;
+        self.quiet = None;
         self.integration = None;
         self.estimate = None;
     }
@@ -301,6 +409,7 @@ impl Estimator {
         self.end();
         self.orientations.clear();
         self.pending.clear();
+        self.device_offset = None;
         self.ready_at = None;
         self.status = reason.into();
     }
@@ -404,6 +513,56 @@ impl Estimator {
             (at - left.at) as f64 / (right.at - left.at) as f64,
         )))
     }
+    fn observe_released(&mut self, a: Acceleration, q: [f64; 4]) {
+        let [x, y, z, w] = q;
+        let gravity = rotate([-x, -y, -z, w], [0., GRAVITY, 0.]);
+        let residual: [f64; 3] = std::array::from_fn(|i| a.value[i] - gravity[i]);
+        if residual.iter().map(|v| v * v).sum::<f64>() > MAX_OFFSET.powi(2) {
+            self.quiet = None;
+            return;
+        }
+        if let Some(quiet) = &mut self.quiet {
+            let dot = quiet
+                .orientation
+                .iter()
+                .zip(q)
+                .map(|(a, b)| a * b)
+                .sum::<f64>();
+            let change = quiet
+                .initial
+                .iter()
+                .zip(residual)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>();
+            // Quaternion signs can flip for identical orientations. Allow one
+            // degree of rotation over the qualifying interval.
+            if a.at - quiet.last <= MAX_GAP_NS
+                && dot.abs() >= 0.5_f64.to_radians().cos()
+                && change <= MAX_VARIATION.powi(2)
+            {
+                let elapsed = a.at - quiet.start;
+                // Average by acquisition time, then follow slow changes over
+                // a half-second once the quiet period is established.
+                let weight = (a.at - quiet.last) as f64 / elapsed.min(QUIET_NS) as f64;
+                for (mean, sample) in quiet.mean.iter_mut().zip(residual) {
+                    *mean += weight * (sample - *mean);
+                }
+                quiet.last = a.at;
+                if elapsed >= QUIET_NS {
+                    self.device_offset = Some(quiet.mean);
+                }
+                return;
+            }
+        }
+        self.quiet = Some(QuietInterval {
+            start: a.at,
+            last: a.at,
+            orientation: q,
+            initial: residual,
+            mean: residual,
+        });
+    }
+
     fn process(&mut self, received: u64) -> Result<Option<Estimate>, &'static str> {
         let mut output = None;
         while let Some(a) = self.pending.front().copied() {
@@ -419,6 +578,7 @@ impl Estimator {
                     // clearing it here could otherwise prevent recovery forever.
                     self.pending.pop_front();
                     self.ready_at = None;
+                    self.quiet = None;
                     self.status = format!("{reason}; waiting for a fresh aligned pair");
                     continue;
                 }
@@ -427,7 +587,13 @@ impl Estimator {
             self.pending.pop_front();
             self.ready_at = Some(a.at);
             let Some((hold_at, heading)) = self.hold else {
-                self.status = "Aligned IMU ready; new hold starts from zero".into();
+                self.observe_released(a, q);
+                self.status = if self.device_offset.is_some() {
+                    "Aligned IMU ready; accelerometer offset calibrated"
+                } else {
+                    "Aligned IMU ready; keep still briefly to calibrate"
+                }
+                .into();
                 continue;
             };
             if a.at < hold_at {
@@ -435,7 +601,9 @@ impl Estimator {
             }
             // The accelerometer is in PHONE axes, not the rotated grip axes.
             let local_phone = multiply(heading, q);
-            let mut linear = rotate(local_phone, a.value);
+            let offset = self.device_offset.unwrap_or([0.; 3]);
+            let corrected = std::array::from_fn(|i| a.value[i] - offset[i]);
+            let mut linear = rotate(local_phone, corrected);
             linear[1] -= GRAVITY;
             if linear
                 .iter()
@@ -465,7 +633,12 @@ impl Estimator {
             self.integration = Some(next);
             self.estimate = Some(estimate);
             output = Some(estimate);
-            self.status = "Integrating IMU displacement estimate; drift is uncorrected".into();
+            self.status = if self.device_offset.is_some() {
+                "Using pre-hold accelerometer offset; position can drift"
+            } else {
+                "No quiet calibration yet; position can drift"
+            }
+            .into();
         }
         Ok(output)
     }

@@ -889,7 +889,7 @@ impl Hub {
         let s = self.state.lock().unwrap();
         if let Some(d) = &s.displacement {
             return format!(
-                "{:?} hand · {}\nIMU displacement estimate — position NOT TRACKED\n{}\nPosition (m): {:?}\nVelocity estimate (m/s): {:?}\nEach hold starts at zero displacement/velocity on first aligned sample.\nGravity:9.80665m/s² · heading fixed during hold\nNo damping, deadband or drift correction. No prediction.\nAlignment: orientation brackets acceleration within25ms each side. Gaps>50ms cancel.\nAccelerometer/orientation loss cancels hold; press again after recovery.",
+                "{:?} hand · {}\nIMU displacement estimate — position NOT TRACKED\n{}\nPosition (m): {:?}\nVelocity estimate (m/s): {:?}\nEach hold starts at zero displacement/velocity on first aligned sample.\nGravity:9.80665m/s² · heading fixed during hold\nA quiet half-second before a hold calibrates the accelerometer offset. Displacement can drift. No prediction.\nAlignment: orientation brackets acceleration within25ms each side. Gaps>50ms cancel.\nAccelerometer/orientation loss cancels hold; press again after recovery.",
                 s.selected,
                 if s.held { "HELD" } else { "INACTIVE" },
                 d.status,
