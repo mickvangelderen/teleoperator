@@ -131,6 +131,10 @@ test("freshness observers change during silence without disconnecting", async co
     view.setBigUint64(5, 990_000_000n, true); view.setFloat64(69, 1, true);
     Peer.latest.tracking.onmessage!({ data: bytes.buffer });
     assert.equal(c.state.freshness.status, "Fresh");
+    now = 1007;
+    c.frame(1002, now, 20);
+    assert.equal(c.state.freshness.atMs, now);
+    assert.equal(c.state.freshness.worst?.ageMs, 17, "The frame ages the 990 ms acquisition even between notifications");
     now = 1044; context.mock.timers.tick(48);
     assert.equal(c.state.status, "Connected"); assert.equal(c.state.freshness.status, "Late");
     assert.ok(updates.includes("Late"));

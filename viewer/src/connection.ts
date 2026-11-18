@@ -253,6 +253,7 @@ export class Connection {
     if (this.stopped || !this.visible) return;
     this.renderToPhotonMs = renderToPhotonMs;
     this.session.consume(now, renderToPhotonMs);
+    this.refreshFreshness(now);
     this.timing.frame(frameTime, now);
     if (this.session.phase !== "ready") return;
     for (const sub of this.session.active.values()) {
@@ -313,8 +314,8 @@ export class Connection {
     this.refreshFreshness();
     if (!this.stopped) this.update(this.state);
   }
-  private refreshFreshness() {
-    this.state.freshness = this.session.freshness(performance.now());
+  private refreshFreshness(now = performance.now()) {
+    this.state.freshness = this.session.freshness(now);
   }
   private fail(message: string) {
     this.close();
