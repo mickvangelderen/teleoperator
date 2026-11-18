@@ -4,14 +4,20 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
-    <application android:label="Phone Operator" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+    <application android:label="@string/app_name" android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:allowBackup="false" android:usesCleartextTraffic="true">
         <meta-data android:name="com.google.ar.core" android:value="optional" />
-        <activity android:name="dev.xroperator.phone.MainActivity" android:exported="true" android:screenOrientation="portrait">
+        <activity android:name="android.app.NativeActivity" android:launchMode="singleTask" android:exported="false" android:screenOrientation="portrait">
+            <meta-data android:name="android.app.lib_name" android:value="phone_operator" />
+        </activity>
+        <!-- Preserve the existing launcher component when upgrading the app. -->
+        <activity-alias android:name="dev.xroperator.phone.MainActivity"
+            android:targetActivity="android.app.NativeActivity" android:exported="true">
+            <meta-data android:name="android.app.lib_name" android:value="phone_operator" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
     </application>
 </manifest>

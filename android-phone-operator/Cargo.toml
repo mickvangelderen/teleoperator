@@ -33,7 +33,12 @@ tower-http = { version = "0.7", features = ["timeout"] }
 webrtc = "0.21.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
+arcore = { path = "../arcore" }
+arcore-sys = { path = "../arcore-sys" }
 jni = "0.21.1"
+jni-min-helper = "0.3.4"
+ndk-context = "0.1"
+ndk-sys = "0.6"
 android_logger = { version = "0.15.1", default-features = false }
 
 [patch.crates-io]

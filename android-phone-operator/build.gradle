@@ -33,13 +33,24 @@ android {
     sourceSets.main.jniLibs.srcDir(rustLibs)
 }
 
+configurations { arcoreNative }
+def arcoreSdk = 'com.google.ar:core:1.57.0'
 dependencies {
-    implementation 'com.google.ar:core:1.57.0'
+    implementation arcoreSdk
+    arcoreNative "${arcoreSdk}@aar"
 }
 
+// Cargo links the very same SDK library that the Android plugin packages.
+def unpackArcore = tasks.register('unpackArcore', Sync) {
+    from { zipTree(configurations.arcoreNative.singleFile) }
+    include 'jni/arm64-v8a/libarcore_sdk_c.so'
+    into layout.buildDirectory.dir('arcore')
+}
 def ndkDir = androidComponents.sdkComponents.ndkDirectory
 def nativeApi = android.defaultConfig.minSdk
 def cargoBuild = tasks.register('cargoBuild', Exec) {
+    dependsOn unpackArcore
+    environment 'ARCORE_LIB_DIR', layout.buildDirectory.dir('arcore/jni/arm64-v8a').get().asFile.absolutePath
     // Cargo handles incremental builds, including changes to the Rust/NDK toolchain.
     environment 'ANDROID_NDK_HOME', ndkDir.get().asFile.absolutePath
     commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '--platform', nativeApi.toString(),
