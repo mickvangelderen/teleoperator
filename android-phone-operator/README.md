@@ -54,18 +54,42 @@ packages there. The wrapper downloads Gradle and the build dependencies on first
 ./gradlew assembleDebug
 ```
 
-If your shell cannot find `adb`, run `export PATH="$(android info sdk)/platform-tools:$PATH"`.
+If your shell cannot find `adb`, add the SDK's platform tools to your path.
+
+```sh
+export PATH="$(android info sdk)/platform-tools:$PATH"
+```
 
 Connect the phone to ADB using either method.
 
 - **USB.** Enable **USB debugging**, plug in the phone, and accept the authorization prompt.
-- **Wi-Fi.** Join the same network and enable **Developer options → Wireless debugging**.
-  Run `adb mdns services` to discover phones. On first use, tap **Pair device with pairing code**,
-  run `adb pair IP:PAIRING_PORT` with the address shown, and enter the code.
-  If the paired phone is missing from `adb devices -l`, run `adb connect IP:CONNECTION_PORT`
-  using the address on the main **Wireless debugging** screen.
+- **Wi-Fi.** Connect the phone and computer to the same Wi-Fi network. On the phone,
+  open **Developer options**, enable **Wireless debugging**, then tap the **Wireless debugging**
+  row to open its settings.
 
-Once `adb devices -l` lists the phone as `device`, install or update the APK.
+  1. **Pair once per computer.** If the computer is already paired, skip to step 2.
+     Tap **Pair device with pairing code** to display the six-digit code. Leave that
+     dialog open. In the computer's terminal, substitute the IP and pairing port
+     shown in the dialog, then enter the six-digit code when prompted.
+
+     ```sh
+     adb pair IP:PAIRING_PORT
+     ```
+
+  2. **Check the connection.** On the computer, list connected devices.
+
+     ```sh
+     adb devices -l
+     ```
+
+     If the phone is missing, return to the main **Wireless debugging** screen.
+     Use the **IP address & port** shown there in the following command.
+
+     ```sh
+     adb connect IP:CONNECTION_PORT
+     ```
+
+Once ADB lists the phone as `device`, install or update the APK.
 
 ```sh
 adb install -r build/android/outputs/apk/debug/phone-operator-debug.apk
