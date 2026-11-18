@@ -53,7 +53,7 @@ export class Visualization {
     setAttribute(this.workspace, "data-view", view);
     if (view === "controller" && caps) {
       this.controller ??= new ControllerView(this.controllerHost, caps, this.mapped);
-      this.controller.update(values, now);
+      this.controller.update(values);
     } else if (this.controller) {
       this.controller = undefined; this.controllerHost.replaceChildren();
     }

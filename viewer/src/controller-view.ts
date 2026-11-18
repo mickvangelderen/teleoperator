@@ -1,5 +1,4 @@
 import { setAttribute, setText } from "./dom";
-import { bindings, counterDelta } from "./protocol";
 import type { Capabilities } from "./protocol";
 import type { CurrentValue } from "./tracking-view";
 
@@ -31,31 +30,10 @@ export function mappedControls(c: Capabilities) {
   return controls;
 }
 
-// Compare cumulative observations at display time so a complete tap between frames is visible.
-// A changed accepted slot (including a new peer or a subscription replacement) starts a new baseline.
-export class CounterEdge {
-  private previous?: CurrentValue;
-  changed(current: CurrentValue | undefined) {
-    const old = this.previous;
-    if (!current?.packet || current.stale || (typeof current.value !== "number" && typeof current.value !== "bigint")) {
-      this.previous = undefined;
-      return false;
-    }
-    if (old?.subscription === current.subscription && old.selection === current.selection) {
-      if (current.packet.timestamp <= old.packet!.timestamp) return false;
-      this.previous = current;
-      const format = bindings(current.subscription.request)[current.selection].format;
-      return counterDelta(BigInt(current.value), BigInt(old.value as number | bigint), format) !== 0n;
-    }
-    this.previous = current;
-    return false;
-  }
-}
-
 type Reading = { state: string; sample?: CurrentValue };
 export class ControllerView {
   private readonly indices: Map<string, number>;
-  private readonly refresh: ((read: (path: string) => Reading, values: Map<number, CurrentValue>, now: number) => void)[] = [];
+  private readonly refresh: ((read: (path: string) => Reading) => void)[] = [];
   constructor(host: HTMLElement, private readonly caps: Capabilities, readonly controls: Map<string, number>) {
     this.indices = new Map(caps.descriptors.map((d, i) => [d.id, i]));
     const pad = document.createElement("div");
@@ -105,30 +83,18 @@ export class ControllerView {
         const cell = document.createElement("div"), name = document.createElement("b"), state = document.createElement("span");
         name.textContent = label; cell.dataset.control = key + "/click"; cell.append(name, state);
         group.append(cell);
-        const presses = new CounterEdge(), releases = new CounterEdge();
         const path = key + "/click", index = controls.get(path), descriptor = index === undefined ? undefined : caps.descriptors[index];
         if (descriptor) cell.title = descriptor.name || descriptor.id;
-        let until = 0, edge = "", source: CurrentValue | undefined;
-        this.refresh.push((read, values, now) => {
+        this.refresh.push(read => {
           const button = read(path), value = button.sample?.value;
-          if (source?.subscription !== button.sample?.subscription || source?.selection !== button.sample?.selection) until = 0;
-          source = button.sample;
-          const counter = (id: number | null | undefined) => {
-            const v = id == null ? undefined : values.get(id);
-            return button.sample && v?.subscription === button.sample.subscription ? v : undefined;
-          };
-          const press = presses.changed(counter(descriptor?.press_count_sample)), release = releases.changed(counter(descriptor?.release_count_sample));
-          if (typeof value !== "boolean") until = 0;
-          if (press || release) { edge = press && release ? "Tap" : press ? "Press edge" : "Release edge"; until = now + 400; }
           setAttribute(cell, "data-held", value === true ? "" : null);
-          setAttribute(cell, "data-edge", now < until ? "" : null);
-          setText(state, (typeof value === "boolean" ? value ? "Pressed" : "Released" : button.state) + (now < until ? " · " + edge : ""));
+          setText(state, typeof value === "boolean" ? value ? "Pressed" : "Released" : button.state);
         });
       }
     }
   }
 
-  update(values: Map<number, CurrentValue>, now: number) {
+  update(values: Map<number, CurrentValue>) {
     const read = (path: string): Reading => {
       const index = this.controls.get(path);
       if (index === undefined) return { state: "Not advertised" };
@@ -148,6 +114,6 @@ export class ControllerView {
       }
       return { state: "", sample };
     };
-    for (const refresh of this.refresh) refresh(read, values, now);
+    for (const refresh of this.refresh) refresh(read);
   }
 }

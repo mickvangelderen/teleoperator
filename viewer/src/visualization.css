@@ -25,7 +25,6 @@
 .pad-diamond > div, .pad-buttons > div { border: 1px solid var(--line); border-radius: var(--radius-control); padding: var(--space-1); }
 .gamepad [data-held] { background: var(--accent-strong); color: var(--on-accent); }
 .gamepad [data-held] span { color: inherit; }
-.gamepad [data-edge] { outline: 2px solid var(--accent); }
 #sample-inspector { padding: var(--space-4); }
 .inspect-selector { margin-bottom: var(--space-3); flex-wrap: wrap; }
 .inspect-selector select { max-width: 100%; }
