@@ -1,8 +1,8 @@
 import { Quaternion, Vector3 } from "three";
 import type { Pose, PoseFrame, JointHierarchy } from "./body-model";
 import type { Session, Subscription } from "./session";
-import { selectedPacket } from "./session";
-import { width, publicationRate } from "./protocol";
+import { selectedBundle } from "./session";
+import { width, publicationRate, bindings, restGroup, changedOnly } from "./protocol";
 import type { Packet, Value } from "./protocol";
 
 export const poseSources = new Map([
@@ -10,8 +10,17 @@ export const poseSources = new Map([
   ["/user/hand/left/input/aim/pose", "left/aim"], ["/user/hand/left/input/grip/pose", "left/grip"],
   ["/user/hand/right/input/aim/pose", "right/aim"], ["/user/hand/right/input/grip/pose", "right/grip"],
 ]);
-export const stale = (s: Subscription, now: number) => s.arrivedAt === undefined || (s.request.schedule.kind !== "onChange" && now - (s.acquiredAtArrival ?? s.arrivedAt) > Math.max(500, 3000 / publicationRate(s.request)));
-export type CurrentValue = { value: Value | null; stale: boolean; subscription: Subscription; selection: number; packet?: Packet };
+export const staleBundle = (s: Subscription, index: number, now: number, retainedDefinition = false) => {
+  const b = selectedBundle(s, index);
+  if (!b) return true;
+  if (retainedDefinition || (index > 0 && changedOnly(s.request))) return false;
+  // Mixed bundles share the continuous bundle's source-acquisition progress.
+  // New sequences with cached acquisitions and delayed per-bundle repairs cannot
+  // extend it. Omitted bundles keep their own original acquisition timestamps.
+  const progress = index === 0 ? b.acquiredAtArrival : s.acquiredAtArrival;
+  return progress === undefined || now - progress > Math.max(500, 3000 / publicationRate(s.request));
+};
+export type CurrentValue = { value: Value | null; stale: boolean; retained: boolean; subscription: Subscription; selection: number; packet?: Packet };
 export function currentValues(session: Session | undefined, now: number) {
   const values = new Map<number, CurrentValue>();
   const distance = (packet: Packet | undefined) => {
@@ -20,13 +29,18 @@ export function currentValues(session: Session | undefined, now: number) {
     return delta < 0n ? -delta : delta;
   };
   for (const s of session?.active.values() ?? []) {
-    const packet = selectedPacket(s);
-    s.request.samples.forEach((sample, i) => {
-      const old = values.get(sample.descriptor);
-      const error = distance(packet), previousError = distance(old?.packet);
-      const closer = error !== undefined && previousError !== undefined && error !== previousError
-        ? error < previousError : (packet?.timestamp ?? -1n) > (old?.packet?.timestamp ?? -1n);
-      if (!old || closer) values.set(sample.descriptor, { value: packet?.values[i] ?? null, stale: stale(s, now), subscription: s, selection: i, packet });
+    const retainedDefinition = !!session?.capabilities && restGroup(session.capabilities, s.request.group);
+    let i = 0;
+    s.request.bundles.forEach((bundle, index) => {
+      const received = selectedBundle(s, index), packet = received?.packet;
+      bundle.forEach((sample, within) => {
+        const old = values.get(sample.descriptor);
+        const error = distance(packet), previousError = distance(old?.packet);
+        const closer = error !== undefined && previousError !== undefined && error !== previousError
+          ? error < previousError : (packet?.timestamp ?? -1n) > (old?.packet?.timestamp ?? -1n);
+        if (!old || closer) values.set(sample.descriptor, { value: received?.values[within] ?? null, stale: staleBundle(s, index, now, retainedDefinition), retained: index > 0, subscription: s, selection: i, packet });
+        i++;
+      });
     });
   }
   return values;
@@ -40,33 +54,31 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
   const outdated = new Set<number>();
   if (c) {
     for (const s of session?.active.values() ?? []) {
-      const packet = selectedPacket(s);
       const group = s.request.group, known = session?.revisions.get(group);
-      if (!known || stale(s, now)) continue;
-      // The self-revision proves which snapshot this publication contains. When it
-      // was omitted, OnChange can retain unchanged selected values across revisions.
-      const revisionIndex = s.request.samples.findIndex(selection => {
-        const revision = c.descriptors[selection.descriptor];
-        return revision.kind === 11 && revision.revision_of === group;
+      if (!known) continue;
+      const selections = bindings(s.request);
+      const revision = selections.find(selection => {
+        const d = c.descriptors[selection.descriptor]; return d.kind === 11 && d.revision_of === group;
       });
-      const value = packet?.values[revisionIndex];
+      const value = revision && current.get(revision.descriptor)?.value;
       if (value != null) {
-        const bits = 8 * width(s.request.samples[revisionIndex].format);
+        const bits = 8 * width(revision!.format);
         if (BigInt.asUintN(Math.min(known.bits, bits), known.value) !== BigInt.asUintN(Math.min(known.bits, bits), BigInt(value as number | bigint))) outdated.add(group);
-      } else if (s.request.schedule.kind !== "onChange" && packet && known.changedAt !== undefined && packet.timestamp < known.changedAt) outdated.add(group);
+      }
     }
   }
   const located = (index: number): LocatedPose | undefined => {
     const d = c!.descriptors[index], value = read(index), sample = current.get(index);
     if (!sample || !Array.isArray(value) || outdated.has(d.group)) return;
+    const quality = (index: number | null | undefined) => index == null || current.get(index)?.packet?.timestamp !== sample.packet?.timestamp ? null : read(index);
     let flags = 0;
     for (const [field, bit, fallback] of [["position_valid_sample", 2, true], ["orientation_valid_sample", 1, true], ["position_tracked_sample", 8, false], ["orientation_tracked_sample", 4, false]] as const) {
-      if (d[field] == null ? fallback : read(d[field]) === true) flags |= bit;
+      if (d[field] == null ? fallback : quality(d[field]) === true) flags |= bit;
     }
-    const tracking = [read(d.position_tracked_sample), read(d.orientation_tracked_sample)];
+    const tracking = [quality(d.position_tracked_sample), quality(d.orientation_tracked_sample)];
     // Missing tracking samples (including rest poses) are unknown, not a reported tracking loss.
     const tracked = tracking.includes(false) ? false : tracking.every(v => v === true) ? true : undefined;
-    return { pose: { position: value.slice(0, 3), orientation: value.slice(3), flags, active: flags !== 0, tracked }, space: sample.subscription.request.samples[sample.selection].space };
+    return { pose: { position: value.slice(0, 3), orientation: value.slice(3), flags, active: flags !== 0, tracked }, space: bindings(sample.subscription.request)[sample.selection].space };
   };
   const skeletonSamples = new Set<number>();
   c?.skeletons.forEach((skeleton, skeletonIndex) => {

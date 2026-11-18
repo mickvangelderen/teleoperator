@@ -53,7 +53,8 @@ export async function checkFrameRate(page) {
 
 export async function checkMetricMedians(page) {
   const result = await page.evaluate(async () => {
-    const { Session } = await import("/src/session.ts");
+    const sessionUrl = performance.getEntriesByType("resource").find(e => new URL(e.name).pathname === "/src/session.ts")?.name ?? "/src/session.ts";
+    const { Session } = await import(sessionUrl);
     const { SpatialView } = await import("/src/spatial.ts");
     const requestFrame = window.requestAnimationFrame, sampleAge = Session.prototype.sampleAge;
     const freshness = Session.prototype.freshness, latency = Session.prototype.latestNetworkLatency;
@@ -81,7 +82,7 @@ export async function checkMetricMedians(page) {
       const packet = tracking.apply(this, args);
       if (packet) {
         const sub = this.active.get(packet.id);
-        if (sub.request.schedule.kind !== "onChange") { sub.arrivals = Array(Math.max(0, estimate ?? 0)).fill(args[1]); subscriptions.add(sub); }
+        if (sub.request.bundles[0].length > 0) { sub.arrivals = Array(Math.max(0, estimate ?? 0)).fill(args[1]); subscriptions.add(sub); }
       }
       return packet;
     };

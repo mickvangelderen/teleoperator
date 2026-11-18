@@ -13,31 +13,36 @@ export const preferredFormat = (d: Descriptor) => d.kind === 10 && d.formats.inc
 export type Joint = { parent: number; pose_sample: number; rest_pose_sample: number };
 export type Capabilities = { groups: number[]; descriptors: Descriptor[]; skeletons: { joints: Joint[] }[] };
 export function restGroup(c: Capabilities, group: number) {
-  const rest = new Set(c.skeletons.flatMap(s => s.joints.map(j => j.rest_pose_sample)));
+  const live = new Set(c.skeletons.flatMap(s => s.joints.map(j => j.pose_sample)));
+  const rest = new Set(c.skeletons.flatMap(s => s.joints.map(j => j.rest_pose_sample)).filter(i => !live.has(i)));
   return c.descriptors.some((d, i) => d.group === group && rest.has(i))
     && c.descriptors.every((d, i) => d.group !== group || rest.has(i) || d.kind === 11);
 }
 export type Selection = { descriptor: number; format: number; space: number };
 export const NON_MAX = 0xffffffffffffffffn;
-export type Schedule = { kind: "periodic"; interval: bigint; phase: bigint; consumptionDelay: bigint } | { kind: "onChange" };
-export const periodic = (rate: number, phase = 0n, consumptionDelay = 0n): Schedule => {
+export type Timing = { interval: bigint; phase: bigint; predictionOffset: bigint };
+export const timing = (rate: number, phase = 0n, predictionOffset = 0n): Timing => {
   check(Number.isFinite(rate) && rate > 0, "Invalid publication rate");
-  return { kind: "periodic", interval: BigInt(Math.ceil(1e9 / rate)), phase, consumptionDelay };
+  const result = { interval: BigInt(Math.ceil(1e9 / rate)), phase, predictionOffset };
+  validateTiming(result); return result;
 };
-export const publicationRate = (r: Request) => r.schedule.kind === "periodic" ? 1e9 / Number(r.schedule.interval) : 0;
-export function validateSchedule(schedule: Schedule, maxRate = Infinity) {
-  if (schedule.kind === "onChange") return;
-  check(schedule.kind === "periodic" && [schedule.interval, schedule.phase, schedule.consumptionDelay].every(v => typeof v === "bigint" && v >= 0n && v < NON_MAX)
-    && schedule.interval > 0n && Number(schedule.interval) >= Math.ceil(1e9 / maxRate), "Invalid publication schedule");
+export const publicationRate = (r: Timing) => 1e9 / Number(r.interval);
+export function validateTiming(t: Timing) {
+  check([t.interval, t.phase, t.predictionOffset].every(v => typeof v === "bigint" && v >= 0n && v < NON_MAX)
+    && t.interval > 0n, "Invalid publication timing");
 }
-export type Request = { id: number; group: number; delivery: number; schedule: Schedule; samples: Selection[] };
+export type SequenceNumberFormat = 1 | 2 | 3;
+export const sequenceWidth = (format: SequenceNumberFormat | null) => format === null ? 0 : 2 ** format;
+export type Request = Timing & { id: number; group: number; delivery: number; sequenceNumberFormat: SequenceNumberFormat | null; bundles: Selection[][] };
+export const bindings = (r: Request) => r.bundles.flat();
+export const changedOnly = (r: Request) => r.bundles[0].length === 0;
 export type ServerMessage =
   | { tag: 2; version: number } | { tag: 3; capabilities: Capabilities }
   | { tag: 5; id: number } | { tag: 6; id: number; reason?: string }
   | { tag: 8; id: number; reason: string }
   | { tag: 9; body: Uint8Array };
 export type Value = boolean | number | bigint | number[];
-export type Packet = { id: number; timestamp: bigint; predictedFor: bigint | null; values: Value[] };
+export type Packet = { id: number; timestamp: bigint; predictedFor: bigint | null; sequenceNumber: bigint | null; bundles: (Value[] | null)[] };
 export const components = (kind: number) => kind === 9 ? 2 : kind === 10 ? 7 : 1;
 export const width = (format: number) => [0, 0, 1, 2, 4, 8, 1, 2, 4, 8, 4, 8, 1, 2, 1, 2][format] ?? 0;
 export const counterKind = (kind: number) => [3, 4, 6, 7, 11].includes(kind);
@@ -56,9 +61,9 @@ export function validateCapabilities(c: Capabilities) {
   check(c.groups.every(r => Number.isFinite(r) && r > 0), "Invalid group rate");
   check(unique(c.descriptors.map(d => d.id)), "Duplicate sample id");
   for (const d of c.descriptors) {
-    check(d.id.length && d.group < c.groups.length, "Invalid sample identity or group");
-    check(d.formats.length && unique(d.formats) && d.formats.every(f => compatible(d.kind, f)), "Invalid sample formats");
-    check(d.kind === 10 ? d.spaces.length && unique(d.spaces) && d.spaces.every(s => s >= 1 && s <= 6) : d.spaces.length === 0, "Invalid reference spaces");
+    check(Number.isInteger(d.group) && d.group >= 0 && d.group < c.groups.length, "Invalid sample group");
+    check(d.formats.length && d.formats.every(f => compatible(d.kind, f)), "Invalid sample formats");
+    check(d.kind === 10 ? d.spaces.length && d.spaces.every(s => s >= 1 && s <= 6) : d.spaces.length === 0, "Invalid reference spaces");
     for (const field of referenceFields(d.kind)) {
       const index = d[field];
       check(index == null || c.descriptors[index]?.kind === referenceKinds[field], "Invalid descriptor reference");
@@ -67,28 +72,53 @@ export function validateCapabilities(c: Capabilities) {
   }
   check(c.skeletons.length <= 128, "Skeleton resource limit");
   let joints = 0;
+  const parents = new Map<number, Set<number>>();
   for (const skeleton of c.skeletons) {
     joints += skeleton.joints.length;
     check(skeleton.joints.length && joints <= 4096, "Joint resource limit");
     for (const joint of skeleton.joints) {
       check(Number.isInteger(joint.parent) && joint.parent >= 0 && joint.parent < skeleton.joints.length && [joint.pose_sample, joint.rest_pose_sample].every(i => c.descriptors[i]?.kind === 10), "Invalid skeleton reference");
+      for (const field of ["pose_sample", "rest_pose_sample"] as const) {
+        const targets = parents.get(joint[field]) ?? new Set<number>();
+        targets.add(skeleton.joints[joint.parent][field]); parents.set(joint[field], targets);
+      }
+    }
+    const resolved = new Set<number>();
+    for (let i = 0; i < skeleton.joints.length; i++) {
+      const visiting = new Set<number>(); let at = i;
+      while (!resolved.has(at)) {
+        check(!visiting.has(at), "Skeleton parent cycle"); visiting.add(at);
+        const parent = skeleton.joints[at].parent;
+        if (parent === at) break;
+        at = parent;
+      }
+      for (const index of visiting) resolved.add(index);
     }
   }
+  c.descriptors.forEach((d, i) => {
+    if (d.spaces.includes(5)) check(parents.get(i)?.size === 1, "Ambiguous or missing parent frame");
+  });
 }
+
 export function validateRequest(c: Capabilities, r: Request) {
   check(r.delivery === 1 || r.delivery === 2, "Unsupported delivery mode");
   check(Number.isInteger(r.id) && r.id >= 0 && r.id <= 0xffffffff, "Invalid subscription id");
   check(Number.isInteger(r.group) && r.group >= 0 && r.group < c.groups.length, "Unknown group");
-  validateSchedule(r.schedule, c.groups[r.group]);
-  check(r.samples.length && unique(r.samples.map(s => s.descriptor)), "Empty or duplicate sample selection");
-  let size = 20, bits = 0;
-  for (const s of r.samples) {
-    const d = c.descriptors[s.descriptor];
-    check(d && d.group === r.group && d.formats.includes(s.format) && compatible(d.kind, s.format), "Unsupported sample selection");
-    check(d.kind === 10 ? d.spaces.includes(s.space) : s.space === 0, "Unsupported reference space");
-    if (s.format === 1) bits++; else size += components(d.kind) * width(s.format);
+  validateTiming(r);
+  check(r.sequenceNumberFormat === null || [1, 2, 3].includes(r.sequenceNumberFormat), "Invalid sequence format");
+  check(r.bundles.length > 0 && (r.bundles.length === 1 || r.sequenceNumberFormat !== null), "Invalid bundle layout");
+  let size = 21 + sequenceWidth(r.sequenceNumberFormat) + Math.ceil((r.bundles.length - 1) / 8);
+  for (const bundle of r.bundles) {
+    let bits = 0;
+    for (const s of bundle) {
+      const d = c.descriptors[s.descriptor];
+      check(d && d.group === r.group && d.formats.includes(s.format) && compatible(d.kind, s.format), "Unsupported sample selection");
+      check(d.kind === 10 ? d.spaces.includes(s.space) : s.space === 0, "Unsupported reference space");
+      if (s.format === 1) bits++; else size += components(d.kind) * width(s.format);
+    }
+    size += Math.ceil(bits / 8);
   }
-  check(size + Math.ceil(bits / 8) + 1 <= MAX_SERVER_MESSAGE, "Publication too large");
+  check(size <= MAX_SERVER_MESSAGE, "Publication too large");
 }
 class Reader {
   at = 0;
@@ -151,7 +181,6 @@ export function decodeServer(bytes: Uint8Array): ServerMessage {
     default: throw new Error("Invalid server message tag or direction");
   }
   r.done();
-  if (message.tag === 8) check(message.reason.length > 0, "Missing reason");
   return message;
 }
 class Writer {
@@ -160,28 +189,50 @@ class Writer {
   u16(n: number) { this.bytes.push(n & 255, n >>> 8); }
   u32(n: number) { this.bytes.push(n & 255, n >>> 8 & 255, n >>> 16 & 255, n >>> 24); }
   u64(n: bigint) { const b = new ArrayBuffer(8); new DataView(b).setBigUint64(0, n, true); this.bytes.push(...new Uint8Array(b)); }
-  schedule(s: Schedule) {
-    validateSchedule(s); this.u8(s.kind === "periodic" ? 1 : 2);
-    if (s.kind === "periodic") { this.u64(s.interval); this.u64(s.phase); this.u64(s.consumptionDelay); }
+  timing(t: Timing) {
+    validateTiming(t); this.u64(t.interval); this.u64(t.phase); this.u64(t.predictionOffset);
+  }
+  sequence(format: SequenceNumberFormat, value: bigint) {
+    check(value >= 0n && value < (1n << BigInt(sequenceWidth(format) * 8)), "Invalid sequence number");
+    if (format === 1) this.u16(Number(value)); else if (format === 2) this.u32(Number(value)); else this.u64(value);
   }
   finish() { return new Uint8Array(this.bytes); }
 }
 export function offer() { const w = new Writer(); w.u8(1); w.u32(1); w.u16(1); return w.finish(); }
 export function subscribe(r: Request) {
-  const w = new Writer(); w.u8(4); w.u32(r.id); w.u32(r.group); w.u32(r.samples.length);
-  for (const s of r.samples) { w.u32(s.descriptor); w.u8(s.format); if (s.space) w.u8(s.space); }
-  w.u8(r.delivery); w.schedule(r.schedule); return w.finish();
+  const w = new Writer(); w.u8(4); w.u32(r.id); w.u32(r.group); w.u8(r.delivery); w.timing(r);
+  w.u8(r.sequenceNumberFormat ?? 0); w.u32(r.bundles.length);
+  for (const bundle of r.bundles) {
+    w.u32(bundle.length);
+    for (const s of bundle) { w.u32(s.descriptor); w.u8(s.format); if (s.space) w.u8(s.space); }
+  }
+  return w.finish();
 }
 export function unsubscribe(id: number) { const w = new Writer(); w.u8(7); w.u32(id); return w.finish(); }
-export function updateSchedule(id: number, schedule: Schedule) { const w = new Writer(); w.u8(12); w.u32(id); w.schedule(schedule); return w.finish(); }
+export function updateSchedule(id: number, timing: Timing) { const w = new Writer(); w.u8(12); w.u32(id); w.timing(timing); return w.finish(); }
+export function acknowledge(id: number, format: SequenceNumberFormat, sequence: bigint) {
+  const w = new Writer(); w.u8(13); w.u32(id); w.sequence(format, sequence); return w.finish();
+}
+// Positions are unwrapped relative to the newest subscription sequence, not a bundle's last sequence.
+export function sequencePosition(sequence: bigint, newest: bigint | undefined, format: SequenceNumberFormat): bigint | null {
+  if (newest === undefined) return sequence;
+  const bits = sequenceWidth(format) * 8, range = 1n << BigInt(bits), half = range / 2n;
+  const forward = BigInt.asUintN(bits, sequence - newest);
+  return forward === half ? null : newest + (forward < half ? forward : forward - range);
+}
 export function decodeTracking(bytes: Uint8Array, c: Capabilities, request: Request): Packet {
   check(bytes.length <= (MAX_SERVER_MESSAGE - 1), "Publication size limit");
   const r = new Reader(bytes), id = r.u32(), timestamp = r.u64(), predicted = r.u64();
   const predictedFor = predicted === NON_MAX ? null : predicted;
   check(id === request.id && timestamp < NON_MAX, "Unexpected subscription or invalid acquisition time");
-  const booleans = r.bitmap(request.samples.filter(s => s.format === 1).length);
-  let bit = 0;
-  const values = request.samples.map((s): Value => {
+  const sequenceNumber = request.sequenceNumberFormat === null ? null
+    : request.sequenceNumberFormat === 1 ? BigInt(r.u16()) : request.sequenceNumberFormat === 2 ? BigInt(r.u32()) : r.u64();
+  const present = r.bitmap(request.bundles.length - 1);
+  const bundles = request.bundles.map((bundle, index) => {
+    if (index && !present(index - 1)) return null;
+    const booleans = r.bitmap(bundle.filter(s => s.format === 1).length);
+    let bit = 0;
+    return bundle.map((s): Value => {
     const d = c.descriptors[s.descriptor]; check(compatible(d.kind, s.format), "Invalid layout");
     if (s.format === 1) return booleans(bit++);
     const v = Array.from({ length: components(d.kind) }, () => r.number(s.format));
@@ -194,7 +245,8 @@ export function decodeTracking(bytes: Uint8Array, c: Capabilities, request: Requ
     }
     return v.length === 1 ? v[0] : v as number[];
   });
-  r.done(); return { id, timestamp, predictedFor, values };
+  });
+  r.done(); return { id, timestamp, predictedFor, sequenceNumber, bundles };
 }
 export function counterDelta(current: bigint, previous: bigint, format: number) {
   return BigInt.asUintN(width(format) * 8, current - previous);

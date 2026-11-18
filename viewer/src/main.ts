@@ -1,8 +1,8 @@
 import { Connection, initialState } from "./connection";
-import { spatialFrames, stale } from "./tracking-view";
-import { spaceNames, publicationRate } from "./protocol";
+import { spatialFrames, staleBundle } from "./tracking-view";
+import { spaceNames, publicationRate, changedOnly, restGroup } from "./protocol";
 import type { Session } from "./session";
-import { selectedPacket } from "./session";
+import { selectedBundle } from "./session";
 import type { State } from "./connection";
 import "./style.css";
 import type { SpatialView } from "./spatial";
@@ -51,7 +51,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     </section>
     <section class="panel workspace">
       <div class="viewport"><div id="poses"></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Ready to connect</h3><p id="workspace-note">Connect to inspect the device’s tracking data.</p></div></div>
-      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="20" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><span id="prediction-lead">Prediction lead: unavailable</span><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
+      <div class="view-controls control-row"><label>Skeleton <select id="skeleton-view"><option value="live">Live</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="20" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><div class="prediction-timing" aria-label="Prediction timing"><span id="prediction-offset-label">Prediction timing</span><span id="requested-prediction-offset" title="Requested offset from the publication slot to the desired device target. This does not establish actual prediction.">Requested: unavailable</span><span id="measured-prediction-offset" title="Actual device target minus acquisition time (predicted_for − acquired_at), when the source reports a target. Publication time is not supplied, so this is not measured publication-to-consumption delay.">Device target − acquisition: unavailable</span></div><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
     </section>
     <section class="panel subscriptions-panel"><span id="sample-summary" class="tag">No capabilities</span><p id="publication-status" class="publication-status status-message" role="status"></p><div id="subscriptions" class="subscriptions"><p>Connect to discover selectable samples.</p></div></section>
     <section class="panel performance-panel" id="performance" aria-label="Performance profiling"></section>
@@ -94,7 +94,7 @@ const animate = (frameTime: number) => {
   const rest = element<HTMLSelectElement>("skeleton-view").value === "rest";
   const subscriptions = [...(session?.active.values() ?? [])];
   const overlappingGroups = new Set(subscriptions.map(s => s.request.group)).size < subscriptions.length;
-  const key = `${rest}:${overlappingGroups ? session?.consumptionTime : ""}:` + subscriptions.map(s => { const p = selectedPacket(s); return `${s.generation}:${p?.timestamp}:${p?.predictedFor}:${stale(s, now)}`; }).join(";");
+  const key = `${rest}:${overlappingGroups ? session?.consumptionTime : ""}:` + subscriptions.map(s => `${s.generation}:${s.version}:` + s.bundles.map((_, i) => { const p = selectedBundle(s, i)?.packet; return `${p?.timestamp}:${p?.predictedFor}:${staleBundle(s, i, now)}`; }).join(",")).join(";");
   if (key !== spatialKey) {
     spatialKey = key;
     trackingView = spatialFrames(session, now, rest);
@@ -158,8 +158,8 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   const subscriptions = [...session?.active.values() ?? []];
   const received = subscriptions.filter(s => s.arrivedAt !== undefined);
   const rates = subscriptions.map(s => ({
-    key: `${s.request.id}:${s.generation}`, group: s.request.group, onChange: s.request.schedule.kind === "onChange",
-    requested: s.request.schedule.kind === "onChange" ? undefined : publicationRate(s.request),
+    key: `${s.request.id}:${s.generation}`, group: s.request.group, onChange: changedOnly(s.request),
+    requested: changedOnly(s.request) ? undefined : publicationRate(s.request),
     actual: s.arrivals.filter(at => at > now - 1000 && at <= now).length,
   }));
   const displayedRate = arrivalRateMedian.update(subscriptions.length ? rates.reduce((sum, s) => sum + s.actual, 0) : undefined, now);
@@ -169,8 +169,9 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     ...s.requested === undefined ? [] : [{ key: `${s.key}:requested`, value: s.requested, color: groupColor(s.group), dashed: true, className: "arrival-requested-line" }],
     { key: `${s.key}:actual`, value: s.actual, color: groupColor(s.group), className: "arrival-actual-line" },
   ]), now);
-  const sampleTime = received.filter(s => s.request.schedule.kind !== "onChange" && s.request.samples.some(sample => session!.capabilities!.descriptors[sample.descriptor].kind === 10))
-    .reduce<bigint | undefined>((latest, s) => { const p = selectedPacket(s); const time = p && (p.predictedFor ?? p.timestamp); return time !== undefined && (latest === undefined || time > latest) ? time : latest; }, undefined);
+  const definitions = new Set(session?.capabilities?.groups.flatMap((_, group) => restGroup(session.capabilities!, group) ? [group] : []) ?? []);
+  const sampleTime = [...view.values.entries()].filter(([index, value]) => !value.stale && session?.capabilities?.descriptors[index].kind === 10 && !definitions.has(session.capabilities.descriptors[index].group))
+    .reduce<bigint | undefined>((latest, [, value]) => { const p = value.packet, time = p && (p.predictedFor ?? p.timestamp); return time !== undefined && (latest === undefined || time > latest) ? time : latest; }, undefined);
   const sampleAge = sampleTime === undefined ? undefined : session?.sampleAge(sampleTime, now, renderToPhotonMs);
   const age = sampleAgeMedian.update(sampleAge, now);
   element<MetricDisplay>("age-metric").update(age);
@@ -183,8 +184,12 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   element<MetricDisplay>("frame-metric").update(displayedFps);
   frameChart.update([{ key: "frames", value: fps, color: neutralColor }], now);
   ageChart.update([{ key: "age", value: sampleAge, color: neutralColor }], now);
-  const prediction = received.find(s => s.packet?.predictedFor != null)?.packet;
-  text("prediction-lead", prediction?.predictedFor == null ? "Prediction lead: unavailable" : `Prediction lead: ${(Number(prediction.predictedFor - prediction.timestamp) / 1e6).toFixed(1)} ms`);
+  const timing = received.find(s => s.packet?.predictedFor != null)
+    ?? subscriptions[0];
+  const prediction = timing?.packet, schedule = timing?.request;
+  text("prediction-offset-label", timing ? `Prediction timing · Group ${timing.request.group}` : "Prediction timing");
+  text("requested-prediction-offset", schedule ? `Requested: ${(Number(schedule.predictionOffset) / 1e6).toFixed(1)} ms` : "Requested: unavailable");
+  text("measured-prediction-offset", prediction?.predictedFor == null ? "Device target − acquisition: unavailable" : `Device target − acquisition: ${(Number(prediction.predictedFor - prediction.timestamp) / 1e6).toFixed(1)} ms`);
   const values = view.values;
   const visiblePoses = view.poses.poses.length + (view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0);
   const visibleJoints = view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0;

@@ -1,5 +1,6 @@
 //! Version 1 wire records and connection-local subscription state.
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 // The pinned WebRTC callback receiver has a fixed 65,535-byte buffer.
 pub const MAX_CLIENT_MESSAGE: usize = 65_535;
@@ -40,77 +41,135 @@ pub struct Capabilities {
     pub skeletons: Vec<Vec<Joint>>,
 }
 #[derive(Clone, Debug, PartialEq)]
-pub struct Selection {
+pub struct SampleBinding {
     pub descriptor: u32,
     pub format: u8,
     pub space: u8,
 }
-#[derive(Clone, Debug, PartialEq)]
-pub enum Schedule {
-    Periodic {
-        interval: u64,
-        phase: u64,
-        consumption_delay: u64,
-    },
-    OnChange,
+/// Nanosecond timing is direct protocol data, with no publication modes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timing {
+    pub interval: u64,
+    pub phase: u64,
+    pub prediction_offset: u64,
 }
-impl Schedule {
-    pub fn validate(&self, max_rate: f32, now: u64) -> Result<()> {
-        if let Self::Periodic {
-            interval,
-            phase,
-            consumption_delay,
-        } = *self
+impl Timing {
+    pub fn validate(&self) -> Result<()> {
+        if self.interval == 0
+            || [self.interval, self.phase, self.prediction_offset].contains(&u64::MAX)
         {
-            if interval == 0
-                || [interval, phase, consumption_delay].contains(&u64::MAX)
-                || (interval as f64) < (1e9 / max_rate as f64).ceil()
-            {
-                return Err("Unsupported publication schedule".into());
-            }
-            self.next_at(now)
-                .and_then(|time| time.checked_add(consumption_delay))
-                .filter(|target| *target < u64::MAX)
-                .ok_or("Schedule time overflow")?;
+            return Err("Invalid required duration".into());
         }
         Ok(())
     }
     pub fn next_at(&self, now: u64) -> Option<u64> {
-        match *self {
-            Self::Periodic {
-                interval, phase, ..
-            } if interval > 0 => {
-                let offset = (phase as u128 + interval as u128 - now as u128 % interval as u128)
-                    % interval as u128;
-                u64::try_from(now as u128 + offset)
-                    .ok()
-                    .filter(|t| *t < u64::MAX)
-            }
-            _ => None,
-        }
+        self.validate().ok()?;
+        let offset = (self.phase as u128 + self.interval as u128
+            - now as u128 % self.interval as u128)
+            % self.interval as u128;
+        u64::try_from(now as u128 + offset)
+            .ok()
+            .filter(|t| *t < u64::MAX)
+    }
+    pub fn target_at(&self, opportunity: u64) -> Option<u64> {
+        opportunity
+            .checked_add(self.prediction_offset)
+            .filter(|t| *t < u64::MAX)
     }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     pub id: u32,
     pub group: u32,
-    pub delivery: u8,
-    pub schedule: Schedule,
-    pub samples: Vec<Selection>,
+    pub channel: u8,
+    pub interval: u64,
+    pub phase: u64,
+    pub prediction_offset: u64,
+    pub sequence_number_format: Option<SequenceNumberFormat>,
+    pub bundles: Vec<Vec<SampleBinding>>,
+}
+impl Request {
+    pub fn timing(&self) -> Timing {
+        Timing {
+            interval: self.interval,
+            phase: self.phase,
+            prediction_offset: self.prediction_offset,
+        }
+    }
+    pub fn bindings(&self) -> impl Iterator<Item = &SampleBinding> {
+        self.bundles.iter().flatten()
+    }
+    pub fn validate_structure(&self, c: &Capabilities) -> Result<()> {
+        self.timing().validate()?;
+        if self.group == u32::MAX
+            || !matches!(self.channel, 1 | 2)
+            || self.bundles.is_empty()
+            || (self.bundles.len() > 1 && self.sequence_number_format.is_none())
+        {
+            return Err("Invalid subscription structure".into());
+        }
+        for binding in self.bindings() {
+            let d = c
+                .descriptors
+                .get(binding.descriptor as usize)
+                .ok_or("Unknown descriptor in binding layout")?;
+            if !(1..=15).contains(&binding.format)
+                || (d.kind == 10 && !(1..=6).contains(&binding.space))
+                || (d.kind != 10 && binding.space != 0)
+            {
+                return Err("Invalid binding enum or layout".into());
+            }
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SequenceNumberFormat {
+    U16 = 1,
+    U32 = 2,
+    U64 = 3,
+}
+impl SequenceNumberFormat {
+    pub fn from_tag(tag: u8) -> Result<Option<Self>> {
+        match tag {
+            0 => Ok(None),
+            1 => Ok(Some(Self::U16)),
+            2 => Ok(Some(Self::U32)),
+            3 => Ok(Some(Self::U64)),
+            _ => Err("Invalid sequence format".into()),
+        }
+    }
+    pub fn width(self) -> usize {
+        match self {
+            Self::U16 => 2,
+            Self::U32 => 4,
+            Self::U64 => 8,
+        }
+    }
+    pub fn mask(self) -> u64 {
+        u64::MAX >> (64 - self.width() * 8)
+    }
+    pub fn half(self) -> u64 {
+        1 << (self.width() * 8 - 1)
+    }
+    pub fn next(self, sequence: u64) -> u64 {
+        sequence.wrapping_add(1) & self.mask()
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
     Publication(Vec<u8>),
     Offer(Vec<u16>),
     Selection(u16),
-    Capabilities(Capabilities),
+    Capabilities(Arc<Capabilities>),
     Subscribe(Request),
     SubscribeBody(Vec<u8>),
     Accepted { id: u32 },
     Rejected { id: u32, reason: Option<String> },
     Unsubscribe { id: u32 },
     Ended { id: u32, reason: String },
-    UpdateSchedule { id: u32, schedule: Schedule },
+    UpdateSchedule { id: u32, timing: Timing },
 }
 
 pub fn compatible(kind: u8, format: u8) -> bool {
@@ -148,16 +207,12 @@ impl Capabilities {
         }
         let mut ids = HashSet::new();
         for d in &self.descriptors {
-            if d.id.is_empty()
-                || !ids.insert(&d.id)
+            if !ids.insert(&d.id)
                 || d.group as usize >= self.groups.len()
                 || d.formats.is_empty()
                 || d.formats.iter().any(|f| !compatible(d.kind, *f))
-                || d.formats.iter().collect::<HashSet<_>>().len() != d.formats.len()
                 || (d.kind == 10
-                    && (d.spaces.is_empty()
-                        || d.spaces.iter().any(|s| !(1..=6).contains(s))
-                        || d.spaces.iter().collect::<HashSet<_>>().len() != d.spaces.len()))
+                    && (d.spaces.is_empty() || d.spaces.iter().any(|s| !(1..=6).contains(s))))
                 || (d.kind != 10 && !d.spaces.is_empty())
             {
                 return Err("Invalid descriptor".into());
@@ -207,49 +262,95 @@ impl Capabilities {
                 }
             }
         }
+        let mut parent_frames = BTreeMap::<u32, u32>::new();
+        for skeleton in &self.skeletons {
+            for (index, joint) in skeleton.iter().enumerate() {
+                let mut seen = HashSet::new();
+                let mut at = index;
+                while skeleton[at].parent as usize != at {
+                    if !seen.insert(at) {
+                        return Err("Cyclic skeleton hierarchy".into());
+                    }
+                    at = skeleton[at].parent as usize;
+                }
+                let parent = &skeleton[joint.parent as usize];
+                for (descriptor, frame) in [
+                    (joint.pose_sample, parent.pose_sample),
+                    (joint.rest_pose_sample, parent.rest_pose_sample),
+                ] {
+                    if self.descriptors[descriptor as usize].spaces.contains(&5)
+                        && parent_frames
+                            .insert(descriptor, frame)
+                            .is_some_and(|previous| previous != frame)
+                    {
+                        return Err("Ambiguous parent frame".into());
+                    }
+                }
+            }
+        }
+        if self
+            .descriptors
+            .iter()
+            .enumerate()
+            .any(|(i, d)| d.spaces.contains(&5) && !parent_frames.contains_key(&(i as u32)))
+        {
+            return Err("Missing parent frame".into());
+        }
         Ok(())
     }
+    /// Admission limits are policy, distinct from malformed wire data.
     pub fn validate_request(&self, r: &Request) -> Result<usize> {
-        if !matches!(r.delivery, 1 | 2) {
-            return Err("Unsupported delivery mode".into());
-        }
-        let max = self.groups.get(r.group as usize).ok_or("Unknown group")?;
-        r.schedule.validate(*max, 0)?;
-        if r.samples.is_empty() {
-            return Err("Select at least one sample".into());
-        }
-        let mut seen = HashSet::new();
-        let mut size = 20;
-        let mut bits: usize = 0;
-        for s in &r.samples {
-            let d = self
-                .descriptors
-                .get(s.descriptor as usize)
-                .ok_or("Unknown descriptor")?;
-            if d.group != r.group || !seen.insert(s.descriptor) {
-                return Err("Wrong group or duplicate sample".into());
-            }
-            if !d.formats.contains(&s.format) || !compatible(d.kind, s.format) {
-                return Err("Unsupported sample format".into());
-            }
-            if if d.kind == 10 {
-                !d.spaces.contains(&s.space)
-            } else {
-                s.space != 0
-            } {
-                return Err("Unsupported reference space".into());
-            }
-            if s.format == 1 {
-                bits += 1;
-            } else {
-                size += components(d.kind) * width(s.format);
-            }
-        }
-        if size + bits.div_ceil(8) + 1 > MAX_SERVER_MESSAGE {
-            return Err("Tracking packet exceeds transport limit".into());
-        }
-        Ok(size + bits.div_ceil(8))
+        r.validate_structure(self)?;
+        self.admit_request(r)
     }
+    fn admit_request(&self, r: &Request) -> Result<usize> {
+        self.groups.get(r.group as usize).ok_or("Unknown group")?;
+        if r.bundles.len() > 1024 {
+            return Err("Bundle resource limit".into());
+        }
+        let mut size = 20usize
+            + r.sequence_number_format.map_or(0, |f| f.width())
+            + (r.bundles.len() - 1).div_ceil(8);
+        for bundle in &r.bundles {
+            let mut bits: usize = 0;
+            for s in bundle {
+                let d = &self.descriptors[s.descriptor as usize];
+                if d.group != r.group {
+                    return Err("Wrong acquisition group".into());
+                }
+                if !d.formats.contains(&s.format) || !compatible(d.kind, s.format) {
+                    return Err("Unsupported sample format".into());
+                }
+                if d.kind == 10 && !d.spaces.contains(&s.space) {
+                    return Err("Unsupported reference space".into());
+                }
+                if s.format == 1 {
+                    bits += 1;
+                } else {
+                    size = size
+                        .checked_add(components(d.kind) * width(s.format))
+                        .ok_or("Publication size overflow")?;
+                }
+            }
+            size = size
+                .checked_add(bits.div_ceil(8))
+                .ok_or("Publication size overflow")?;
+        }
+        if size >= MAX_SERVER_MESSAGE {
+            return Err("Publication exceeds transport limit".into());
+        }
+        Ok(size)
+    }
+}
+
+fn validate_offer(versions: &[u16]) -> Result<()> {
+    if versions.is_empty()
+        || versions.contains(&0)
+        || versions.iter().collect::<HashSet<_>>().len() != versions.len()
+    {
+        return Err("Invalid version offer".into());
+    }
+    Ok(())
 }
 
 struct Reader<'a> {
@@ -278,16 +379,14 @@ impl<'a> Reader<'a> {
     fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
-    fn schedule(&mut self) -> Result<Schedule> {
-        match self.u8()? {
-            1 => Ok(Schedule::Periodic {
-                interval: self.u64()?,
-                phase: self.u64()?,
-                consumption_delay: self.u64()?,
-            }),
-            2 => Ok(Schedule::OnChange),
-            _ => Err("Invalid publication schedule tag".into()),
-        }
+    fn timing(&mut self) -> Result<Timing> {
+        let timing = Timing {
+            interval: self.u64()?,
+            phase: self.u64()?,
+            prediction_offset: self.u64()?,
+        };
+        timing.validate()?;
+        Ok(timing)
     }
     fn count(&mut self, minimum: usize) -> Result<usize> {
         let n = self.u32()? as usize;
@@ -298,7 +397,11 @@ impl<'a> Reader<'a> {
     }
 }
 pub fn decode_client(body: &[u8]) -> Result<Message> {
-    if body.len() > MAX_CLIENT_MESSAGE {
+    decode_client_with_limit(body, MAX_CLIENT_MESSAGE)
+}
+/// Receiver decoding limits are independent of transport send limits.
+pub fn decode_client_with_limit(body: &[u8], limit: usize) -> Result<Message> {
+    if body.len() > limit.min(MAX_CLIENT_MESSAGE) {
         return Err("Message size limit".into());
     }
     let mut r = Reader { bytes: body, at: 0 };
@@ -309,12 +412,7 @@ pub fn decode_client(body: &[u8]) -> Result<Message> {
             for _ in 0..n {
                 versions.push(r.u16()?);
             }
-            if versions.is_empty()
-                || versions.contains(&0)
-                || versions.iter().collect::<HashSet<_>>().len() != n
-            {
-                return Err("Invalid version offer".into());
-            }
+            validate_offer(&versions)?;
             Message::Offer(versions)
         }
         4 => {
@@ -324,7 +422,7 @@ pub fn decode_client(body: &[u8]) -> Result<Message> {
         7 => Message::Unsubscribe { id: r.u32()? },
         12 => Message::UpdateSchedule {
             id: r.u32()?,
-            schedule: r.schedule()?,
+            timing: r.timing()?,
         },
         _ => return Err("Invalid client message tag or direction".into()),
     };
@@ -337,33 +435,57 @@ pub(crate) fn decode_subscription(body: &[u8], capabilities: &Capabilities) -> R
     let mut r = Reader { bytes: body, at: 0 };
     let id = r.u32()?;
     let group = r.u32()?;
-    let n = r.count(5)?;
-    let mut samples = Vec::with_capacity(n);
+    let channel = r.u8()?;
+    let timing = r.timing()?;
+    let sequence_number_format = SequenceNumberFormat::from_tag(r.u8()?)?;
+    let n = r.count(4)?;
+    let mut bundles = Vec::with_capacity(n);
     for _ in 0..n {
-        let descriptor = r.u32()?;
-        let kind = capabilities
-            .descriptors
-            .get(descriptor as usize)
-            .ok_or("Unknown descriptor in selection layout")?
-            .kind;
-        samples.push(Selection {
-            descriptor,
-            format: r.u8()?,
-            space: if kind == 10 { r.u8()? } else { 0 },
-        });
+        let n = r.count(5)?;
+        let mut bindings = Vec::with_capacity(n);
+        for _ in 0..n {
+            let descriptor = r.u32()?;
+            let kind = capabilities
+                .descriptors
+                .get(descriptor as usize)
+                .ok_or("Unknown descriptor in binding layout")?
+                .kind;
+            bindings.push(SampleBinding {
+                descriptor,
+                format: r.u8()?,
+                space: if kind == 10 { r.u8()? } else { 0 },
+            });
+        }
+        bundles.push(bindings);
     }
-    let delivery = r.u8()?;
-    let schedule = r.schedule()?;
     if r.at != body.len() {
         return Err("Trailing subscription bytes".into());
     }
-    Ok(Request {
+    let request = Request {
         id,
         group,
-        samples,
-        delivery,
-        schedule,
-    })
+        channel,
+        interval: timing.interval,
+        phase: timing.phase,
+        prediction_offset: timing.prediction_offset,
+        sequence_number_format,
+        bundles,
+    };
+    request.validate_structure(capabilities)?;
+    Ok(request)
+}
+pub fn decode_acknowledgment(bytes: &[u8], format: SequenceNumberFormat) -> Result<(u32, u64)> {
+    let mut r = Reader { bytes, at: 0 };
+    if r.u8()? != 13 {
+        return Err("Not a publication acknowledgment".into());
+    }
+    let id = r.u32()?;
+    let mut sequence = [0; 8];
+    sequence[..format.width()].copy_from_slice(r.take(format.width())?);
+    if r.at != bytes.len() {
+        return Err("Trailing acknowledgment bytes".into());
+    }
+    Ok((id, u64::from_le_bytes(sequence)))
 }
 fn u32_bytes(b: &mut Vec<u8>, n: u32) {
     b.extend(n.to_le_bytes());
@@ -372,19 +494,9 @@ fn string(b: &mut Vec<u8>, s: &str) {
     u32_bytes(b, s.len() as u32);
     b.extend(s.as_bytes());
 }
-fn schedule_bytes(b: &mut Vec<u8>, schedule: &Schedule) {
-    match schedule {
-        Schedule::OnChange => b.push(2),
-        Schedule::Periodic {
-            interval,
-            phase,
-            consumption_delay,
-        } => {
-            b.push(1);
-            for value in [interval, phase, consumption_delay] {
-                b.extend(value.to_le_bytes());
-            }
-        }
+fn timing_bytes(b: &mut Vec<u8>, timing: Timing) {
+    for value in [timing.interval, timing.phase, timing.prediction_offset] {
+        b.extend(value.to_le_bytes());
     }
 }
 pub fn clock_response(id: u32, received: u64, sent: u64) -> Vec<u8> {
@@ -458,17 +570,22 @@ pub fn encode(message: &Message) -> Vec<u8> {
             b.push(4);
             u32_bytes(&mut b, r.id);
             u32_bytes(&mut b, r.group);
-            u32_bytes(&mut b, r.samples.len() as u32);
-            for s in &r.samples {
-                u32_bytes(&mut b, s.descriptor);
-                b.push(s.format);
-                if s.space != 0 {
-                    b.push(s.space);
+            b.push(r.channel);
+            timing_bytes(&mut b, r.timing());
+            b.push(r.sequence_number_format.map_or(0, |f| f as u8));
+            u32_bytes(&mut b, r.bundles.len() as u32);
+            for bundle in &r.bundles {
+                u32_bytes(&mut b, bundle.len() as u32);
+                for binding in bundle {
+                    u32_bytes(&mut b, binding.descriptor);
+                    b.push(binding.format);
+                    if binding.space != 0 {
+                        b.push(binding.space);
+                    }
                 }
             }
-            b.push(r.delivery);
-            schedule_bytes(&mut b, &r.schedule);
         }
+
         Message::SubscribeBody(body) => {
             b.push(4);
             b.extend(body);
@@ -489,10 +606,10 @@ pub fn encode(message: &Message) -> Vec<u8> {
                 string(&mut b, reason);
             }
         }
-        Message::UpdateSchedule { id, schedule } => {
+        Message::UpdateSchedule { id, timing } => {
             b.push(12);
             u32_bytes(&mut b, *id);
-            schedule_bytes(&mut b, schedule);
+            timing_bytes(&mut b, *timing);
         }
         Message::Publication(body) => {
             b.push(9);
@@ -510,53 +627,59 @@ pub fn encode(message: &Message) -> Vec<u8> {
 #[derive(Clone, Debug)]
 pub struct Subscription {
     pub request: Request,
-    last_publication: Option<Vec<u8>>,
+    pub publication: std::sync::Arc<std::sync::Mutex<PublicationState>>,
 }
 impl Subscription {
-    pub fn timestamp(&self, acquired: i64, now: i64) -> Option<u64> {
-        if acquired > now {
-            return None;
+    fn new(request: Request, now: u64) -> Self {
+        Self {
+            publication: std::sync::Arc::new(std::sync::Mutex::new(PublicationState::new(
+                &request, now,
+            ))),
+            request,
         }
-        u64::try_from(acquired).ok().filter(|t| *t < u64::MAX)
-    }
-    pub fn should_publish(&self, body: &[u8]) -> bool {
-        !matches!(self.request.schedule, Schedule::OnChange)
-            || self
-                .last_publication
-                .as_ref()
-                .is_none_or(|previous| previous != &body[20..])
-    }
-    pub fn published(&mut self, body: &[u8]) {
-        // Only selected encoded values drive OnChange, including after an update.
-        self.last_publication = Some(body[20..].to_vec());
-    }
-    fn update(&mut self, schedule: Schedule) {
-        self.request.schedule = schedule;
     }
 }
 
 pub struct Session {
-    pub capabilities: Capabilities,
+    pub capabilities: Arc<Capabilities>,
     pub negotiated: bool,
     pub packet_limit: usize,
+    pub max_publication_rate_hz: f64,
     pub active: BTreeMap<u32, Subscription>,
 }
 impl Session {
-    pub fn new(capabilities: Capabilities) -> Self {
+    pub fn new(capabilities: impl Into<Arc<Capabilities>>) -> Self {
         Self {
-            capabilities,
+            capabilities: capabilities.into(),
             negotiated: false,
             packet_limit: MAX_SERVER_MESSAGE,
+            max_publication_rate_hz: 200.,
             active: BTreeMap::new(),
         }
     }
     pub fn handle(&mut self, message: Message, now: i64) -> Result<Vec<Message>> {
+        self.handle_with_source(message, now, |_| Ok(()))
+    }
+    /// Apply protocol validation and admission once, then check the selected source
+    /// before atomically installing a new subscription. A source failure is a rejection.
+    pub fn handle_with_source(
+        &mut self,
+        message: Message,
+        now: i64,
+        mut source: impl FnMut(&Request) -> Result<()>,
+    ) -> Result<Vec<Message>> {
         if !self.negotiated {
             if let Message::Offer(v) = message {
+                validate_offer(&v)?;
                 if !v.contains(&1) {
                     return Ok(vec![Message::Selection(0)]);
                 }
                 self.capabilities.validate()?;
+                if encode(&Message::Capabilities(self.capabilities.clone())).len()
+                    > self.packet_limit
+                {
+                    return Err("Capabilities exceed transport limit".into());
+                }
                 self.negotiated = true;
                 return Ok(vec![
                     Message::Selection(1),
@@ -572,40 +695,27 @@ impl Session {
         };
         match message {
             Message::Subscribe(request) => {
+                request.validate_structure(&self.capabilities)?;
                 let id = request.id;
-                let validation = self
-                    .capabilities
-                    .validate_request(&request)
-                    .and_then(|size| {
-                        request.schedule.validate(
-                            self.capabilities.groups[request.group as usize],
-                            now as u64,
-                        )?;
-                        if size + 1 > self.packet_limit {
-                            return Err("Tracking packet exceeds negotiated transport limit".into());
-                        }
-                        if self.active.len() >= MAX_SUBSCRIPTIONS && !self.active.contains_key(&id)
-                        {
-                            return Err("Subscription limit".into());
-                        }
-                        Ok(())
-                    });
+                let validation = self.capabilities.admit_request(&request).and_then(|size| {
+                    self.admit(request.timing(), now as u64)?;
+                    if size + 1 > self.packet_limit {
+                        return Err("Publication exceeds negotiated transport limit".into());
+                    }
+                    if self.active.len() >= MAX_SUBSCRIPTIONS && !self.active.contains_key(&id) {
+                        return Err("Subscription limit".into());
+                    }
+                    source(&request)
+                });
                 if let Err(reason) = validation {
                     return Ok(vec![Message::Rejected {
                         id,
                         reason: Some(reason),
                     }]);
                 }
-                let mut replies = self.end(id, "Replaced by a new subscription");
-                self.active.insert(
-                    id,
-                    Subscription {
-                        request,
-                        last_publication: None,
-                    },
-                );
-                replies.push(Message::Accepted { id });
-                Ok(replies)
+                self.active
+                    .insert(id, Subscription::new(request, now as u64));
+                Ok(vec![Message::Accepted { id }])
             }
             Message::Unsubscribe { id } => {
                 self.active.remove(&id);
@@ -614,20 +724,45 @@ impl Session {
                     reason: "Unsubscribed".into(),
                 }])
             }
-            Message::UpdateSchedule { id, schedule } => {
-                // Validate even for an ended id; a termination can race a well-formed update.
-                schedule.validate(
-                    self.active.get(&id).map_or(f32::MAX, |s| {
-                        self.capabilities.groups[s.request.group as usize]
-                    }),
-                    now as u64,
-                )?;
-                if let Some(sub) = self.active.get_mut(&id) {
-                    sub.update(schedule);
+            Message::UpdateSchedule { id, timing } => {
+                timing.validate()?;
+                if !self.active.contains_key(&id) {
+                    return Ok(vec![]);
                 }
+                if let Err(reason) = self.admit(timing, now as u64) {
+                    return Ok(self.end(id, &reason));
+                }
+                let sub = self.active.get_mut(&id).unwrap();
+                sub.request.interval = timing.interval;
+                sub.request.phase = timing.phase;
+                sub.request.prediction_offset = timing.prediction_offset;
+                sub.publication.lock().unwrap().update(timing, now as u64);
                 Ok(vec![])
             }
             _ => Err("Message in invalid session phase".into()),
+        }
+    }
+    fn admit(&self, timing: Timing, now: u64) -> Result<()> {
+        timing
+            .next_at(now)
+            .and_then(|slot| timing.target_at(slot))
+            .filter(|t| *t <= i64::MAX as u64)
+            .ok_or("Prediction target exceeds source clock range")?;
+        if (timing.interval as f64) < (1e9 / self.max_publication_rate_hz).ceil() {
+            return Err("Publication rate admission limit".into());
+        }
+        Ok(())
+    }
+    pub fn acknowledge(&self, bytes: &[u8]) {
+        if !self.negotiated || bytes.len() < 5 {
+            return;
+        }
+        let id = u32::from_le_bytes(bytes[1..5].try_into().unwrap());
+        if let Some(sub) = self.active.get(&id)
+            && let Some(format) = sub.request.sequence_number_format
+            && let Ok((_, sequence)) = decode_acknowledgment(bytes, format)
+        {
+            sub.publication.lock().unwrap().acknowledge(sequence);
         }
     }
     pub fn end(&mut self, id: u32, reason: &str) -> Vec<Message> {
@@ -640,6 +775,222 @@ impl Session {
                 }]
             })
             .unwrap_or_default()
+    }
+}
+
+/// One latest encoded acquisition and bounded metadata; no historical source snapshots.
+#[derive(Clone, Debug)]
+pub struct EncodedAcquisition {
+    pub number: u64,
+    pub acquired_at: u64,
+    pub predicted_for: Option<u64>,
+    pub bundles: Vec<Vec<u8>>,
+}
+#[derive(Clone, Debug)]
+struct BundleState {
+    revision: u64,
+    pending: bool,
+}
+#[derive(Clone, Debug)]
+struct SentPublication {
+    sequence: u64,
+    revisions: Vec<(usize, u64)>,
+}
+#[derive(Clone, Debug)]
+pub struct Candidate {
+    pub body: Vec<u8>,
+    pub sequence: Option<u64>,
+    revisions: Vec<(usize, u64)>,
+}
+pub const SENT_HISTORY_LIMIT: usize = 256;
+#[derive(Debug)]
+pub struct PublicationState {
+    id: u32,
+    timing: Timing,
+    format: Option<SequenceNumberFormat>,
+    continuous_empty: bool,
+    initial: bool,
+    next_slot: Option<u64>,
+    next_sequence: u64,
+    states: Vec<BundleState>,
+    latest: Option<EncodedAcquisition>,
+    available: bool,
+    history: VecDeque<SentPublication>,
+    history_limit: usize,
+    pub error: Option<String>,
+}
+impl PublicationState {
+    pub fn new(r: &Request, now: u64) -> Self {
+        Self {
+            id: r.id,
+            timing: r.timing(),
+            format: r.sequence_number_format,
+            continuous_empty: r.bundles[0].is_empty(),
+            initial: true,
+            next_slot: r.timing().next_at(now),
+            next_sequence: 0,
+            states: r
+                .bundles
+                .iter()
+                .map(|_| BundleState {
+                    revision: 0,
+                    pending: true,
+                })
+                .collect(),
+            latest: None,
+            available: false,
+            history: VecDeque::new(),
+            history_limit: SENT_HISTORY_LIMIT,
+            error: None,
+        }
+    }
+    pub fn observe(&mut self, acquisition: EncodedAcquisition) {
+        if self.error.is_some()
+            || self
+                .latest
+                .as_ref()
+                .is_some_and(|last| last.number >= acquisition.number)
+        {
+            return;
+        }
+        for (i, state) in self.states.iter_mut().enumerate().skip(1) {
+            if self
+                .latest
+                .as_ref()
+                .is_none_or(|last| last.bundles[i] != acquisition.bundles[i])
+            {
+                // Expiring history before a local revision wraps prevents ABA aliasing.
+                if state.revision == u64::MAX {
+                    self.history.clear();
+                }
+                state.revision = state.revision.wrapping_add(1);
+                state.pending = true;
+            }
+        }
+        self.latest = Some(acquisition);
+        self.available = true;
+    }
+    pub fn invalidate_acquisition(&mut self) {
+        self.available = false;
+    }
+    pub fn update(&mut self, timing: Timing, now: u64) {
+        self.timing = timing;
+        self.next_slot = timing.next_at(now);
+    }
+    pub fn next_wake(&self) -> Option<u64> {
+        if self.initial {
+            self.available.then_some(0)
+        } else {
+            self.next_slot
+        }
+    }
+    pub fn requested_target(&self, now: u64) -> Option<u64> {
+        let opportunity = if self.initial {
+            now
+        } else {
+            self.timing.next_at(now)?
+        };
+        self.timing.target_at(opportunity)
+    }
+    /// Consume a due opportunity even if empty or backpressured; never queue catch-up work.
+    pub fn opportunity(&mut self, now: u64) -> bool {
+        if self.initial {
+            if !self.available {
+                return false;
+            }
+            self.initial = false;
+            self.next_slot = now.checked_add(1).and_then(|t| self.timing.next_at(t));
+            return self.timing.target_at(now).is_some();
+        }
+        let Some(due) = self.next_slot.filter(|due| *due <= now) else {
+            return false;
+        };
+        let slot = due + (now - due) / self.timing.interval * self.timing.interval;
+        self.next_slot = slot
+            .checked_add(self.timing.interval)
+            .filter(|t| *t < u64::MAX);
+        self.timing.target_at(slot).is_some()
+    }
+    pub fn candidate(&self) -> Option<Candidate> {
+        let latest = self.latest.as_ref()?;
+        if !self.available
+            || self.error.is_some()
+            || (self.continuous_empty && !self.states.iter().skip(1).any(|s| s.pending))
+        {
+            return None;
+        }
+        let mut revisions = Vec::new();
+        let bundles: Vec<_> = latest
+            .bundles
+            .iter()
+            .enumerate()
+            .map(|(i, bytes)| {
+                if i == 0 || self.states[i].pending {
+                    if i > 0 {
+                        revisions.push((i, self.states[i].revision));
+                    }
+                    Some(bytes.as_slice())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let sequence = self.format.map(|_| self.next_sequence);
+        Some(Candidate {
+            body: publication_body(
+                self.id,
+                latest.acquired_at,
+                latest.predicted_for,
+                self.format,
+                sequence,
+                &bundles,
+            )
+            .expect("Validated acquisition"),
+            sequence,
+            revisions,
+        })
+    }
+    /// Call only after successful transport submission, including if acquisition changed during send.
+    pub fn submitted(&mut self, candidate: Candidate) {
+        let Some(format) = self.format else {
+            return;
+        };
+        let sequence = candidate.sequence.expect("Sequenced candidate");
+        debug_assert_eq!(sequence, self.next_sequence);
+        self.next_sequence = format.next(sequence);
+        self.history
+            .retain(|entry| sequence.wrapping_sub(entry.sequence) & format.mask() < format.half());
+        if !candidate.revisions.is_empty() {
+            self.history.push_back(SentPublication {
+                sequence,
+                revisions: candidate.revisions,
+            });
+        }
+        while self.history.len() > self.history_limit
+            || self
+                .history
+                .iter()
+                .map(|e| e.revisions.len())
+                .sum::<usize>()
+                > 4096
+        {
+            self.history.pop_front();
+        }
+    }
+    pub fn acknowledge(&mut self, sequence: u64) {
+        let Some(index) = self
+            .history
+            .iter()
+            .position(|entry| entry.sequence == sequence)
+        else {
+            return;
+        };
+        let sent = self.history.remove(index).unwrap();
+        for (i, revision) in sent.revisions {
+            if self.states[i].revision == revision {
+                self.states[i].pending = false;
+            }
+        }
     }
 }
 
@@ -728,734 +1079,80 @@ fn encode_value_into(value: &Value, kind: u8, format: u8, b: &mut Vec<u8>) -> Op
     }
     Some(())
 }
-pub fn tracking(
+pub fn encode_bundle(
     c: &Capabilities,
-    r: &Request,
-    timestamp: u64,
-    predicted_for: Option<u64>,
+    bindings: &[SampleBinding],
     values: &[Value],
 ) -> Result<Vec<u8>> {
-    let mut buffer = Vec::new();
-    tracking_into(c, r, timestamp, predicted_for, values, &mut buffer)?;
-    Ok(buffer)
-}
-
-pub(crate) fn tracking_into(
-    c: &Capabilities,
-    r: &Request,
-    timestamp: u64,
-    predicted_for: Option<u64>,
-    values: &[Value],
-    buffer: &mut Vec<u8>,
-) -> Result<()> {
-    if r.samples.len() != values.len() || timestamp == u64::MAX || predicted_for == Some(u64::MAX) {
-        return Err("Invalid publication values or time".into());
+    if bindings.len() != values.len() {
+        return Err("Incomplete bundle".into());
     }
-    buffer.clear();
-    u32_bytes(buffer, r.id);
-    buffer.extend(timestamp.to_le_bytes());
-    buffer.extend(predicted_for.unwrap_or(u64::MAX).to_le_bytes());
-    let bits = r.samples.iter().filter(|s| s.format == 1).count();
-    buffer.resize(20 + bits.div_ceil(8), 0);
+    let bits = bindings.iter().filter(|s| s.format == 1).count();
+    let mut buffer = vec![0; bits.div_ceil(8)];
     let mut bit = 0;
-    for (selection, value) in r.samples.iter().zip(values) {
+    for (binding, value) in bindings.iter().zip(values) {
         let descriptor = c
             .descriptors
-            .get(selection.descriptor as usize)
+            .get(binding.descriptor as usize)
             .ok_or("Unknown publication descriptor")?;
-        if selection.format == 1 {
+        if binding.format == 1 {
             let Value::Bit(value) = value else {
-                return Err("Invalid boolean publication value".into());
+                return Err("Invalid boolean value".into());
             };
             if !compatible(descriptor.kind, 1) {
                 return Err("Invalid boolean format".into());
             }
-            buffer[20 + bit / 8] |= u8::from(*value) << (bit % 8);
+            buffer[bit / 8] |= u8::from(*value) << (bit % 8);
             bit += 1;
         } else {
-            encode_value_into(value, descriptor.kind, selection.format, buffer).ok_or_else(
-                || format!("Invalid value for selected source {}", selection.descriptor),
+            encode_value_into(value, descriptor.kind, binding.format, &mut buffer).ok_or_else(
+                || format!("Invalid value for selected source {}", binding.descriptor),
             )?;
         }
     }
-    Ok(())
+    Ok(buffer)
+}
+pub fn publication_body(
+    id: u32,
+    acquired_at: u64,
+    predicted_for: Option<u64>,
+    format: Option<SequenceNumberFormat>,
+    sequence: Option<u64>,
+    bundles: &[Option<&[u8]>],
+) -> Result<Vec<u8>> {
+    if acquired_at == u64::MAX
+        || predicted_for == Some(u64::MAX)
+        || bundles.is_empty()
+        || bundles[0].is_none()
+        || format.is_some() != sequence.is_some()
+        || (bundles.len() > 1 && format.is_none())
+    {
+        return Err("Invalid publication layout or timestamps".into());
+    }
+    let mut body = Vec::new();
+    body.extend(id.to_le_bytes());
+    body.extend(acquired_at.to_le_bytes());
+    body.extend(predicted_for.unwrap_or(u64::MAX).to_le_bytes());
+    if let Some(format) = format {
+        let sequence = sequence.unwrap();
+        if sequence > format.mask() {
+            return Err("Sequence exceeds selected width".into());
+        }
+        body.extend(&sequence.to_le_bytes()[..format.width()]);
+    }
+    let presence_at = body.len();
+    body.resize(presence_at + (bundles.len() - 1).div_ceil(8), 0);
+    for (i, bundle) in bundles.iter().enumerate() {
+        if let Some(bytes) = bundle {
+            if i > 0 {
+                body[presence_at + (i - 1) / 8] |= 1 << ((i - 1) % 8);
+            }
+            body.extend(*bytes);
+        }
+    }
+    Ok(body)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn encode_value(value: &Value, kind: u8, format: u8) -> Option<Vec<u8>> {
-        let mut buffer = Vec::new();
-        encode_value_into(value, kind, format, &mut buffer)?;
-        Some(buffer)
-    }
-    fn fixture_capabilities(v: &serde_json::Value) -> Capabilities {
-        let index = |v: &serde_json::Value, field: &str| v[field].as_u64().map(|n| n as u32);
-        Capabilities {
-            groups: v["sample_groups"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|g| g["max_sample_rate_hz"].as_f64().unwrap() as f32)
-                .collect(),
-            descriptors: v["sample_descriptors"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|d| Descriptor {
-                    id: d["id"].as_str().unwrap().into(),
-                    name: d["name"].as_str().unwrap().into(),
-                    description: d["description"].as_str().unwrap().into(),
-                    kind: d["kind"].as_u64().unwrap() as u8,
-                    group: index(d, "group").unwrap(),
-                    formats: d["supported_formats"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|f| f.as_u64().unwrap() as u8)
-                        .collect(),
-                    spaces: d["supported_spaces"].as_array().map_or_else(Vec::new, |s| {
-                        s.iter().map(|v| v.as_u64().unwrap() as u8).collect()
-                    }),
-                    press_count_sample: index(d, "press_count_sample"),
-                    release_count_sample: index(d, "release_count_sample"),
-                    touch_count_sample: index(d, "touch_count_sample"),
-                    untouch_count_sample: index(d, "untouch_count_sample"),
-                    position_valid_sample: index(d, "position_valid_sample"),
-                    orientation_valid_sample: index(d, "orientation_valid_sample"),
-                    position_tracked_sample: index(d, "position_tracked_sample"),
-                    orientation_tracked_sample: index(d, "orientation_tracked_sample"),
-                    confidence_sample: index(d, "confidence_sample"),
-                    revision_of: index(d, "revision_of"),
-                })
-                .collect(),
-            skeletons: v["skeletons"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|s| {
-                    s["joints"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|j| Joint {
-                            parent: index(j, "parent").unwrap(),
-                            pose_sample: index(j, "pose_sample").unwrap(),
-                            rest_pose_sample: index(j, "rest_pose_sample").unwrap(),
-                        })
-                        .collect()
-                })
-                .collect(),
-        }
-    }
-    fn fixture_schedule(v: &serde_json::Value) -> Schedule {
-        if v["kind"] == "OnChange" {
-            Schedule::OnChange
-        } else {
-            Schedule::Periodic {
-                interval: v["interval"].as_str().unwrap().parse().unwrap(),
-                phase: v["phase"].as_str().unwrap().parse().unwrap(),
-                consumption_delay: v["consumption_delay"].as_str().unwrap().parse().unwrap(),
-            }
-        }
-    }
-    fn fixture_request(v: &serde_json::Value) -> Request {
-        Request {
-            id: v["subscription_id"].as_u64().unwrap() as u32,
-            group: v["selection"]["group"].as_u64().unwrap() as u32,
-            delivery: v["channel"].as_u64().unwrap() as u8,
-            schedule: fixture_schedule(&v["schedule"]),
-            samples: v["selection"]["samples"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|s| Selection {
-                    descriptor: s["descriptor"].as_u64().unwrap() as u32,
-                    format: s["format"].as_u64().unwrap() as u8,
-                    space: s["reference_space"].as_u64().unwrap_or(0) as u8,
-                })
-                .collect(),
-        }
-    }
-    #[test]
-    fn shared_control_publication_and_clock_vectors() {
-        let f = fixture();
-        assert_eq!(f["protocol_version"], 1);
-        for record in f["records"].as_array().unwrap() {
-            let v = &record["value"];
-            let id = || v["subscription_id"].as_u64().unwrap() as u32;
-            let message = match record["tag"].as_u64().unwrap() {
-                1 => Message::Offer(
-                    v["supported_versions"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|n| n.as_u64().unwrap() as u16)
-                        .collect(),
-                ),
-                2 => Message::Selection(v["selected_version"].as_u64().unwrap() as u16),
-                3 => {
-                    let mut v = f["capabilities"][record["capabilities"].as_str().unwrap()].clone();
-                    if let Some(skeletons) = record.get("skeletons") {
-                        v["skeletons"] = skeletons.clone();
-                    }
-                    let c = fixture_capabilities(&v);
-                    c.validate().unwrap();
-                    Message::Capabilities(c)
-                }
-                4 => {
-                    let setup = &f["requests"][record["request"].as_str().unwrap()];
-                    let c = fixture_capabilities(
-                        &f["capabilities"][setup["capabilities"].as_str().unwrap()],
-                    );
-                    let r = fixture_request(&setup["value"]);
-                    c.validate_request(&r).unwrap();
-                    let wire = hex(record["hex"].as_str().unwrap());
-                    assert_eq!(decode_subscription(&wire[1..], &c).unwrap(), r);
-                    for end in 0..wire.len() - 1 {
-                        assert!(decode_subscription(&wire[1..1 + end], &c).is_err());
-                    }
-                    Message::Subscribe(r)
-                }
-                5 => Message::Accepted { id: id() },
-                6 => Message::Rejected {
-                    id: id(),
-                    reason: v["reason"].as_str().map(str::to_owned),
-                },
-                7 => Message::Unsubscribe { id: id() },
-                8 => Message::Ended {
-                    id: id(),
-                    reason: v["reason"].as_str().unwrap().into(),
-                },
-                12 => Message::UpdateSchedule {
-                    id: id(),
-                    schedule: fixture_schedule(&v["schedule"]),
-                },
-                tag => panic!("Unhandled fixture record {tag}"),
-            };
-            let expected = hex(record["hex"].as_str().unwrap());
-            assert_eq!(encode(&message), expected, "{}", record["name"]);
-            if matches!(
-                message,
-                Message::Offer(_)
-                    | Message::Subscribe(_)
-                    | Message::Unsubscribe { .. }
-                    | Message::UpdateSchedule { .. }
-            ) {
-                assert_eq!(
-                    decode_client(&expected).unwrap(),
-                    if matches!(message, Message::Subscribe(_)) {
-                        Message::SubscribeBody(expected[1..].to_vec())
-                    } else {
-                        message
-                    }
-                );
-            }
-        }
-        let c = fixture_capabilities(&f["capabilities"]["device"]);
-        let mut invalid = c.clone();
-        invalid.descriptors[0].press_count_sample = Some(u32::MAX);
-        assert!(invalid.validate().is_err());
-        invalid = c.clone();
-        invalid.skeletons[0][0].pose_sample = 0;
-        assert!(invalid.validate().is_err());
-        invalid = c;
-        invalid.descriptors[14].revision_of = Some(u32::MAX);
-        assert!(invalid.validate().is_err());
-        for publication in f["publications"].as_array().unwrap() {
-            let expected = hex(publication["hex"].as_str().unwrap());
-            let v = &publication["value"];
-            for name in publication["requests"].as_array().unwrap() {
-                let setup = &f["requests"][name.as_str().unwrap()];
-                let c = fixture_capabilities(
-                    &f["capabilities"][setup["capabilities"].as_str().unwrap()],
-                );
-                let r = fixture_request(&setup["value"]);
-                c.validate_request(&r).unwrap();
-                let values: Vec<_> = v["values"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .zip(&r.samples)
-                    .map(|(v, s)| match s.format {
-                        1 => Value::Bit(v.as_bool().unwrap()),
-                        2..=5 => Value::Unsigned(v.as_u64().unwrap()),
-                        6..=9 => Value::Signed(v.as_i64().unwrap()),
-                        _ => Value::Numbers(if let Some(parts) = v.as_array() {
-                            parts.iter().map(|n| n.as_f64().unwrap()).collect()
-                        } else {
-                            vec![v.as_f64().unwrap()]
-                        }),
-                    })
-                    .collect();
-                assert_eq!(
-                    encode(&Message::Publication(
-                        tracking(
-                            &c,
-                            &r,
-                            v["acquired_at"].as_str().unwrap().parse().unwrap(),
-                            v["predicted_for"].as_str().map(|n| n.parse().unwrap()),
-                            &values
-                        )
-                        .unwrap()
-                    )),
-                    expected,
-                    "{} / {}",
-                    publication["name"],
-                    name
-                );
-            }
-        }
-        for datagram in f["datagrams"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|d| d["tag"] == 11)
-        {
-            let v = &datagram["value"];
-            assert_eq!(
-                clock_response(
-                    v["request_id"].as_u64().unwrap() as u32,
-                    v["received_at"].as_str().unwrap().parse().unwrap(),
-                    v["sent_at"].as_str().unwrap().parse().unwrap()
-                ),
-                hex(datagram["hex"].as_str().unwrap())
-            );
-        }
-    }
-    #[test]
-    fn both_channels_obey_peer_limits_and_initial_state_predates_acceptance() {
-        let mut c = capabilities();
-        c.descriptors[0].kind = 10;
-        c.descriptors[0].formats = vec![11];
-        c.descriptors[0].spaces = vec![2];
-        let mut s = Session::new(c);
-        s.handle(Message::Offer(vec![1]), 0).unwrap();
-        s.packet_limit = 77;
-        let r = Request {
-            id: 1,
-            group: 0,
-            delivery: 2,
-            schedule: Schedule::Periodic {
-                interval: 16_666_667,
-                phase: 0,
-                consumption_delay: 0,
-            },
-            samples: vec![Selection {
-                descriptor: 0,
-                format: 11,
-                space: 2,
-            }],
-        };
-        assert!(matches!(
-            s.handle(Message::Subscribe(r.clone()), 100).unwrap()[0],
-            Message::Accepted { .. }
-        ));
-        assert_eq!(s.active[&1].timestamp(99, 100), Some(99));
-        s.packet_limit = 76;
-        for delivery in [1, 2] {
-            assert!(matches!(
-                s.handle(
-                    Message::Subscribe(Request {
-                        delivery,
-                        ..r.clone()
-                    }),
-                    101
-                )
-                .unwrap()[0],
-                Message::Rejected { .. }
-            ));
-            assert_eq!(s.active[&1].request.delivery, 2);
-        }
-        let mut invalid = r;
-        invalid.delivery = 0;
-        assert!(matches!(
-            s.handle(Message::Subscribe(invalid), 102).unwrap()[0],
-            Message::Rejected { .. }
-        ));
-    }
-    fn fixture() -> serde_json::Value {
-        serde_json::from_str(include_str!(
-            "../../protocol/testdata/specification-v1.json"
-        ))
-        .unwrap()
-    }
-    fn hex(s: &str) -> Vec<u8> {
-        (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-            .collect()
-    }
-    fn capabilities() -> Capabilities {
-        Capabilities {
-            skeletons: vec![],
-            groups: vec![200.],
-            descriptors: [(2, 1), (3, 2), (4, 2), (8, 12)]
-                .into_iter()
-                .enumerate()
-                .map(|(i, (kind, format))| Descriptor {
-                    id: i.to_string(),
-                    name: "".into(),
-                    description: "".into(),
-                    kind,
-                    formats: vec![format],
-                    group: 0,
-                    spaces: vec![],
-                    ..Descriptor::default()
-                })
-                .collect(),
-        }
-    }
-    fn request() -> Request {
-        Request {
-            id: 7,
-            group: 0,
-            delivery: 1,
-            schedule: Schedule::Periodic {
-                interval: 16_666_667,
-                phase: 5_000_000,
-                consumption_delay: 25_000_000,
-            },
-            samples: [1, 2, 12]
-                .into_iter()
-                .enumerate()
-                .map(|(i, format)| Selection {
-                    descriptor: if i == 2 { 3 } else { i as u32 },
-                    format,
-                    space: 0,
-                })
-                .collect(),
-        }
-    }
-    fn session() -> Session {
-        let mut s = Session::new(capabilities());
-        assert_eq!(s.handle(Message::Offer(vec![1]), 0).unwrap().len(), 2);
-        s
-    }
-    #[test]
-    fn fixed_boolean_slots_cross_bitmap_bytes_and_reject_incomplete_values() {
-        let c = Capabilities {
-            skeletons: vec![],
-            groups: vec![60.],
-            descriptors: (0..9)
-                .map(|i| Descriptor {
-                    id: i.to_string(),
-                    name: "".into(),
-                    description: "".into(),
-                    kind: 2,
-                    formats: vec![1],
-                    group: 0,
-                    spaces: vec![],
-                    ..Descriptor::default()
-                })
-                .collect(),
-        };
-        let r = Request {
-            id: 1,
-            group: 0,
-            delivery: 1,
-            schedule: Schedule::Periodic {
-                interval: 16_666_667,
-                phase: 0,
-                consumption_delay: 0,
-            },
-            samples: (0..9)
-                .map(|descriptor| Selection {
-                    descriptor,
-                    format: 1,
-                    space: 0,
-                })
-                .collect(),
-        };
-        let mut values: Vec<_> = (0..9).map(|i| Value::Bit(i % 2 == 0)).collect();
-        assert_eq!(
-            &tracking(&c, &r, 0, None, &values).unwrap()[20..],
-            &[0x55, 0x01]
-        );
-        values[8] = Value::Bit(false);
-        assert_eq!(
-            &tracking(&c, &r, 0, None, &values).unwrap()[20..],
-            &[0x55, 0x00]
-        );
-        assert!(tracking(&c, &r, 0, None, &values[..8]).is_err());
-        values[8] = Value::Unsigned(1);
-        assert!(tracking(&c, &r, 0, None, &values).is_err());
-    }
-    #[test]
-    fn schedule_updates_preserve_selection_and_on_change_baseline() {
-        let mut s = session();
-        let schedule = Schedule::Periodic {
-            interval: 10_000_000,
-            phase: 3_000_000,
-            consumption_delay: 5_000_000,
-        };
-        assert_eq!(schedule.next_at(3_000_000), Some(3_000_000));
-        assert_eq!(schedule.next_at(3_000_001), Some(13_000_000));
-        s.handle(
-            Message::Subscribe(Request {
-                schedule: schedule.clone(),
-                ..request()
-            }),
-            2_000_000,
-        )
-        .unwrap();
-        let sub = s.active.get_mut(&7).unwrap();
-        assert_eq!(sub.timestamp(1, 2_000_000), Some(1));
-        sub.published(&[0; 20]);
-        let selection = sub.request.samples.clone();
-        s.handle(
-            Message::UpdateSchedule {
-                id: 7,
-                schedule: Schedule::OnChange,
-            },
-            100_000_000,
-        )
-        .unwrap();
-        let sub = &s.active[&7];
-        assert_eq!(sub.request.samples, selection);
-        assert!(
-            !sub.should_publish(&[0; 20]),
-            "Schedule update preserves value baseline"
-        );
-        s.handle(Message::UpdateSchedule { id: 7, schedule }, 100_000_000)
-            .unwrap();
-        assert_eq!(
-            s.active[&7].request.schedule.next_at(100_000_000),
-            Some(103_000_000)
-        );
-        for interval in [0, 1, u64::MAX] {
-            assert!(
-                s.handle(
-                    Message::UpdateSchedule {
-                        id: 7,
-                        schedule: Schedule::Periodic {
-                            interval,
-                            phase: 0,
-                            consumption_delay: 0
-                        }
-                    },
-                    0
-                )
-                .is_err()
-            );
-        }
-        assert!(
-            Schedule::Periodic {
-                interval: 10,
-                phase: u64::MAX - 1,
-                consumption_delay: 0
-            }
-            .validate(f32::MAX, 0)
-            .is_ok()
-        );
-        assert!(
-            Schedule::Periodic {
-                interval: 10,
-                phase: 0,
-                consumption_delay: u64::MAX - 1
-            }
-            .validate(f32::MAX, 10)
-            .is_err()
-        );
-        assert!(
-            s.handle(
-                Message::UpdateSchedule {
-                    id: 999,
-                    schedule: Schedule::OnChange
-                },
-                0
-            )
-            .unwrap()
-            .is_empty()
-        );
-    }
-    #[test]
-    fn whole_control_messages_reject_splits_coalescing_and_oversize() {
-        let offer = encode(&Message::Offer(vec![1]));
-        assert_eq!(decode_client(&offer).unwrap(), Message::Offer(vec![1]));
-        for split in 0..offer.len() {
-            assert!(decode_client(&offer[..split]).is_err());
-        }
-        assert!(decode_client(&[offer.clone(), offer].concat()).is_err());
-        assert!(decode_client(&vec![1; MAX_CLIENT_MESSAGE + 1]).is_err());
-        let subscribe = encode(&Message::Subscribe(request()));
-        let c = capabilities();
-        assert_eq!(decode_subscription(&subscribe[1..], &c).unwrap(), request());
-        assert!(decode_subscription(&[&subscribe[1..], &subscribe[1..]].concat(), &c).is_err());
-    }
-    #[test]
-    fn all_formats_and_invalid_source_values() {
-        for entry in fixture()["formats"].as_array().unwrap() {
-            let f = entry["format"].as_u64().unwrap() as u8;
-            let n = entry["value"].as_str().unwrap();
-            let value = match f {
-                1 => Value::Bit(true),
-                2..=5 => Value::Unsigned(n.parse().unwrap()),
-                6..=9 => Value::Signed(n.parse().unwrap()),
-                _ => Value::Numbers(vec![n.parse().unwrap()]),
-            };
-            assert_eq!(
-                encode_value(&value, 1, f).unwrap(),
-                hex(entry["hex"].as_str().unwrap())
-            );
-        }
-        assert!(encode_value(&Value::Unsigned(256), 1, 2).is_none());
-        assert_eq!(encode_value(&Value::Unsigned(256), 3, 2).unwrap(), [0]);
-        assert!(encode_value(&Value::Signed(128), 1, 6).is_none());
-        for f in [10, 11, 12, 13] {
-            for n in [
-                f64::NAN,
-                f64::INFINITY,
-                -0.1,
-                1.1,
-                1.0 + f64::EPSILON,
-                -f64::EPSILON,
-            ] {
-                assert!(encode_value(&Value::Numbers(vec![n]), 8, f).is_none());
-            }
-        }
-        assert_eq!(
-            encode_value(&Value::Numbers(vec![2.5 / 255.]), 8, 12).unwrap(),
-            [2]
-        );
-        assert_eq!(
-            encode_value(&Value::Numbers(vec![3.5 / 255.]), 8, 12).unwrap(),
-            [4]
-        );
-        assert!(encode_value(&Value::Numbers(vec![f64::NAN]), 1, 11).is_some());
-        for f in [10, 11] {
-            let tolerance: f64 = if f == 10 { 1e-5 } else { 1e-12 };
-            for (error, expected) in [(tolerance / 2., true), (tolerance * 2., false)] {
-                assert_eq!(
-                    valid_numbers(10, f, &[0., 0., 0., 0., 0., 0., (1. + error).sqrt()]),
-                    expected
-                );
-            }
-            assert!(!valid_numbers(10, f, &[0.; 7]));
-        }
-    }
-    #[test]
-    fn all_channels_and_schedules_replacement_rejection_unsubscribe_and_reconnect() {
-        for delivery in [1, 2] {
-            for schedule in [Schedule::OnChange, request().schedule] {
-                let mut s = session();
-                let r = Request {
-                    delivery,
-                    schedule,
-                    ..request()
-                };
-                assert_eq!(
-                    s.handle(Message::Subscribe(r.clone()), 0).unwrap(),
-                    [Message::Accepted { id: 7 }]
-                );
-                let mut bad = r.clone();
-                bad.samples[0].format = 255;
-                assert!(matches!(
-                    s.handle(Message::Subscribe(bad), 1).unwrap()[0],
-                    Message::Rejected { .. }
-                ));
-                assert_eq!(s.active[&7].request, r);
-                assert!(matches!(
-                    s.handle(Message::Subscribe(r.clone()), 2)
-                        .unwrap()
-                        .as_slice(),
-                    [Message::Ended { id: 7, .. }, Message::Accepted { id: 7 }]
-                ));
-                assert_eq!(
-                    s.handle(Message::Unsubscribe { id: 7 }, 3).unwrap().len(),
-                    1
-                );
-                assert!(s.active.is_empty());
-                assert_eq!(
-                    s.handle(Message::Unsubscribe { id: 7 }, 4).unwrap().len(),
-                    1
-                );
-                s.handle(Message::Subscribe(r), 5).unwrap();
-                assert_eq!(s.end(7, "Device lost").len(), 1);
-                assert!(s.handle(Message::Offer(vec![1]), 6).is_err());
-                assert!(session().active.is_empty());
-            }
-        }
-    }
-    #[test]
-    fn malformed_controls_and_readable_rejections() {
-        for bytes in [
-            vec![0, 0, 0, 0],
-            vec![255, 255, 255, 255],
-            vec![1, 0, 0, 0, 255],
-            encode(&Message::Selection(1)),
-            encode(&Message::Offer(vec![])),
-            encode(&Message::Offer(vec![0])),
-            encode(&Message::Offer(vec![1, 1])),
-        ] {
-            assert!(decode_client(&bytes).is_err());
-        }
-        let mut s = session();
-        for mutation in 0..8 {
-            let mut r = request();
-            match mutation {
-                0 => r.group = 1,
-                1 => {
-                    r.schedule = Schedule::Periodic {
-                        interval: 0,
-                        phase: 0,
-                        consumption_delay: 0,
-                    }
-                }
-                2 => {
-                    r.schedule = Schedule::Periodic {
-                        interval: 1,
-                        phase: 0,
-                        consumption_delay: 0,
-                    }
-                }
-                3 => r.samples.clear(),
-                4 => r.samples[0].descriptor = 999,
-                5 => r.samples.push(r.samples[0].clone()),
-                6 => r.samples[0].space = 2,
-                _ => {
-                    r.schedule = Schedule::Periodic {
-                        interval: u64::MAX,
-                        phase: 0,
-                        consumption_delay: 0,
-                    }
-                }
-            }
-            assert!(matches!(
-                s.handle(Message::Subscribe(r), 0).unwrap()[0],
-                Message::Rejected { .. }
-            ));
-        }
-        for body in [vec![0], vec![0; 12], vec![0; 20]] {
-            assert!(s.handle(Message::SubscribeBody(body), 0).is_err());
-        }
-        assert_eq!(
-            Session::new(capabilities())
-                .handle(Message::Offer(vec![2]), 0)
-                .unwrap(),
-            [Message::Selection(0)]
-        );
-    }
-    #[test]
-    fn invalid_advertisements_and_pose_selections() {
-        let mut c = capabilities();
-        c.descriptors[0].formats = vec![10];
-        assert!(c.validate().is_err());
-        let mut c = capabilities();
-        c.descriptors[0].spaces = vec![2];
-        assert!(c.validate().is_err());
-        let mut c = capabilities();
-        c.descriptors[0].kind = 10;
-        c.descriptors[0].formats = vec![10, 11];
-        c.descriptors[0].spaces = vec![4];
-        assert!(c.validate().is_ok());
-        let mut r = request();
-        r.samples[0].format = 11;
-        r.samples[0].space = 2;
-        assert!(c.validate_request(&r).is_err());
-        r.samples[0].space = 4;
-        assert!(c.validate_request(&r).is_ok());
-        c.descriptors[1].id = c.descriptors[0].id.clone();
-        assert!(c.validate().is_err());
-    }
-}
+#[path = "protocol_tests.rs"]
+mod tests;

@@ -139,7 +139,6 @@ pub fn run(
         .store(extensions.fb_body_tracking, Ordering::SeqCst);
     let deadline = crate::deadline::Deadline::new(hub.clock_origin)?;
     let wake = deadline.event();
-    hub.attach_sampler(Some(wake.clone()));
     hub.initialized.store(true, Ordering::SeqCst);
     hub.set_available(true);
     let result = std::thread::scope(|scope| {
@@ -197,17 +196,10 @@ pub fn run(
                         }
                         refresh_tracking = Instant::now() + Duration::from_secs(1);
                     }
-                    for mut acquisition in acquisitions {
-                        if !acquisition.wanted(hub) {
-                            continue;
-                        }
-                        if acquisition.expired(hub.now()) {
-                            hub.missed(&acquisition, hub.now());
-                            continue;
-                        }
-                        acquisition.start(hub.now() as u64);
+                    for acquisition in acquisitions {
                         let mut acquired_at = hub.now();
-                        let mut represented_at = None;
+                        // xrLocateSpace has no returned actual target timestamp.
+                        let represented_at = None;
                         let mut body = None;
                         let mut inputs = Vec::new();
                         let mut poses: [Pose; 5] = std::array::from_fn(|i| Pose {
@@ -270,10 +262,6 @@ pub fn run(
                             let before_time = hub.now();
                             if running && let Ok(time) = instance.now() {
                                 acquired_at = hub.now();
-                                if acquisition.expired(acquired_at) {
-                                    hub.missed(&acquisition, acquired_at);
-                                    continue;
-                                }
                                 let clock = ClockMapping {
                                     server_at: before_time + (acquired_at - before_time) / 2,
                                     runtime_at: time.as_nanos(),
@@ -301,13 +289,9 @@ pub fn run(
                                             .returned_at
                                             .filter(|t| *t > 0)
                                             .and_then(|t| clock.to_server(t));
-                                        if sample.returned_at.is_none() {
-                                            sample.active = false;
-                                        }
                                         body = Some(sample);
                                     }
                                 } else {
-                                    represented_at = Some(requested);
                                     let synced = session
                                         .sync_actions(&[xr::ActiveActionSet::new(&actions)])
                                         .is_ok();
@@ -335,6 +319,9 @@ pub fn run(
                                 }
                             }
                         }
+                        if acquisition.group != Group::Rest {
+                            acquired_at = hub.now();
+                        }
                         let sample = hub.acquire(
                             acquisition.group,
                             &poses,
@@ -349,11 +336,11 @@ pub fn run(
                     if observe {
                         next += (now.saturating_sub(next) / period + 1) * period;
                     }
-                    let due = hub.next_acquisition().map_or(next, |due| next.min(due));
+                    let due = next;
                     // Work that is already due needs no sleep. Its lateness belongs
                     // to acquisition-thread work, not to kernel wakeup latency.
-                    if due > hub.now() as u64 && deadline.wait(Some(due))? {
-                        hub.record_wakeup(due, hub.now() as u64);
+                    if due > hub.now() as u64 {
+                        deadline.wait(Some(due))?;
                     }
                 }
             })?;
@@ -451,7 +438,6 @@ pub fn run(
             .and_then(|result| result.map_err(Into::into));
         result.and(joined)
     });
-    hub.attach_sampler(None);
     hub.set_available(false);
     result
 }

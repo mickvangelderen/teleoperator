@@ -75,6 +75,9 @@ export class SampleSelectionTable extends HTMLElement {
   private updateRow(index: number, nodes: Row, values: ReadonlyMap<number, CurrentValue>) {
     const current = values.get(index), d = this.capabilities!.descriptors[index];
     let label = !current ? "Not subscribed" : current.stale ? "Stale · awaiting current data" : valueText(current.value);
+    if (current?.retained && !current.stale && current.value !== null) label += " · retained";
+    setAttribute(nodes.value, "title", current?.retained && current.packet
+      ? `Retained from acquisition ${current.packet.timestamp} ns. On-change silence does not confirm delivery health.` : null);
     const delta = current?.subscription.deltas.get(current.selection);
     if (delta !== undefined && current?.value !== null && !current?.stale) label += ` · +${delta} ${d.kind === 11 ? "revisions" : "edges"}`;
     if (current && !current.stale && [2,5].includes(d.kind)) for (const field of referenceFields(d.kind)) {

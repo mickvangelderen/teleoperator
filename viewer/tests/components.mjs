@@ -68,7 +68,7 @@ try {
   await page.locator("#publish-0").click();
   assert.deepEqual(await page.evaluate(() => {
     const request = window.componentsFixture.requests.at(-1);
-    return { group: request.group, interval: String(request.schedule.interval), samples: request.samples };
+    return { group: request.group, interval: String(request.interval), samples: request.bundles[0] };
   }), { group: 0, interval: "23809524", samples: [{ descriptor: 0, format: 11, space: 1 }, { descriptor: 1, format: 1, space: 0 }] });
   await page.locator("#phase-0").fill("-1");
   await page.locator("#publish-0").click();
@@ -76,9 +76,10 @@ try {
   assert.match(await page.evaluate(() => window.componentsFixture.errors[0]), /Invalid duration/);
   await page.locator("#phase-0").fill("0");
   await page.locator("#schedule-0").selectOption("onChange");
-  assert.equal(await page.locator("#rate-0").isVisible(), false);
+  assert.equal(await page.locator("#rate-0").isVisible(), true);
   await page.locator("#publish-0").click();
-  assert.equal(await page.evaluate(() => window.componentsFixture.requests.at(-1).schedule.kind), "onChange");
+  assert.equal(await page.evaluate(() => window.componentsFixture.requests.at(-1).bundles[0].length), 0);
+  assert.equal(await page.evaluate(() => window.componentsFixture.requests.at(-1).sequenceNumberFormat), 2);
 
   // Theme values reach HTML, SVG and Canvas, and missing samples break lines.
   const themed = await page.evaluate(() => {

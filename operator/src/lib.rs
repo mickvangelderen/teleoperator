@@ -7,7 +7,6 @@ pub mod inputs;
 pub mod protocol;
 pub mod publication;
 pub mod server;
-mod timing;
 pub mod tracking;
 #[cfg(target_os = "android")]
 mod xr;

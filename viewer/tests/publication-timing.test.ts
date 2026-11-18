@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { periodic } from "../src/protocol";
+import { timing } from "../src/protocol";
 import { PublicationTiming, scheduleNeedsUpdate } from "../src/publication-timing";
-import type { ClockEstimate, PeriodicSchedule } from "../src/publication-timing";
+import type { ClockEstimate } from "../src/clock";
+import type { Timing } from "../src/protocol";
 
 const ns = (ms: number) => BigInt(Math.round(ms * 1e6));
 const mod = (a: bigint, b: bigint) => (a % b + b) % b;
-const schedule = (rate = 60) => periodic(rate) as PeriodicSchedule;
+const schedule = (rate = 60) => timing(rate) as Timing;
 function frames(timing: PublicationTiming, start: number, cadence = 1000 / 60, count = 13) {
   let frame = start;
   for (let i = 0; i < count; i++) { frame = start + i * cadence; timing.frame(frame, frame + 1); }
   return frame + 1;
 }
 
-test("phase aligns publication plus consumption delay with display time across offsets, latency and rates", () => {
+test("phase aligns publication plus prediction offset with display time across offsets, latency and rates", () => {
   for (const offset of [9_007_199_254_740_993n, -900_000_000n]) for (const transit of [0.5, 12, 80]) for (const rate of [30, 60, 90]) {
     const timing = new PublicationTiming(), cadence = 1000 / 90;
     const now = frames(timing, 1000, cadence);
@@ -25,9 +26,9 @@ test("phase aligns publication plus consumption delay with display time across o
     const lead = transit + 2 + 2;
     const renderAt = now + Math.ceil((2 * transit + 2 + 2 + 2) / cadence) * cadence;
     assert.equal(next.phase, mod(ns(renderAt - lead) + offset, next.interval));
-    assert.ok(Math.abs(Number(next.consumptionDelay) / 1e6 - (lead + 20)) < 1e-5);
+    assert.ok(Math.abs(Number(next.predictionOffset) / 1e6 - (lead + 20)) < 1e-5);
     const publication = ns(renderAt - lead) + offset;
-    assert.ok(Math.abs(Number(publication + next.consumptionDelay - offset) / 1e6 - (renderAt + 20)) < 1e-5);
+    assert.ok(Math.abs(Number(publication + next.predictionOffset - offset) / 1e6 - (renderAt + 20)) < 1e-5);
     assert.ok(Number(publication - offset) / 1e6 + transit + 2 <= renderAt - 1.999, "Arrival leaves decoding and margin before render");
   }
 });
@@ -39,7 +40,7 @@ test("display delay changes prediction target without moving the publication awa
   for (const photon of [0, 60, 1000]) {
     const after = timing.schedule(before, now, photon, clock)!;
     assert.equal(after.phase, before.phase);
-    assert.equal(after.consumptionDelay - before.consumptionDelay, ns(photon - 20));
+    assert.equal(after.predictionOffset - before.predictionOffset, ns(photon - 20));
     assert.equal(scheduleNeedsUpdate(before, after), true);
   }
 });
@@ -79,8 +80,8 @@ test("cadence changes and clock drift move the phase while noise stays within th
   assert.equal(scheduleNeedsUpdate(first, changed), true);
   const wrapped = { ...first, phase: first.interval - 200_000n };
   assert.equal(scheduleNeedsUpdate(wrapped, { ...wrapped, phase: 200_000n }), false);
-  assert.equal(scheduleNeedsUpdate(first, { ...first, consumptionDelay: first.consumptionDelay + 400_000n }), false);
-  assert.equal(scheduleNeedsUpdate(first, { ...first, consumptionDelay: first.consumptionDelay - 600_000n }), true);
+  assert.equal(scheduleNeedsUpdate(first, { ...first, predictionOffset: first.predictionOffset + 400_000n }), false);
+  assert.equal(scheduleNeedsUpdate(first, { ...first, predictionOffset: first.predictionOffset - 600_000n }), true);
 });
 
 test("automatic rate follows 100 Hz rendering, respects device limits, and ignores isolated missed frames", () => {
@@ -108,5 +109,5 @@ test("ordinary decode cost is covered without predicting extra frames after one 
   const after = timing.schedule(schedule(), now, 20, clock)!;
   assert.deepEqual(after, before, "One isolated stall must not determine the next two seconds of predictions");
   for (let i = 0; i < 20; i++) timing.received(4, now);
-  assert.equal(timing.schedule(schedule(), now, 20, clock)!.consumptionDelay - before.consumptionDelay, ns(2));
+  assert.equal(timing.schedule(schedule(), now, 20, clock)!.predictionOffset - before.predictionOffset, ns(2));
 });

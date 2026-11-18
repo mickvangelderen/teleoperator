@@ -20,20 +20,24 @@ pub enum Source {
 }
 #[derive(Clone)]
 pub struct Catalog {
-    pub capabilities: Capabilities,
-    pub sources: Vec<Source>,
+    pub capabilities: Arc<Capabilities>,
+    pub sources: Arc<Vec<Source>>,
     contract: (bool, bool, bool),
-    parents: Vec<i32>,
+    parents: Arc<Vec<i32>>,
     skeleton: Option<Arc<body::Skeleton>>,
     observed_skeleton: Option<(Arc<body::Skeleton>, bool)>,
 }
 impl Catalog {
+    fn capabilities_mut(&mut self) -> &mut Capabilities {
+        Arc::get_mut(&mut self.capabilities).expect("Unshared catalog construction")
+    }
+
     pub fn predicted_for(
         &self,
         request: &crate::protocol::Request,
         sample: &Sample,
     ) -> Option<u64> {
-        let predicted = request.samples.iter().any(|selection| {
+        let predicted = request.bindings().any(|selection| {
             match self.sources.get(selection.descriptor as usize) {
                 Some(Source::Pose(i)) => {
                     sample.poses.get(*i).is_some_and(|p| pose_flags(p) & 3 != 0)
@@ -78,25 +82,33 @@ impl Catalog {
             self.skeleton = Some(skeleton);
         }
     }
-    pub fn publication(
+    #[cfg(test)]
+    pub(crate) fn publication(
         &self,
         request: &crate::protocol::Request,
         sample: &Sample,
         timestamp: u64,
     ) -> crate::protocol::Result<Vec<u8>> {
-        let mut buffer = Vec::new();
-        self.publication_into(request, sample, timestamp, &mut Vec::new(), &mut buffer)?;
-        Ok(buffer)
+        let acquisition = self.encode_acquisition(request, sample)?;
+        crate::protocol::publication_body(
+            request.id,
+            timestamp,
+            acquisition.predicted_for,
+            request.sequence_number_format,
+            request.sequence_number_format.map(|_| 0),
+            &acquisition
+                .bundles
+                .iter()
+                .map(|b| Some(b.as_slice()))
+                .collect::<Vec<_>>(),
+        )
     }
-    pub(crate) fn publication_into(
+    pub fn encode_acquisition(
         &self,
         request: &crate::protocol::Request,
         sample: &Sample,
-        timestamp: u64,
-        values: &mut Vec<Value>,
-        buffer: &mut Vec<u8>,
-    ) -> crate::protocol::Result<()> {
-        if request.samples.iter().any(|s| {
+    ) -> crate::protocol::Result<crate::protocol::EncodedAcquisition> {
+        if request.bindings().any(|s| {
             matches!(
                 self.sources.get(s.descriptor as usize),
                 Some(
@@ -116,23 +128,32 @@ impl Catalog {
         }) {
             return Err("Selected body source has an invalid or unvalidated skeleton".into());
         }
-        values.clear();
-        for selection in &request.samples {
-            values.push(self.value(selection.descriptor, sample).ok_or_else(|| {
-                format!(
-                    "Selected source {} is missing from the acquisition",
-                    selection.descriptor
-                )
-            })?);
+        let mut bundles = Vec::with_capacity(request.bundles.len());
+        for bindings in &request.bundles {
+            let values = bindings
+                .iter()
+                .map(|binding| {
+                    self.value(binding.descriptor, sample).ok_or_else(|| {
+                        format!(
+                            "Selected source {} is missing from the acquisition",
+                            binding.descriptor
+                        )
+                    })
+                })
+                .collect::<crate::protocol::Result<Vec<_>>>()?;
+            bundles.push(crate::protocol::encode_bundle(
+                &self.capabilities,
+                bindings,
+                &values,
+            )?);
         }
-        crate::protocol::tracking_into(
-            &self.capabilities,
-            request,
-            timestamp,
-            self.predicted_for(request, sample),
-            values,
-            buffer,
-        )
+        Ok(crate::protocol::EncodedAcquisition {
+            number: sample.number,
+            acquired_at: u64::try_from(sample.acquired_at)
+                .map_err(|_| "Invalid acquisition time")?,
+            predicted_for: self.predicted_for(request, sample),
+            bundles,
+        })
     }
     pub fn snapshot(hub: &Hub) -> Self {
         let contract = Self::contract(hub);
@@ -146,19 +167,21 @@ impl Catalog {
             .filter(|(_, valid)| *valid)
             .map(|(s, _)| s.clone());
         let mut result = Self {
-            capabilities: Capabilities::default(),
-            sources: Vec::new(),
+            capabilities: Arc::new(Capabilities::default()),
+            sources: Arc::new(Vec::new()),
             contract,
             skeleton: skeleton.clone(),
             observed_skeleton,
-            parents: skeleton
-                .as_ref()
-                .map_or_else(Vec::new, |s| s.joints.iter().map(|j| j.parent).collect()),
+            parents: Arc::new(
+                skeleton
+                    .as_ref()
+                    .map_or_else(Vec::new, |s| s.joints.iter().map(|j| j.parent).collect()),
+            ),
         };
         if !contract.0 || hub.source == "none" {
             return result;
         }
-        result.capabilities.groups.extend([RATE, RATE]);
+        result.capabilities_mut().groups.extend([RATE, RATE]);
         let space = if contract.1 { 4 } else { 2 };
         for (i, (id, name)) in [
             ("/user/head/input/pose", "Head"),
@@ -216,7 +239,7 @@ impl Catalog {
                             Source::Input(i, field),
                         );
                     }
-                    let d = &mut result.capabilities.descriptors[index];
+                    let d = &mut result.capabilities_mut().descriptors[index];
                     if touched {
                         d.touch_count_sample = Some(index as u32 + 1);
                         d.untouch_count_sample = Some(index as u32 + 2);
@@ -242,7 +265,7 @@ impl Catalog {
                     Source::Input(i, 0),
                 ),
             }
-            result.capabilities.descriptors[value_index].description =
+            result.capabilities_mut().descriptors[value_index].description =
                 "Inactive value is a placeholder; see /active.".into();
             result.add(
                 format!("{id}/active"),
@@ -253,14 +276,16 @@ impl Catalog {
                 Source::Input(i, 3),
             );
             result
-                .capabilities
+                .capabilities_mut()
                 .descriptors
                 .last_mut()
                 .unwrap()
-                .description = "Whether the input value is usable.".into();
+                .description = format!(
+                "Activity of {id}. False means a placeholder value; its associated edge counters retain actual counts."
+            );
         }
         if let Some(skeleton) = skeleton.filter(|_| contract.2) {
-            result.capabilities.groups.extend([RATE, RATE]);
+            result.capabilities_mut().groups.extend([RATE, RATE]);
             let confidence = result.sources.len() as u32;
             result.add(
                 "/body/FB/confidence".into(),
@@ -271,7 +296,7 @@ impl Catalog {
                 Source::Confidence,
             );
             result
-                .capabilities
+                .capabilities_mut()
                 .descriptors
                 .last_mut()
                 .unwrap()
@@ -285,7 +310,7 @@ impl Catalog {
                 Source::ConfidenceValid,
             );
             result
-                .capabilities
+                .capabilities_mut()
                 .descriptors
                 .last_mut()
                 .unwrap()
@@ -299,7 +324,7 @@ impl Catalog {
                 Source::Revision,
             );
             result
-                .capabilities
+                .capabilities_mut()
                 .descriptors
                 .last_mut()
                 .unwrap()
@@ -316,7 +341,7 @@ impl Catalog {
                     Source::Joint(i),
                 );
                 result.quality(pose_sample as usize, true, i);
-                result.capabilities.descriptors[pose_sample as usize].confidence_sample =
+                result.capabilities_mut().descriptors[pose_sample as usize].confidence_sample =
                     Some(confidence);
                 let rest_pose_sample = result.sources.len() as u32;
                 result.add(
@@ -327,7 +352,12 @@ impl Catalog {
                     vec![5],
                     Source::Rest(i),
                 );
-                result.capabilities.descriptors.last_mut().unwrap().group = Group::Rest as u32;
+                result
+                    .capabilities_mut()
+                    .descriptors
+                    .last_mut()
+                    .unwrap()
+                    .group = Group::Rest as u32;
                 joints.push(Joint {
                     parent: if joint.parent < 0 {
                         i as u32
@@ -346,10 +376,10 @@ impl Catalog {
                 vec![],
                 Source::Revision,
             );
-            let d = result.capabilities.descriptors.last_mut().unwrap();
+            let d = result.capabilities_mut().descriptors.last_mut().unwrap();
             d.group = Group::Rest as u32;
             d.revision_of = Some(Group::Rest as u32);
-            result.capabilities.skeletons.push(joints);
+            result.capabilities_mut().skeletons.push(joints);
         }
         result.capabilities.validate().expect("Device capabilities");
         result
@@ -399,7 +429,7 @@ impl Catalog {
                 },
             );
         }
-        let d = &mut self.capabilities.descriptors[index];
+        let d = &mut self.capabilities_mut().descriptors[index];
         d.position_valid_sample = Some(first);
         d.orientation_valid_sample = Some(first + 1);
         d.position_tracked_sample = Some(first + 2);
@@ -419,7 +449,7 @@ impl Catalog {
         } else {
             String::new()
         };
-        self.capabilities.descriptors.push(Descriptor {
+        self.capabilities_mut().descriptors.push(Descriptor {
             id,
             name,
             description,
@@ -434,7 +464,9 @@ impl Catalog {
             } as u32,
             ..Descriptor::default()
         });
-        self.sources.push(source);
+        Arc::get_mut(&mut self.sources)
+            .expect("Unshared catalog construction")
+            .push(source);
     }
     pub fn value(&self, index: u32, sample: &Sample) -> Option<Value> {
         let confidence = || {
@@ -603,26 +635,30 @@ pub fn pose_value(p: &Pose) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{self, Message, Request, Schedule, Selection, Session};
+    use crate::protocol::{self, Message, Request, SampleBinding, SequenceNumberFormat, Session};
 
     fn request_for(c: &Catalog, group: u32) -> Request {
         Request {
             id: group + 1,
             group,
-            delivery: 1,
-            schedule: Schedule::OnChange,
-            samples: c
-                .capabilities
-                .descriptors
-                .iter()
-                .enumerate()
-                .filter(|(_, d)| d.group == group)
-                .map(|(i, d)| Selection {
-                    descriptor: i as u32,
-                    format: d.formats[0],
-                    space: d.spaces.first().copied().unwrap_or(0),
-                })
-                .collect(),
+            channel: 1,
+            interval: 5_000_000,
+            phase: 0,
+            prediction_offset: 0,
+            sequence_number_format: None,
+            bundles: vec![
+                c.capabilities
+                    .descriptors
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| d.group == group)
+                    .map(|(i, d)| SampleBinding {
+                        descriptor: i as u32,
+                        format: d.formats[0],
+                        space: d.spaces.first().copied().unwrap_or(0),
+                    })
+                    .collect(),
+            ],
         }
     }
     fn input_samples() -> Vec<inputs::Input> {
@@ -696,11 +732,11 @@ mod tests {
                 .is_err()
         );
         let head = Request {
-            samples: vec![Selection {
+            bundles: vec![vec![SampleBinding {
                 descriptor: 0,
                 format: 10,
                 space: 2,
-            }],
+            }]],
             ..request_for(&c, 0)
         };
         assert!(c.publication(&head, &sample, 100).is_ok());
@@ -849,9 +885,9 @@ mod tests {
             );
         }
         c.publication(&request, &sample, 100).unwrap();
-        // Activity itself triggers OnChange only when selected; counters are real, not synthetic releases.
+        // Activity changes bundle state only when selected; counters are real, not synthetic releases.
         let mut only_value = request_for(&c, Group::Inputs as u32);
-        only_value.samples.retain(|s| s.descriptor == button);
+        only_value.bundles[0].retain(|s| s.descriptor == button);
         sample.inputs[action].value = inputs::Value::Boolean {
             value: false,
             presses: 123,
@@ -860,7 +896,7 @@ mod tests {
         let inactive = c.publication(&only_value, &sample, 100).unwrap();
         sample.inputs[action].active = true;
         assert_eq!(inactive, c.publication(&only_value, &sample, 100).unwrap());
-        only_value.samples.push(Selection {
+        only_value.bundles[0].push(SampleBinding {
             descriptor: active,
             format: 1,
             space: 0,
@@ -957,13 +993,16 @@ mod tests {
         let mut request = Request {
             id: 1,
             group: 0,
-            delivery: 1,
-            schedule: Schedule::OnChange,
-            samples: vec![Selection {
+            channel: 1,
+            interval: 5_000_000,
+            phase: 0,
+            prediction_offset: 0,
+            sequence_number_format: None,
+            bundles: vec![vec![SampleBinding {
                 descriptor: 0,
                 format: 10,
                 space: 2,
-            }],
+            }]],
         };
         assert_eq!(catalog.predicted_for(&request, &sample), Some(25_000_100));
         let mut inactive = sample.clone();
@@ -972,20 +1011,13 @@ mod tests {
         inactive.poses[0].active = Some(true);
         inactive.poses[0].flags = 0;
         assert_eq!(catalog.predicted_for(&request, &inactive), None);
-        request.samples[0] = Selection {
+        request.bundles[0][0] = SampleBinding {
             descriptor: 1,
             format: 1,
             space: 0,
         };
         assert_eq!(catalog.predicted_for(&request, &sample), None);
-        let bytes = protocol::tracking(
-            &catalog.capabilities,
-            &request,
-            100,
-            None,
-            &[catalog.value(1, &sample).unwrap()],
-        )
-        .unwrap();
+        let bytes = catalog.publication(&request, &sample, 100).unwrap();
         assert_eq!(&bytes[4..12], &100u64.to_le_bytes());
         assert_eq!(&bytes[12..20], &u64::MAX.to_le_bytes());
     }
@@ -1063,47 +1095,44 @@ mod tests {
         let request = Request {
             id: 1,
             group: Group::Rest as u32,
-            delivery: 2,
-            schedule: Schedule::OnChange,
-            // Unselected native revisions must not trigger an OnChange publication.
-            samples: c
-                .capabilities
-                .descriptors
-                .iter()
-                .enumerate()
-                .filter(|(_, d)| d.group == Group::Rest as u32 && d.kind == 10)
-                .map(|(i, d)| Selection {
-                    descriptor: i as u32,
-                    format: d.formats[0],
-                    space: d.spaces[0],
-                })
-                .collect(),
+            channel: 2,
+            interval: 5_000_000,
+            phase: 0,
+            prediction_offset: 0,
+            sequence_number_format: Some(SequenceNumberFormat::U32),
+            // Unselected native revisions must not trigger an pending bundle state.
+            bundles: vec![
+                vec![],
+                c.capabilities
+                    .descriptors
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| d.group == Group::Rest as u32 && d.kind == 10)
+                    .map(|(i, d)| SampleBinding {
+                        descriptor: i as u32,
+                        format: d.formats[0],
+                        space: d.spaces[0],
+                    })
+                    .collect(),
+            ],
         };
         session
             .handle(Message::Subscribe(request.clone()), 0)
             .unwrap();
-        assert!(matches!(
-            session.active[&1].request.schedule,
-            Schedule::OnChange
-        ));
         let mut publish = |session: &mut Session, body: Option<&body::Body>, now| {
             h.acquire(Group::Poses, &poses, &[], body, now, None);
             assert!(!c.changed(&h), "Body activity does not change the catalog");
             let sample = h.latest(Group::Poses).unwrap();
             let sub = session.active.get_mut(&1).unwrap();
-            let Some(timestamp) = sub.timestamp(now, now) else {
+            c.refresh_skeleton(&h, &sample);
+            let mut publication = sub.publication.lock().unwrap();
+            publication.observe(c.encode_acquisition(&sub.request, &sample).unwrap());
+            let Some(candidate) = publication.candidate() else {
                 return false;
             };
-            c.refresh_skeleton(&h, &sample);
-            let bytes = c.publication(&sub.request, &sample, timestamp).unwrap();
-            if !sub.should_publish(&bytes) {
-                return false;
-            }
-            assert!(
-                sub.should_publish(&bytes),
-                "Only a successful send commits the snapshot"
-            );
-            sub.published(&bytes);
+            let sequence = candidate.sequence.unwrap();
+            publication.submitted(candidate);
+            publication.acknowledge(sequence);
             true
         };
         assert!(publish(&mut session, Some(&body), 0));
@@ -1131,21 +1160,17 @@ mod tests {
         session
             .handle(
                 Message::Subscribe(Request {
-                    delivery: 1,
+                    channel: 1,
                     ..request
                 }),
                 3_040_000_000,
             )
             .unwrap();
-        assert!(matches!(
-            session.active[&1].request.schedule,
-            Schedule::OnChange
-        ));
         assert!(publish(&mut session, Some(&body), 3_040_000_000));
         assert!(!publish(&mut session, Some(&body), 3_045_000_000));
         assert!(
             !publish(&mut session, Some(&body), 4_040_000_000),
-            "Unreliable OnChange does not invent a retry or periodic refresh"
+            "Acknowledged state stays omitted on the unreliable channel"
         );
     }
     #[test]

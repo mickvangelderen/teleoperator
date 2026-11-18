@@ -1,20 +1,20 @@
-import { decodeServer, MAX_SERVER_MESSAGE, counterDelta, counterKind, decodeTracking, offer, subscribe, unsubscribe, updateSchedule, validateRequest, validateSchedule, publicationRate, NON_MAX, width } from "./protocol";
-import type { Capabilities, Packet, Request, Schedule, ServerMessage } from "./protocol";
+import { decodeServer, MAX_SERVER_MESSAGE, counterDelta, counterKind, decodeTracking, offer, subscribe, unsubscribe, updateSchedule, validateRequest, validateTiming, publicationRate, NON_MAX, width, acknowledge, sequencePosition, changedOnly } from "./protocol";
+import type { Capabilities, Packet, Request, Timing, ServerMessage, Value } from "./protocol";
 import { FreshnessBaseline, summarizeFreshness } from "./freshness";
 import type { StreamFreshness } from "./freshness";
 
-type ReceivedPrediction = { packet: Packet; arrivedAt: number };
+import { SoftwareClock } from "./clock";
+type ReceivedPrediction = { packet: Packet; values: Value[]; arrivedAt: number; acquiredAtArrival: number };
+export type ReceivedBundle = ReceivedPrediction & { position: bigint; predictions: ReceivedPrediction[]; consumed?: ReceivedPrediction };
 export type Subscription = {
   request: Request; generation: number; packet?: Packet; arrivedAt?: number; acquiredAtArrival?: number;
+  bundles: (ReceivedBundle | undefined)[]; newestPosition?: bigint; version: number;
   counters: Map<number, bigint>; deltas: Map<number, bigint>;
   arrivals: number[]; packets: number; bytes: number;
   deliveryObservations?: { acquired: bigint; arrived: number }[];
-  predictions?: ReceivedPrediction[];
-  predictionFloor?: bigint;
-  consumed?: ReceivedPrediction;
   freshness: FreshnessBaseline;
 };
-export const selectedPacket = (s: Subscription) => s.consumed?.packet ?? s.packet;
+export const selectedBundle = (s: Subscription, index: number) => s.bundles[index]?.consumed ?? s.bundles[index];
 export class Session {
   phase: "selection" | "capabilities" | "ready" | "closed" = "selection";
   capabilities?: Capabilities;
@@ -26,28 +26,32 @@ export class Session {
   private nextId = 1;
   detail = "Negotiating connection…";
   discarded = 0;
-  clock?: { offset: bigint; delay: bigint; at: number };
   consumptionTime?: bigint;
   private nextClock = 0;
-  private readonly clockRequests = new Map<number, bigint>();
-  private clockObservations: { offset: bigint; delay: bigint; at: number }[] = [];
+  private readonly clockRequests = new Map<number, { sent: bigint; at: number }>();
+  private softwareClock = new SoftwareClock();
+  private acknowledgments: { id: number; bytes: Uint8Array }[] = [];
+  private clockObservations: { delay: bigint; at: number }[] = [];
   start() { return offer(); }
   retire() {
     this.phase = "closed"; this.capabilities = undefined;
     this.active.clear(); this.pending.clear(); this.stopping.clear();
     this.revisions.clear();
-    this.clockRequests.clear(); this.clockObservations = []; this.clock = undefined;
+    this.clockRequests.clear(); this.clockObservations = [];
+    this.softwareClock = new SoftwareClock(); this.acknowledgments = []; this.consumptionTime = undefined;
   }
   request(request: Request) {
     if (this.phase !== "ready" || !this.capabilities || this.pending.has(request.id) || this.stopping.has(request.id)) throw new Error("Subscription request is not currently allowed");
-    const r = { ...request, schedule: { ...request.schedule }, samples: request.samples.map(s => ({ ...s })) };
+    const r = { ...request, bundles: request.bundles.map(b => b.map(s => ({ ...s }))) };
     validateRequest(this.capabilities, r);
+    this.acknowledgments = this.acknowledgments.filter(a => a.id !== r.id);
     this.pending.set(r.id, r); return subscribe(r);
   }
   stop(id: number) {
     const active = this.active.get(id);
     if (!active || this.pending.has(id) || this.stopping.has(id)) throw new Error("No accepted subscription available to stop");
     this.stopping.add(id); this.active.delete(id);
+    this.acknowledgments = this.acknowledgments.filter(a => a.id !== id);
     return unsubscribe(id);
   }
   allocateId() {
@@ -55,82 +59,76 @@ export class Session {
     if (this.nextId > 0xffffffff) throw new Error("Subscription ids exhausted; reconnect");
     return this.nextId++;
   }
-  changeSchedule(id: number, schedule: Schedule) {
+  changeSchedule(id: number, timing: Timing) {
     const sub = this.active.get(id);
     if (!sub || this.pending.has(id) || this.stopping.has(id)) throw new Error("No accepted subscription available to update");
-    validateSchedule(schedule, this.capabilities!.groups[sub.request.group]);
-    const bytes = updateSchedule(id, schedule);
-    const previous = sub.request.schedule;
-    sub.request.schedule = { ...schedule };
-    if (previous.kind !== schedule.kind || (previous.kind === "periodic" && schedule.kind === "periodic" && previous.interval !== schedule.interval)) sub.freshness = new FreshnessBaseline();
+    validateTiming(timing);
+    const bytes = updateSchedule(id, timing);
+    if (sub.request.interval !== timing.interval) sub.freshness = new FreshnessBaseline();
+    Object.assign(sub.request, { interval: timing.interval, phase: timing.phase, predictionOffset: timing.predictionOffset });
     return bytes;
   }
+  takeAcknowledgments() { const ready = this.acknowledgments; this.acknowledgments = []; return ready.map(a => a.bytes); }
   control(bytes: Uint8Array, arrivedAt = performance.now()) {
-    const message = decodeServer(bytes);
-    if (message.tag === 9) {
-      if (this.phase !== "ready") throw new Error("Publication before capabilities");
-      return this.tracking(message.body, arrivedAt, 2);
-    }
-    this.receive(message);
-    return null;
+    // Publications have discard semantics even before discovery and on Reliable.
+    if (bytes[0] === 9) return this.tracking(bytes.subarray(1), arrivedAt, 2);
+    this.receive(decodeServer(bytes)); return null;
   }
+  // Every caller requests a mapping at its own monotonic time; no shared snapshot is mutated.
+  clockEstimate(now: number) { return this.softwareClock.estimate(now); }
 
   requestClock(now: number) {
     if (!["capabilities", "ready"].includes(this.phase) || this.nextClock > 0xffffffff) return undefined;
-    const at = BigInt(Math.round(now * 1e6));
-    for (const [id, sent] of this.clockRequests) if (at - sent > 10_000_000_000n) this.clockRequests.delete(id);
+    const sent = this.softwareClock.capture(now);
+    for (const [id, request] of this.clockRequests) if (now - request.at > 10_000) this.clockRequests.delete(id);
     if (this.clockRequests.size >= 16) return undefined;
     const id = this.nextClock++, bytes = new Uint8Array(5);
     bytes[0] = 10; new DataView(bytes.buffer).setUint32(1, id, true);
-    this.clockRequests.set(id, at); return bytes;
+    this.clockRequests.set(id, { sent, at: now }); return bytes;
   }
   unreliable(bytes: Uint8Array, arrivedAt: number): Packet | null {
     if (!["capabilities", "ready"].includes(this.phase) || bytes.length > MAX_SERVER_MESSAGE) { this.discarded++; return null; }
     if (bytes[0] === 9) return this.tracking(bytes.subarray(1), arrivedAt);
     if (bytes[0] !== 11 || bytes.length !== 21) { this.discarded++; return null; }
+    const t4 = this.softwareClock.capture(arrivedAt);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), id = view.getUint32(1, true);
-    const t1 = this.clockRequests.get(id), t2 = view.getBigUint64(5, true), t3 = view.getBigUint64(13, true), t4 = BigInt(Math.round(arrivedAt * 1e6));
-    if (t1 === undefined || t2 === NON_MAX || t3 === NON_MAX || t3 < t2 || t4 < t1 || t4 - t1 > 10_000_000_000n) { this.discarded++; return null; }
+    const request = this.clockRequests.get(id), t2 = view.getBigUint64(5, true), t3 = view.getBigUint64(13, true);
+    if (!request || t2 === NON_MAX || t3 === NON_MAX || t3 < t2 || arrivedAt < request.at || arrivedAt - request.at > 10_000) { this.discarded++; return null; }
     this.clockRequests.delete(id);
-    const delay = (t4 - t1) - (t3 - t2);
-    if (delay < 0n) { this.discarded++; return null; }
-    this.clockObservations = this.clockObservations.filter(o => arrivedAt - o.at <= 30_000).slice(-7);
-    this.clockObservations.push({ offset: ((t2 - t1) + (t3 - t4)) / 2n, delay, at: arrivedAt });
-    // Prefer low-delay probes, but age out their offsets promptly so clock drift is followed.
-    this.clock = this.clockObservations.filter(o => arrivedAt - o.at < 2000).reduce((best, o) => o.delay <= best.delay ? o : best);
+    const result = this.softwareClock.observe(request.sent, t2, t3, t4, arrivedAt);
+    this.clockObservations = this.clockObservations.filter(o => arrivedAt - o.at <= 30_000).slice(-127);
+    this.clockObservations.push(result.observation);
+    if (result.alignedNow || result.reinitialized) this.clockRequests.clear();
     return null;
   }
   sampleAge(timestamp: bigint, now: number, renderToPhotonMs = 0) {
-    if (!this.clock || now - this.clock.at > 30_000) return undefined;
-    return Number(BigInt(Math.round(now * 1e6)) - timestamp + this.clock.offset) / 1e6 + renderToPhotonMs;
+    const clock = this.clockEstimate(now);
+    if (!clock || now < clock.at || now - clock.at > 30_000) return undefined;
+    return Number(BigInt(Math.round(now * 1e6)) + clock.offset - timestamp) / 1e6 + renderToPhotonMs;
   }
   consume(now: number, offsetMs = 0) {
-    const target = this.clock && now >= this.clock.at && now - this.clock.at <= 30_000
-      ? BigInt(Math.round((now + offsetMs) * 1e6)) + this.clock.offset : undefined;
+    const clock = this.clockEstimate(now);
+    const target = clock && now >= clock.at && now - clock.at <= 30_000
+      ? BigInt(Math.round((now + offsetMs) * 1e6)) + clock.offset : undefined;
     this.consumptionTime = target;
-    const distance = (p: Packet) => { const d = p.predictedFor! - target!; return d < 0n ? -d : d; };
-    for (const s of this.active.values()) {
-      if (target === undefined || s.packet?.predictedFor == null || !s.predictions?.length) {
-        s.consumed = undefined;
-        continue;
-      }
-      let best = s.predictions[0];
-      for (const candidate of s.predictions) {
-        const delta = distance(candidate.packet) - distance(best.packet);
-        if (delta < 0n || (delta === 0n && candidate.packet.timestamp > best.packet.timestamp)) best = candidate;
-      }
-      s.consumed = best;
-      // Older past predictions cannot become a better match as consumption advances.
-      // Keep the best past sample and future samples; arrivals are independently bounded.
-      s.predictions = s.predictions.filter(p => p === best || p.packet.predictedFor! >= target);
+    for (const s of this.active.values()) for (const b of s.bundles) {
+      if (!b) continue;
+      b.consumed = undefined;
+      if (target === undefined || !b.predictions.length) continue;
+      const distance = (p: ReceivedPrediction) => { const d = p.packet.predictedFor! - target; return d < 0n ? -d : d; };
+      let best = b.predictions[0];
+      for (const p of b.predictions) if (distance(p) < distance(best) || (distance(p) === distance(best) && p.packet.timestamp > best.packet.timestamp)) best = p;
+      b.consumed = best;
+      b.predictions = b.predictions.filter(p => p === best || p.packet.predictedFor! >= target);
     }
   }
   // Policies can evaluate at their own control tick; freshness does not imply sample validity.
   freshness(now: number) {
     const streams: StreamFreshness[] = [];
     for (const sub of this.active.values()) {
-      if (sub.request.schedule.kind === "onChange") continue;
-      const age = sub.packet && this.sampleAge(sub.packet.timestamp, now);
+      if (changedOnly(sub.request)) continue;
+      const continuous = sub.bundles[0];
+      const age = continuous && this.sampleAge(continuous.packet.timestamp, now);
       const ageMs = age !== undefined && age >= 0 ? age : undefined;
       const { thresholdMs, latencyMs, jitterMs } = sub.freshness;
       streams.push({ id: sub.request.id, group: sub.request.group, generation: sub.generation, intervalMs: 1000 / publicationRate(sub.request),
@@ -152,11 +150,12 @@ export class Session {
     return delays.length % 2 ? delays[mid] : (delays[mid - 1] + delays[mid]) / 2;
   }
   sampleArrivalDelay(id: number, now: number) {
-    if (!this.clock) return undefined;
+    const clock = this.clockEstimate(now);
+    if (!clock) return undefined;
     // Keep server timestamps so a refined clock estimate rebases the entire window.
     const delays = (this.active.get(id)?.deliveryObservations ?? [])
       .filter(o => o.arrived > now - 2000 && o.arrived <= now)
-      .map(o => Number(BigInt(Math.round(o.arrived * 1e6)) + this.clock!.offset - o.acquired) / 1e6)
+      .map(o => Number(BigInt(Math.round(o.arrived * 1e6)) + clock.offset - o.acquired) / 1e6)
       .filter(delay => delay >= 0 && delay <= 1000).sort((a, b) => a - b);
     return delays.length < 8 ? undefined : delays[Math.ceil(delays.length * 0.9) - 1];
   }
@@ -181,9 +180,9 @@ export class Session {
     switch (message.tag) {
       case 5: {
         const request = this.pending.get(message.id);
-        if (!request || this.active.has(message.id)) throw new Error("Unexpected subscription acceptance");
+        if (!request) throw new Error("Unexpected subscription acceptance");
         this.pending.delete(message.id);
-        this.active.set(message.id, { request, generation: this.nextGeneration++, counters: new Map(), deltas: new Map(), arrivals: [], packets: 0, bytes: 0, freshness: new FreshnessBaseline() });
+        this.active.set(message.id, { request, bundles: request.bundles.map(() => undefined), version: 0, generation: this.nextGeneration++, counters: new Map(), deltas: new Map(), arrivals: [], packets: 0, bytes: 0, freshness: new FreshnessBaseline() });
         this.detail = `Subscription ${message.id} accepted`; break;
       }
       case 6:
@@ -191,69 +190,69 @@ export class Session {
         this.detail = `Subscription ${message.id} rejected${message.reason === undefined ? "" : `: ${message.reason}`}`; break;
       case 8: {
         this.active.delete(message.id); this.stopping.delete(message.id);
+        this.acknowledgments = this.acknowledgments.filter(a => a.id !== message.id);
         this.detail = `Subscription ${message.id} ended: ${message.reason}`; break;
       }
       default: throw new Error("Server message in invalid session phase");
     }
   }
   tracking(bytes: Uint8Array, arrivedAt: number, delivery = 1): Packet | null {
-    if (bytes.length < 20 || !this.capabilities) { this.discarded++; return null; }
+    if (bytes.length < 20 || !this.capabilities || this.phase !== "ready") { this.discarded++; return null; }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), active = this.active.get(view.getUint32(0, true));
-    if (!active || active.request.delivery !== delivery) { this.discarded++; return null; }
+    if (!active || active.request.delivery !== delivery || (delivery === 1 && this.pending.has(active.request.id))) { this.discarded++; return null; }
     let packet: Packet;
     try { packet = decodeTracking(bytes, this.capabilities, active.request); }
     catch { this.discarded++; return null; }
-    const older = active.packet !== undefined && packet.timestamp < active.packet.timestamp;
-    // Current or historical runtime samples (such as body tracking) use the newest acquisition.
-    const forecast = packet.predictedFor !== null && packet.predictedFor > packet.timestamp;
-    const revisionChanged = active.packet && active.request.samples.some((selection, i) =>
-      this.capabilities!.descriptors[selection.descriptor].kind === 11
-      && packet.values[i] !== active.packet!.values[i]);
-    if (!older && (!forecast || revisionChanged)) {
-      active.predictions = undefined; active.consumed = undefined;
-      // Reordering must not resurrect predictions from before this discontinuity.
-      active.predictionFloor = packet.timestamp;
+    const format = active.request.sequenceNumberFormat;
+    const position = format === null ? packet.timestamp : sequencePosition(packet.sequenceNumber!, active.newestPosition, format);
+    if (position === null) { this.discarded++; return null; }
+    if (active.newestPosition === undefined || position > active.newestPosition) {
+      active.newestPosition = position;
     }
-    // A reordered prediction can still be the best value for this consumption tick.
-    // Retain it without rewinding the latest acquisition, revisions or input counters.
-    const retained = forecast && !(older && revisionChanged)
-      && (active.predictionFloor === undefined || packet.timestamp >= active.predictionFloor);
-    if (retained) {
-      const predictions = active.predictions ??= [];
-      while (predictions.length && (predictions.length >= 256 || predictions[0].arrivedAt < arrivedAt - 2000)) predictions.shift();
-      predictions.push({ packet, arrivedAt });
+    if (format !== null && packet.bundles.some((b, i) => i > 0 && b !== null) && !this.pending.has(packet.id)) {
+      this.acknowledgments.push({ id: packet.id, bytes: acknowledge(packet.id, format, packet.sequenceNumber!) });
+      if (this.acknowledgments.length > 128) this.acknowledgments.shift();
     }
-    if (older) { if (!retained) this.discarded++; return null; }
     active.deltas.clear();
-    packet.values.forEach((value, i) => {
-      const s = active.request.samples[i];
-      const descriptor = this.capabilities!.descriptors[s.descriptor];
-      if (descriptor.kind === 11) {
-        const group = descriptor.revision_of!, previous = this.revisions.get(group);
-        if (!previous || packet.timestamp >= previous.timestamp) {
-          const current = BigInt(value as number | bigint), bits = 8 * width(s.format);
-          const changed = previous && BigInt.asUintN(Math.min(bits, previous.bits), current) !== BigInt.asUintN(Math.min(bits, previous.bits), previous.value);
-          this.revisions.set(group, { value: current, bits, timestamp: packet.timestamp, changedAt: changed ? packet.timestamp : previous?.changedAt });
+    let applied = false, flatIndex = 0;
+    packet.bundles.forEach((values, index) => {
+      const selections = active.request.bundles[index], previous = active.bundles[index];
+      const start = flatIndex; flatIndex += selections.length;
+      if (!values || (previous && (format === null ? position < previous.position : position <= previous.position))) return;
+      applied = true;
+      const acquired = !previous || packet.timestamp > previous.packet.timestamp;
+      const received = { packet, values, arrivedAt, acquiredAtArrival: acquired ? arrivedAt : previous!.acquiredAtArrival };
+      const predictions = packet.predictedFor !== null && packet.predictedFor > packet.timestamp
+        ? [...(previous?.predictions ?? []).filter(p => p.arrivedAt >= arrivedAt - 2000).slice(-255), received] : [];
+      active.bundles[index] = { ...received, position, predictions };
+      values.forEach((value, i) => {
+        const selection = selections[i], descriptor = this.capabilities!.descriptors[selection.descriptor], key = start + i;
+        if (descriptor.kind === 11) {
+          const group = descriptor.revision_of!, old = this.revisions.get(group);
+          if (!old || packet.timestamp >= old.timestamp) {
+            const current = BigInt(value as number | bigint), bits = 8 * width(selection.format);
+            const changed = old && BigInt.asUintN(Math.min(bits, old.bits), current) !== BigInt.asUintN(Math.min(bits, old.bits), old.value);
+            this.revisions.set(group, { value: current, bits, timestamp: packet.timestamp, changedAt: changed ? packet.timestamp : old?.changedAt });
+          }
         }
-      }
-      if (!counterKind(this.capabilities!.descriptors[s.descriptor].kind)) return;
-      const current = BigInt(value as number | bigint), previous = active.counters.get(i);
-      if (previous !== undefined) active.deltas.set(i, counterDelta(current, previous, s.format));
-      active.counters.set(i, current);
-    });
-    const acquired = !active.packet || packet.timestamp > active.packet.timestamp;
-    if (acquired) {
-      active.acquiredAtArrival = arrivedAt;
-      if (active.request.schedule.kind === "periodic") {
+        if (!counterKind(descriptor.kind)) return;
+        const current = BigInt(value as number | bigint), old = active.counters.get(key);
+        if (old !== undefined) active.deltas.set(key, counterDelta(current, old, selection.format));
+        active.counters.set(key, current);
+      });
+      if (index === 0 && acquired && selections.length) {
+        active.acquiredAtArrival = arrivedAt;
         const observations = active.deliveryObservations ??= [];
         while (observations.length && (observations.length >= 256 || observations[0].arrived < arrivedAt - 2000)) observations.shift();
         observations.push({ acquired: packet.timestamp, arrived: arrivedAt });
+        active.freshness.observe(this.sampleAge(packet.timestamp, arrivedAt), arrivedAt, 1000 / publicationRate(active.request), Number(this.clockEstimate(arrivedAt)?.delay ?? 0n) / 2e6);
       }
-    }
-    active.packet = packet; active.arrivedAt = arrivedAt; active.packets++; active.bytes += bytes.length;
-    if (acquired && active.request.schedule.kind !== "onChange") active.freshness.observe(this.sampleAge(packet.timestamp, arrivedAt), arrivedAt, 1000 / publicationRate(active.request), Number(this.clock?.delay ?? 0n) / 2e6);
-    active.arrivals.push(arrivedAt);
+    });
+    active.packets++; active.bytes += bytes.length; active.arrivals.push(arrivedAt);
     while (active.arrivals[0] < arrivedAt - 1000) active.arrivals.shift();
+    if (!applied) return null;
+    if (!active.packet || packet.timestamp >= active.packet.timestamp) active.packet = packet;
+    active.arrivedAt = arrivedAt; active.version++;
     return packet;
   }
 }

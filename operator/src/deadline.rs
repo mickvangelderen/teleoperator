@@ -12,7 +12,7 @@ pub(crate) fn now() -> u64 {
 }
 
 #[cfg(target_os = "android")]
-pub(crate) use native::{Deadline, Event};
+pub(crate) use native::Deadline;
 
 #[cfg(any(target_os = "android", test))]
 mod native {

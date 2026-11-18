@@ -1,8 +1,7 @@
-import type { Schedule } from "./protocol";
+import type { Timing } from "./protocol";
 import { median } from "./statistics";
 
-export type PeriodicSchedule = Extract<Schedule, { kind: "periodic" }>;
-export type ClockEstimate = { offset: bigint; delay: bigint; at: number };
+import type { ClockEstimate } from "./clock";
 const ns = (ms: number) => BigInt(Math.round(ms * 1e6));
 const modulo = (value: bigint, interval: bigint) => ((value % interval) + interval) % interval;
 export const SCHEDULE_UPDATE_INTERVAL_MS = 1000;
@@ -41,7 +40,7 @@ export class PublicationTiming {
     this.processing = this.processing.filter(p => now - p.at < 2000).slice(-64);
   }
 
-  schedule(current: PeriodicSchedule, now: number, renderToPhotonMs: number, clock?: ClockEstimate, transitMs?: number, maxRate = Infinity, sampleArrivalMs?: number): PeriodicSchedule | undefined {
+  schedule(current: Timing, now: number, renderToPhotonMs: number, clock?: ClockEstimate, transitMs?: number, maxRate = Infinity, sampleArrivalMs?: number): Timing | undefined {
     if (!clock || clock.at < this.clockAfter || now < clock.at || now - clock.at > 3000 || clock.delay < 0n
       || this.lastFrame === undefined || now - this.lastFrame > 250 || this.intervals.length < 4
       || !Number.isFinite(renderToPhotonMs) || renderToPhotonMs < 0 || renderToPhotonMs > 1000) return;
@@ -76,18 +75,18 @@ export class PublicationTiming {
     const framesAhead = Math.max(1, Math.ceil((now + transit + 2 + lead - anchor) / cadence));
     const renderAt = anchor + framesAhead * cadence;
     return {
-      kind: "periodic", interval,
+      interval,
       phase: modulo(ns(renderAt - lead) + clock.offset, interval),
-      consumptionDelay: ns(lead + renderToPhotonMs),
+      predictionOffset: ns(lead + renderToPhotonMs),
     };
   }
 }
 
-export function scheduleNeedsUpdate(current: PeriodicSchedule, next: PeriodicSchedule) {
+export function scheduleNeedsUpdate(current: Timing, next: Timing) {
   if (current.interval !== next.interval) return true;
   const distance = modulo(next.phase - current.phase, current.interval);
   const phaseError = distance < current.interval - distance ? distance : current.interval - distance;
-  const delayError = next.consumptionDelay - current.consumptionDelay;
+  const delayError = next.predictionOffset - current.predictionOffset;
   // Avoid churn from timestamp quantization, callback jitter and small probe changes.
   return phaseError > 1_000_000n || delayError > 500_000n || delayError < -500_000n;
 }

@@ -6,7 +6,7 @@ export async function checkPublicationTimingModel(page) {
   const results = await page.evaluate(async () => {
     const connectionUrl = performance.getEntriesByType("resource").find(e => new URL(e.name).pathname === "/src/connection.ts")?.name ?? "/src/connection.ts";
     const { Connection } = await import(connectionUrl);
-    const { periodic } = await import("/src/protocol.ts");
+    const { timing } = await import("/src/protocol.ts");
     const realPeer = window.RTCPeerConnection;
     class Channel {
       readyState = "open"; bufferedAmount = 0; sent = [];
@@ -27,20 +27,20 @@ export async function checkPublicationTimingModel(page) {
         const c = new Connection(() => {}), frames = [];
         c.session.receive({ tag: 2, version: 1 });
         c.session.receive({ tag: 3, capabilities: { skeletons: [], groups: [90], descriptors: [{ id: "pose", name: "pose", description: "", kind: 10, formats: [11], spaces: [2], group: 0 }] } });
-        c.publish({ id: 1, group: 0, delivery: 1, schedule: periodic(60), samples: [{ descriptor: 0, format: 11, space: 2 }] }, true);
+        c.publish({ id: 1, group: 0, delivery: 1, ...timing(60), sequenceNumberFormat: null, bundles: [ [{ descriptor: 0, format: 11, space: 2 }]] }, true);
         c.session.receive({ tag: 5, id: 1 });
         let count = 0;
         for (let i = 0; i < 260; i++) {
           const now = 1000 + i * 1000 / 60;
           const photon = i < 90 ? 20 : i < 180 ? 60 : 0;
           const clockOffset = offset + ns(i < 180 ? 0 : 3);
-          c.session.clock = { offset: clockOffset, delay: ns(2 * transit), at: now };
+          c.session.clockEstimate = () => ({ offset: clockOffset, delay: ns(2 * transit), at: now });
           c.frame(now, now, photon);
           const sent = Peer.latest.control.sent.filter(b => b[0] === 12);
           if (sent.length === count) continue;
           count = sent.length;
           const bytes = sent.at(-1), v = new DataView(bytes.buffer);
-          const interval = v.getBigUint64(6, true), phase = v.getBigUint64(14, true), delay = v.getBigUint64(22, true);
+          const interval = v.getBigUint64(5, true), phase = v.getBigUint64(13, true), delay = v.getBigUint64(21, true);
           const earliest = ns(now + transit + 2) + clockOffset;
           const publication = earliest + mod(phase - earliest, interval);
           const target = publication + delay;
@@ -76,15 +76,20 @@ export async function checkAutomaticPublicationTiming(page) {
     const connectionUrl = performance.getEntriesByType("resource").find(e => new URL(e.name).pathname === "/src/connection.ts")?.name ?? "/src/connection.ts";
     const { Connection } = await import(connectionUrl);
     const original = Connection.prototype.frame, send = RTCDataChannel.prototype.send;
-    window.publicationTimingCheck = { updates: [], connection: undefined, restore() { Connection.prototype.frame = original; RTCDataChannel.prototype.send = send; } };
+    window.publicationTimingCheck = { updates: [], frameTimes: [], connection: undefined, restore() { Connection.prototype.frame = original; RTCDataChannel.prototype.send = send; } };
     Connection.prototype.frame = function (...args) {
       window.publicationTimingCheck.connection = this;
+      window.publicationTimingCheck.frameTimes.push(args[0]);
+      window.publicationTimingCheck.frameTimes = window.publicationTimingCheck.frameTimes.slice(-13);
       return original.apply(this, args);
     };
     RTCDataChannel.prototype.send = function (bytes) {
       if (bytes instanceof Uint8Array && bytes[0] === 12) {
         const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        window.publicationTimingCheck.updates.push({ id: v.getUint32(1, true), at: performance.now(), interval: String(v.getBigUint64(6, true)), delay: Number(v.getBigUint64(22, true)) / 1e6 });
+        const times = window.publicationTimingCheck.frameTimes;
+        const intervals = times.slice(1).map((t,i) => t-times[i]).sort((a,b) => a-b);
+        const frameCadence = intervals[Math.floor(intervals.length/2)];
+        window.publicationTimingCheck.updates.push({ frameCadence, id: v.getUint32(1, true), at: performance.now(), interval: String(v.getBigUint64(5, true)), delay: Number(v.getBigUint64(21, true)) / 1e6 });
       }
       return send.call(this, bytes);
     };
@@ -100,7 +105,7 @@ export async function checkAutomaticPublicationTiming(page) {
     await page.waitForFunction(id => window.publicationTimingCheck.updates.some(u => u.id === id && u.delay >= 63 && u.delay < 90), initial);
     const automated = await page.evaluate(id => window.publicationTimingCheck.updates.findLast(u => u.id === id), initial);
     assert.equal(automated.id, initial, "Display delay changes use UpdateSchedule rather than replacement");
-    assert.equal(automated.interval, "16666667");
+    assert.ok(Math.abs(Number(automated.interval) / 1e6 - automated.frameCadence) < 0.1, "Requested slots follow the observed browser cadence");
     await page.locator("#automatic-0").uncheck();
     await page.locator("#phase-0").fill("2");
     await page.locator("#delay-0").fill("5");
@@ -117,15 +122,15 @@ export async function checkAutomaticPublicationTiming(page) {
     await page.waitForFunction(id => { const update = window.publicationTimingCheck.updates.findLast(u => u.id === id); return update?.delay >= 23 && update.delay < 50; }, initial);
     assert.equal(await page.evaluate(() => {
       const check = window.publicationTimingCheck;
-      return check.updates.every(u => check.connection.session.active.get(u.id)?.request.schedule.kind === "periodic");
-    }), true, "OnChange groups are not retimed");
+      return check.updates.every(u => check.connection.isAutomatic(u.id));
+    }), true, "Only groups opted into display alignment are retimed");
     const retargeted = await page.evaluate(async () => {
       const spatialUrl = performance.getEntriesByType("resource").find(e => new URL(e.name).pathname === "/src/spatial.ts")?.name ?? "/src/spatial.ts";
       const { SpatialView } = await import(spatialUrl);
       const session = window.publicationTimingCheck.connection.session;
       const sub = [...session.active.values()].find(s => s.request.group === 0);
-      const index = sub.request.samples.findIndex(s => session.capabilities.descriptors[s.descriptor].id === "/user/head/input/pose");
-      const packet = sub.packet, tracking = Object.getOwnPropertyDescriptor(session, "tracking"), update = SpatialView.prototype.update;
+      const index = sub.request.bundles[0].findIndex(s => session.capabilities.descriptors[s.descriptor].id === "/user/head/input/pose");
+      const bundle = sub.bundles[0], packet = bundle.packet, tracking = Object.getOwnPropertyDescriptor(session, "tracking"), update = SpatialView.prototype.update;
       const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       let position;
       session.tracking = () => null;
@@ -136,12 +141,14 @@ export async function checkAutomaticPublicationTiming(page) {
       try {
         await frame();
         const before = position;
-        sub.packet = { ...packet, predictedFor: packet.predictedFor + 16_666_667n,
-          values: packet.values.map((v, i) => i === index ? [v[0] + 0.25, ...v.slice(1)] : v) };
+        const values = bundle.values.map((v, i) => i === index ? [v[0] + 0.25, ...v.slice(1)] : v);
+        const nextPacket = { ...packet, predictedFor: (packet.predictedFor ?? packet.timestamp) + 16_666_667n, bundles: [values] };
+        sub.packet = nextPacket;
+        sub.bundles[0] = { ...bundle, packet: nextPacket, values, predictions: [], consumed: undefined }; sub.version++;
         await frame();
         return { before, after: position };
       } finally {
-        sub.packet = packet;
+        sub.packet = packet; sub.bundles[0] = bundle; sub.version++;
         if (tracking) Object.defineProperty(session, "tracking", tracking); else delete session.tracking;
         SpatialView.prototype.update = update;
       }

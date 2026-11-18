@@ -42,6 +42,7 @@ export async function checkRecording(browser, url) {
     assert.ok(packets.some(packet => packet.flags === 2 && packet.bytes[0] === 4), "Subscription descriptions captured");
     assert.ok(packets.some(packet => packet.flags === 0 && packet.bytes[0] === 9), "Reliable rest samples captured");
     assert.ok(packets.some(packet => packet.flags === 1 && packet.bytes[0] === 9), "Unreliable live samples captured");
+    assert.ok(packets.some(packet => packet.flags === 3 && packet.bytes[0] === 13), "Exact unreliable ACKs captured");
     console.log(`PASS: ${packets.length} WebRTC messages saved byte-for-byte in observed order (${bytes.length} bytes): ${path}`);
   } finally { await page.close(); }
 }

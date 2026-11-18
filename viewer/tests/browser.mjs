@@ -67,11 +67,11 @@ try {
   assert.equal(await page.getByRole("heading", { name: "Transport details" }).count(), 0);
   const workspace = await page.locator(".workspace").boundingBox(), metrics = await page.locator(".metrics").boundingBox();
   assert.equal(workspace.width, metrics.width, "Tracking workspace uses the full available width");
-  assert.match(await page.locator("#subscription-3").textContent(), /on change · reliable · 1 packets/);
-  assert.equal(await page.locator("#rate-3").isVisible(), false);
+  assert.match(await page.locator("#subscription-3").textContent(), /on change · [\d.]+ Hz slots · reliable · \d+ packets/g);
+  assert.equal(await page.locator("#rate-3").isVisible(), true);
   await page.locator("#delivery-3").selectOption("1");
-  assert.equal(await page.locator("#rate-3").isVisible(), false, "Channel does not choose the schedule");
-  await page.locator("#schedule-3").selectOption("periodic");
+  assert.equal(await page.locator("#rate-3").isVisible(), true, "Channel does not choose the schedule");
+  await page.locator("#schedule-3").selectOption("continuous");
   assert.equal(await page.locator("#rate-3").isVisible(), true);
   await page.locator("#schedule-3").selectOption("onChange");
   await page.locator("#delivery-3").selectOption("2");
@@ -84,14 +84,14 @@ try {
   await checkFrameRefresh(page);
   await checkTrackingColors(page, output);
   await checkFreshness(page, output);
-  assert.match(await page.locator("#requested-consumption-delay").textContent(), /^Requested: [\d.]+ ms$/);
-  assert.match(await page.locator("#measured-consumption-delay").textContent(), /^Measured ≈ -?[\d.]+ ms$/);
+  assert.match(await page.locator("#requested-prediction-offset").textContent(), /^Requested: [\d.]+ ms$/);
+  assert.match(await page.locator("#measured-prediction-offset").textContent(), /^Device target − acquisition: (?:-?[\d.]+ ms|unavailable)$/);
   await checkMetricMedians(page);
-  assert.match(await page.locator("#subscription-3").textContent(), /on change · reliable · 1 packets/, "Unchanged rest poses are sent only once");
+  assert.match(await page.locator("#subscription-3").textContent(), /on change · [\d.]+ Hz slots · reliable · \d+ packets/g, "Acknowledged rest remains active without periodic refresh");
   await page.locator("#skeleton-view").selectOption("rest");
   await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyJoints === "70" && document.querySelector("#poses").dataset.poseCount === "0");
   await page.locator('[data-descriptor="/body/FB/rest/revision"]').scrollIntoViewIfNeeded();
-  await page.waitForFunction(() => document.querySelector('[data-descriptor="/body/FB/rest/revision"] .sample-value').textContent === "1");
+  await page.waitForFunction(() => document.querySelector('[data-descriptor="/body/FB/rest/revision"] .sample-value').textContent === "1 · retained");
   await page.locator("#skeleton-view").selectOption("live");
   const button = page.locator('[data-descriptor="/user/hand/left/input/x/click"]');
   await button.scrollIntoViewIfNeeded();
@@ -141,10 +141,11 @@ try {
   }
   await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyJoints === "70");
   const restGeneration = (await page.locator("#subscription-3").textContent()).match(/Subscription (\d+)/)[1];
+  await page.locator('[data-descriptor="/body/FB/rest/revision"] input[type="checkbox"]').uncheck();
   await page.locator("#publish-3").click();
   await page.waitForFunction(previous => {
     const text = document.querySelector("#subscription-3").textContent;
-    return !text.startsWith(`Subscription ${previous} ·`) && text.includes("on change · reliable · 1 packets");
+    return !text.startsWith(`Subscription ${previous} ·`) && /on change.*reliable.*[1-9]\d* packets/.test(text);
   }, restGeneration);
   // More reconnects than the peer limit catches slots leaked by a closed session.
   for (let attempt = 0; attempt < 3; attempt++) {

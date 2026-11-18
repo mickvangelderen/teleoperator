@@ -1,4 +1,4 @@
-use crate::tracking::{Group, Hub, SubscriptionSamples, validate_schedule};
+use crate::tracking::{Group, Hub, SubscriptionSamples};
 use crate::{
     protocol::{self, Message, Session},
     publication::Catalog,
@@ -24,7 +24,7 @@ use tokio::{
     time::timeout,
 };
 use webrtc::{
-    data_channel::{DataChannel, DataChannelEvent, RTCDataChannelState},
+    data_channel::{DataChannel, DataChannelEvent},
     peer_connection::{
         PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCIceGatheringState,
         RTCPeerConnectionState, RTCSdpType, RTCSessionDescription, SettingEngineBuilder,
@@ -37,37 +37,96 @@ struct Server {
     hub: Arc<Hub>,
 }
 
-enum PeerEvent {
-    Channel(bool, Arc<dyn DataChannel>),
-    Control(bytes::Bytes),
+enum UnreliableEvent {
     Clock(u32, i64),
-    Progress,
+    Acknowledgment(bytes::Bytes),
 }
 
+#[derive(Clone, Default)]
+struct Channels {
+    // Protocol channel values are 1 (unreliable) and 2 (reliable).
+    connections: [Option<Arc<dyn DataChannel>>; 2],
+    open: [bool; 2],
+}
+impl Channels {
+    fn get(&self, channel: u8) -> Option<&Arc<dyn DataChannel>> {
+        let index = channel as usize - 1;
+        self.open[index]
+            .then_some(self.connections[index].as_ref())
+            .flatten()
+    }
+    fn ready(&self) -> [bool; 2] {
+        std::array::from_fn(|i| self.open[i] && self.connections[i].is_some())
+    }
+}
+
+struct PeerInbox {
+    controls: mpsc::Receiver<bytes::Bytes>,
+    unreliable: mpsc::Receiver<UnreliableEvent>,
+    channels: watch::Receiver<Channels>,
+}
 struct Peer {
-    channels: AtomicU8,
+    claimed_channels: AtomicU8,
     hub: Arc<Hub>,
     close: Notify,
-    events: mpsc::Sender<PeerEvent>,
+    // Separate bounded paths: reliable controls wait for capacity in receive
+    // order; unreliable traffic is dropped on saturation. Channel readiness is
+    // coalesced state and cannot be displaced by either traffic class.
+    controls: mpsc::Sender<bytes::Bytes>,
+    unreliable: mpsc::Sender<UnreliableEvent>,
+    channel_state: watch::Sender<Channels>,
     message_limit: usize,
 }
-
-struct SamplingSubscription {
-    samples: SubscriptionSamples,
-    sent: Option<u64>,
-    packet_size: usize,
-    packet: Vec<u8>,
-    values: Vec<protocol::Value>,
+impl Peer {
+    fn new(hub: Arc<Hub>, message_limit: usize) -> (Arc<Self>, PeerInbox) {
+        let (controls, control_rx) = mpsc::channel(32);
+        let (unreliable, unreliable_rx) = mpsc::channel(32);
+        let (channel_state, channels) = watch::channel(Channels::default());
+        (
+            Arc::new(Self {
+                claimed_channels: AtomicU8::new(0),
+                hub,
+                close: Notify::new(),
+                controls,
+                unreliable,
+                channel_state,
+                message_limit,
+            }),
+            PeerInbox {
+                controls: control_rx,
+                unreliable: unreliable_rx,
+                channels,
+            },
+        )
+    }
+    async fn enqueue_control(&self, bytes: bytes::Bytes) -> Result<(), String> {
+        if bytes.len() > protocol::MAX_CLIENT_MESSAGE {
+            return Err("Control decoding size limit".into());
+        }
+        self.controls
+            .send(bytes)
+            .await
+            .map_err(|_| "Peer control receiver closed".into())
+    }
 }
+fn next_publication(session: Option<&Session>, ready: [bool; 2]) -> Option<u64> {
+    session?
+        .active
+        .values()
+        .filter(|s| ready[s.request.channel as usize - 1])
+        .filter_map(|s| s.publication.lock().unwrap().next_wake())
+        .min()
+}
+
 #[derive(Default)]
-struct SamplingSubscriptions(BTreeMap<u32, SamplingSubscription>);
+struct SamplingSubscriptions(BTreeMap<u32, SubscriptionSamples>);
 impl SamplingSubscriptions {
     fn reconcile(
         &mut self,
         hub: &Arc<Hub>,
+        catalog: &Catalog,
         state: &Session,
         replies: &[Message],
-        updated: Option<u32>,
     ) {
         for reply in replies {
             match reply {
@@ -75,37 +134,11 @@ impl SamplingSubscriptions {
                     self.0.remove(id);
                 }
                 Message::Accepted { id } => {
-                    let request = &state.active[id].request;
-                    let packet_size = state
-                        .capabilities
-                        .validate_request(request)
-                        .expect("Accepted request");
-                    self.0.insert(
-                        *id,
-                        SamplingSubscription {
-                            samples: hub.subscribe(
-                                Group::from_index(state.active[id].request.group)
-                                    .expect("Advertised group"),
-                                state.active[id].request.schedule.clone(),
-                            ),
-                            sent: None,
-                            packet_size: packet_size + 1,
-                            packet: Vec::with_capacity(packet_size),
-                            values: Vec::with_capacity(state.active[id].request.samples.len()),
-                        },
-                    );
+                    self.0
+                        .insert(*id, hub.subscribe(&state.active[id], catalog));
                 }
                 _ => {}
             }
-        }
-        if let Some(id) = updated
-            && let (Some(sampling), Some(subscription)) =
-                (self.0.get_mut(&id), state.active.get(&id))
-        {
-            sampling
-                .samples
-                .update(subscription.request.schedule.clone());
-            sampling.sent = None;
         }
     }
 }
@@ -162,36 +195,47 @@ impl Peer {
                 .await
                 .map_err(|e| e.to_string())?
                 .is_none();
-        if !valid || self.channels.fetch_or(bit, Ordering::SeqCst) & bit != 0 {
+        if !valid || self.claimed_channels.fetch_or(bit, Ordering::SeqCst) & bit != 0 {
             return Err(format!("Invalid or duplicate data channel: {label}"));
         }
-        self.events
-            .try_send(PeerEvent::Channel(control, dc.clone()))
-            .map_err(|_| "Peer event queue full or closed")?;
+        let index = if control { 1 } else { 0 };
+        self.channel_state
+            .send_modify(|channels| channels.connections[index] = Some(dc.clone()));
         while let Some(event) = dc.poll().await {
             match event {
-                DataChannelEvent::OnOpen => log::info!("Data channel open: {label}"),
+                DataChannelEvent::OnOpen => {
+                    self.channel_state
+                        .send_modify(|channels| channels.open[index] = true);
+                    log::info!("Data channel open: {label}");
+                }
                 DataChannelEvent::OnClose => break,
                 DataChannelEvent::OnError => return Err(format!("Channel error: {label}")),
-                DataChannelEvent::OnBufferedAmountLow | DataChannelEvent::OnBufferedAmountHigh => {
-                    let _ = self.events.try_send(PeerEvent::Progress);
-                }
                 DataChannelEvent::OnMessage(message) => {
                     let received_at = self.hub.now();
                     let data = message.data.freeze();
                     if !control {
                         if !message.is_string && data.len() == 5 && data[0] == 10 {
                             let id = u32::from_le_bytes(data[1..].try_into().unwrap());
-                            let _ = self.events.try_send(PeerEvent::Clock(id, received_at));
+                            let _ = self
+                                .unreliable
+                                .try_send(UnreliableEvent::Clock(id, received_at));
+                        }
+                        if !message.is_string && data.first() == Some(&13) && data.len() <= 13 {
+                            let _ = self
+                                .unreliable
+                                .try_send(UnreliableEvent::Acknowledgment(data));
                         }
                         continue;
                     }
-                    if message.is_string
-                        || data.len() > protocol::MAX_CLIENT_MESSAGE
-                        || self.events.try_send(PeerEvent::Control(data)).is_err()
-                    {
-                        return Err("Invalid control message or peer event queue full".into());
+                    // The server has no inbound publication subscriptions. Publications
+                    // are discarded on either channel, including malformed bodies.
+                    if !message.is_string && data.first() == Some(&9) {
+                        continue;
                     }
+                    if message.is_string {
+                        return Err("Control messages must be binary".into());
+                    }
+                    self.enqueue_control(data).await?;
                 }
                 _ => {}
             }
@@ -234,84 +278,69 @@ impl Peer {
         state: &mut Session,
         message: Message,
     ) -> protocol::Result<Vec<Message>> {
-        let message = if let Message::SubscribeBody(body) = message {
-            Message::Subscribe(protocol::decode_subscription(&body, &state.capabilities)?)
-        } else {
-            message
-        };
-        if let Message::UpdateSchedule { schedule, .. } = &message {
-            validate_schedule(schedule, self.hub.now() as u64)?;
-        }
-        if let Message::Subscribe(request) = &message {
-            if let Err(reason) = validate_schedule(&request.schedule, self.hub.now() as u64) {
-                return Ok(vec![Message::Rejected {
-                    id: request.id,
-                    reason: Some(reason),
-                }]);
-            }
-            let sample = Group::from_index(request.group).and_then(|group| self.hub.latest(group));
-            if let Some(sample) = sample {
+        state.handle_with_source(message, self.hub.now(), |request| {
+            if let Some(sample) =
+                Group::from_index(request.group).and_then(|group| self.hub.initial_sample(group))
+            {
                 catalog.refresh_skeleton(&self.hub, &sample);
-                let validation = state.capabilities.validate_request(request).and_then(|_| {
-                    let timestamp = u64::try_from(sample.acquired_at)
-                        .map_err(|_| "Invalid acquisition time")?;
-                    catalog.publication(request, &sample, timestamp).map(|_| ())
-                });
-                if let Err(reason) = validation {
-                    return Ok(vec![Message::Rejected {
-                        id: request.id,
-                        reason: Some(reason),
-                    }]);
-                }
+                catalog.encode_acquisition(request, &sample)?;
             }
-        }
-        state.handle(message, self.hub.now())
+            Ok(())
+        })
     }
-    async fn run(&self, mut incoming: mpsc::Receiver<PeerEvent>) -> Result<(), String> {
+    async fn run(&self, mut incoming: PeerInbox) -> Result<(), String> {
         let mut updates = self.hub.updates.subscribe();
-        let mut control = None;
-        let mut tracking: Option<Arc<dyn DataChannel>> = None;
         let mut session: Option<(Catalog, Session)> = None;
         let mut pending_offer = None;
         let mut sampling = SamplingSubscriptions::default();
         let deadline = tokio::time::sleep(Duration::from_secs(12));
         tokio::pin!(deadline);
         loop {
+            let channels = incoming.channels.borrow_and_update().clone();
+            let ready = channels.ready();
+            let next = next_publication(session.as_ref().map(|(_, state)| state), ready);
+            let wait = next.map_or(Duration::from_secs(3600), |due| {
+                Duration::from_nanos(due.saturating_sub(self.hub.now() as u64))
+            });
             tokio::select! {
-                _ = &mut deadline, if session.is_none() || control.is_none() || tracking.is_none() => return Err("Protocol setup timed out".into()),
-                event = incoming.recv() => match event.ok_or("Peer event channel closed")? {
-                    PeerEvent::Progress => {},
-                    PeerEvent::Clock(id, received_at) => {
-                        if let (Some((_, state)), Some(dc)) = (&session, &tracking)
+                biased;
+                _ = &mut deadline, if session.is_none() || !ready.into_iter().all(|open| open) => return Err("Protocol setup timed out".into()),
+                changed = incoming.channels.changed() => { changed.map_err(|_| "Channel state closed")?; },
+                bytes = incoming.controls.recv() => {
+                    let bytes = bytes.ok_or("Peer control receiver closed")?;
+                    let message = protocol::decode_client(&bytes)?;
+                    if let Some((catalog, state)) = session.as_mut() {
+                        let replies = self.handle_control(catalog, state, message)?;
+                        sampling.reconcile(&self.hub, catalog, state, &replies);
+                        for reply in replies {
+                            self.send(channels.get(2).ok_or("Missing open reliable channel")?, protocol::encode(&reply), true).await?;
+                        }
+                    } else {
+                        if pending_offer.is_some() || !matches!(message, Message::Offer(_)) { return Err("Version offer must be first".into()); }
+                        pending_offer = Some(message);
+                    }
+                },
+                _ = tokio::time::sleep(wait), if next.is_some() => {},
+                _ = updates.changed() => {},
+                event = incoming.unreliable.recv() => match event.ok_or("Peer unreliable receiver closed")? {
+                    UnreliableEvent::Acknowledgment(bytes) => {
+                        if let Some((_, state)) = &session { state.acknowledge(&bytes); }
+                    },
+                    UnreliableEvent::Clock(id, received_at) => {
+                        if let (Some((_, state)), Some(dc)) = (&session, channels.get(1))
                             && state.negotiated && self.message_limit >= 21 && tracking_fits(dc.outstanding_bytes().await.map_err(|e| e.to_string())?, 21) {
                             self.send(dc, protocol::clock_response(id, received_at as u64, 0), false).await?;
                         }
                     },
-                    PeerEvent::Channel(reliable, dc) => { if reliable { control = Some(dc); } else { tracking = Some(dc); } },
-                    PeerEvent::Control(bytes) => {
-                        let message = protocol::decode_client(&bytes)?;
-                        if let Some((catalog, state)) = session.as_mut() {
-                            let updated = match &message { Message::UpdateSchedule { id, .. } => Some(*id), _ => None };
-                            let replies = self.handle_control(catalog, state, message)?;
-                            sampling.reconcile(&self.hub, state, &replies, updated);
-                            for reply in replies {
-                                self.send(control.as_ref().ok_or("Missing control channel")?, protocol::encode(&reply), true).await?;
-                            }
-                            } else {
-                                if pending_offer.is_some() || !matches!(message, Message::Offer(_)) { return Err("Version offer must be first".into()); }
-                                pending_offer = Some(message);
-                            }
-                    },
                 },
-                _ = updates.changed() => {},
             }
-            if pending_offer.is_some() && self.hub.initialized.load(Ordering::SeqCst) {
+            if pending_offer.is_some() && ready[1] && self.hub.initialized.load(Ordering::SeqCst) {
                 let catalog = Catalog::snapshot(&self.hub);
                 let mut state = Session::new(catalog.capabilities.clone());
                 state.packet_limit = self.message_limit;
                 for reply in state.handle(pending_offer.take().unwrap(), self.hub.now())? {
                     self.send(
-                        control.as_ref().ok_or("Missing control channel")?,
+                        channels.get(2).ok_or("Missing open reliable channel")?,
                         protocol::encode(&reply),
                         true,
                     )
@@ -332,107 +361,73 @@ impl Peer {
                 for id in session.active.keys().copied().collect::<Vec<_>>() {
                     sampling.0.remove(&id);
                     for reply in session.end(id, "Device acquisition stopped") {
-                        self.send(control.as_ref().unwrap(), protocol::encode(&reply), true)
+                        self.send(channels.get(2).unwrap(), protocol::encode(&reply), true)
                             .await?;
                     }
                 }
                 continue;
             }
-            let Some(dc) = tracking.as_ref() else {
-                continue;
-            };
-            if dc.ready_state().await.map_err(|e| e.to_string())? != RTCDataChannelState::Open {
-                continue;
+            let mut buffered = [0; 2];
+            for channel in [1, 2] {
+                if let Some(dc) = channels.get(channel) {
+                    buffered[channel as usize - 1] =
+                        dc.outstanding_bytes().await.map_err(|e| e.to_string())?;
+                }
             }
-            let mut tracking_buffered = dc.outstanding_bytes().await.map_err(|e| e.to_string())?;
-            let mut reliable_buffered = if session.active.values().any(|s| s.request.delivery == 2)
-            {
-                control
-                    .as_ref()
-                    .unwrap()
-                    .outstanding_bytes()
-                    .await
-                    .map_err(|e| e.to_string())?
-            } else {
-                0
-            };
             let mut ended = Vec::new();
-            for subscription in session.active.values_mut() {
-                let Some(sampling) = sampling.0.get_mut(&subscription.request.id) else {
+            for subscription in session.active.values() {
+                let id = subscription.request.id;
+                let (error, opportunity) = {
+                    let mut publication = subscription.publication.lock().unwrap();
+                    (
+                        publication.error.clone(),
+                        channels.get(subscription.request.channel).is_some()
+                            && publication.opportunity(self.hub.now() as u64),
+                    )
+                };
+                if let Some(error) = error {
+                    ended.push((id, error));
+                    continue;
+                }
+                if !opportunity {
+                    continue;
+                }
+                let channel = channels.get(subscription.request.channel).unwrap();
+                let reliable = subscription.request.channel == 2;
+                let buffered = &mut buffered[subscription.request.channel as usize - 1];
+                let candidate = subscription.publication.lock().unwrap().candidate();
+                let Some(candidate) = candidate else {
                     continue;
                 };
-                let reliable = subscription.request.delivery == 2;
-                let buffered = if reliable {
-                    &mut reliable_buffered
-                } else {
-                    &mut tracking_buffered
-                };
+                let packet_size = candidate.body.len() + 1;
                 let ready = if reliable {
-                    buffered.saturating_add(sampling.packet_size) <= 1_048_576
+                    buffered.saturating_add(packet_size) <= 1_048_576
                 } else {
-                    tracking_fits(*buffered, sampling.packet_size)
+                    tracking_fits(*buffered, packet_size)
                 };
-                sampling.samples.set_ready(ready);
                 if !ready {
                     continue;
                 }
-                let sender_at = self.hub.now() as u64;
-                let Some(delivery) = sampling.samples.delivery_after(sampling.sent) else {
-                    continue;
-                };
-                let sample = &delivery.sample;
-                // Recenter keeps the selected space; wait for a capture in its new origin.
-                if sample.reference_version != *self.hub.reference_version.lock().unwrap() {
-                    continue;
-                }
-                let Some(timestamp) = subscription.timestamp(sample.acquired_at, self.hub.now())
-                else {
-                    continue;
-                };
-                catalog.refresh_skeleton(&self.hub, sample);
-                if let Err(reason) = catalog.publication_into(
-                    &subscription.request,
-                    sample,
-                    timestamp,
-                    &mut sampling.values,
-                    &mut sampling.packet,
-                ) {
-                    ended.push((subscription.request.id, reason));
-                    continue;
-                }
-                if !subscription.should_publish(&sampling.packet) {
-                    continue;
-                }
-                let channel = if reliable {
-                    control.as_ref().unwrap()
-                } else {
-                    dc
-                };
-                let mut framed = bytes::BytesMut::with_capacity(sampling.packet_size);
+                let mut framed = bytes::BytesMut::with_capacity(packet_size);
                 framed.extend_from_slice(&[9]);
-                framed.extend_from_slice(&sampling.packet);
-                let encoded_at = self.hub.now() as u64;
-                // Recheck expiry/replacement immediately before handing off to WebRTC.
-                if !sampling.samples.is_current(sample.number) {
-                    sampling.samples.discarded(&delivery, self.hub.now() as u64);
-                    continue;
-                }
+                framed.extend_from_slice(&candidate.body);
                 timeout(Duration::from_secs(2), channel.send(framed))
                     .await
                     .map_err(|_| "Data channel send timed out")?
                     .map_err(|e| e.to_string())?;
-                let submitted_at = self.hub.now() as u64;
-                sampling
-                    .samples
-                    .submitted(&delivery, sender_at, encoded_at, submitted_at);
-                *buffered = buffered.saturating_add(sampling.packet_size);
-                subscription.published(&sampling.packet);
-                sampling.sent = Some(sample.number);
+                // Acquisitions can change during send. Record exactly the candidate
+                // submitted, never the current revision at completion time.
+                subscription
+                    .publication
+                    .lock()
+                    .unwrap()
+                    .submitted(candidate);
+                *buffered = buffered.saturating_add(packet_size);
             }
             for (id, reason) in ended {
                 sampling.0.remove(&id);
                 for reply in session.end(id, &reason) {
-                    self.send(control.as_ref().unwrap(), protocol::encode(&reply), true)
+                    self.send(channels.get(2).unwrap(), protocol::encode(&reply), true)
                         .await?;
                 }
             }
@@ -485,14 +480,7 @@ async fn offer(
     } else {
         (remote_limit as usize).min(send_limit.as_usize())
     };
-    let (events, incoming) = mpsc::channel(32);
-    let peer = Arc::new(Peer {
-        channels: AtomicU8::new(0),
-        hub: server.hub.clone(),
-        close: Notify::new(),
-        events,
-        message_limit,
-    });
+    let (peer, incoming) = Peer::new(server.hub.clone(), message_limit);
     let settings = SettingEngineBuilder::new()
         .with_sctp_max_message_size(send_limit)
         .build();
@@ -574,118 +562,6 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn peer_sampling_lifetimes_isolate_equal_ids_and_reconcile_control_atomically() {
-        use crate::{
-            protocol::{Request, Schedule, Selection},
-            tracking::Pose,
-        };
-        let hub = Hub::new("test");
-        hub.initialized.store(true, Ordering::SeqCst);
-        let request = Request {
-            id: 7,
-            group: 0,
-            delivery: 1,
-            schedule: Schedule::Periodic {
-                interval: 1_000_000_000,
-                phase: 500_000_000,
-                consumption_delay: 30_000_000,
-            },
-            samples: vec![Selection {
-                descriptor: 0,
-                format: 10,
-                space: 2,
-            }],
-        };
-        let mut states = std::array::from_fn::<_, 2, _>(|_| {
-            let mut state = Session::new(Catalog::snapshot(&hub).capabilities);
-            state.handle(Message::Offer(vec![1]), hub.now()).unwrap();
-            state
-        });
-        let mut peers = [
-            SamplingSubscriptions::default(),
-            SamplingSubscriptions::default(),
-        ];
-        for (state, peer) in states.iter_mut().zip(&mut peers) {
-            let replies = state
-                .handle(Message::Subscribe(request.clone()), hub.now())
-                .unwrap();
-            peer.reconcile(&hub, state, &replies, None);
-        }
-        let due = hub.next_acquisition().unwrap();
-        let mut work = hub.acquisitions(due, false);
-        assert_eq!(work.len(), 1);
-        let capture = work.pop().unwrap();
-        let sample = hub.acquire(
-            Group::Poses,
-            &std::array::from_fn(|_| Pose::default()),
-            &[],
-            None,
-            due as i64,
-            capture.target_at,
-        );
-        hub.complete(capture, sample.clone());
-        assert_eq!(
-            peers[0].0[&7].samples.latest().unwrap().number,
-            sample.number
-        );
-        assert_eq!(
-            peers[1].0[&7].samples.latest().unwrap().number,
-            sample.number
-        );
-        let mut invalid = request.clone();
-        invalid.samples[0].descriptor = u32::MAX;
-        let replies = states[0]
-            .handle(Message::Subscribe(invalid), hub.now())
-            .unwrap();
-        assert!(matches!(replies[0], Message::Rejected { .. }));
-        peers[0].reconcile(&hub, &states[0], &replies, None);
-        assert_eq!(
-            peers[0].0[&7].samples.latest().unwrap().number,
-            sample.number
-        );
-        let schedule = Schedule::Periodic {
-            interval: 1_000_000_000,
-            phase: 510_000_000,
-            consumption_delay: 80_000_000,
-        };
-        let replies = states[0]
-            .handle(Message::UpdateSchedule { id: 7, schedule }, hub.now())
-            .unwrap();
-        peers[0].reconcile(&hub, &states[0], &replies, Some(7));
-        assert!(peers[0].0[&7].samples.latest().is_none());
-        assert_eq!(
-            peers[1].0[&7].samples.latest().unwrap().number,
-            sample.number
-        );
-        let updated_due = hub.next_acquisition().unwrap();
-        let old_work = hub.acquisitions(updated_due, false).pop().unwrap();
-        let replies = states[0]
-            .handle(Message::Subscribe(request), hub.now())
-            .unwrap();
-        peers[0].reconcile(&hub, &states[0], &replies, None);
-        hub.complete(old_work, sample);
-        assert!(
-            peers[0].0[&7].samples.latest().is_none(),
-            "Replacement invalidates in-flight capture"
-        );
-        let replies = states[0]
-            .handle(Message::Unsubscribe { id: 7 }, hub.now())
-            .unwrap();
-        peers[0].reconcile(&hub, &states[0], &replies, None);
-        assert!(peers[0].0.is_empty());
-        assert!(
-            hub.next_acquisition().is_some(),
-            "The other peer remains subscribed"
-        );
-        drop(peers);
-        assert_eq!(
-            hub.next_acquisition(),
-            None,
-            "Dropping connection state releases all sampler demand"
-        );
-    }
-
     struct GatherHandler(Arc<Notify>);
 
     #[async_trait::async_trait]
@@ -801,32 +677,29 @@ mod tests {
     fn source_admission_waits_initially_and_rejects_malformed_replacement_atomically() {
         use crate::{
             inputs,
-            protocol::{Request, Schedule, Selection},
+            protocol::{Request, SampleBinding},
             tracking::Pose,
         };
         let hub = Hub::new("test");
         hub.initialized.store(true, Ordering::SeqCst);
-        let (events, _) = mpsc::channel(4);
-        let peer = Peer {
-            channels: AtomicU8::new(0),
-            hub: hub.clone(),
-            close: Notify::new(),
-            events,
-            message_limit: protocol::MAX_SERVER_MESSAGE,
-        };
+        hub.set_available(true);
+        let (peer, _incoming) = Peer::new(hub.clone(), protocol::MAX_SERVER_MESSAGE);
         let mut catalog = Catalog::snapshot(&hub);
         let mut session = Session::new(catalog.capabilities.clone());
         session.handle(Message::Offer(vec![1]), 0).unwrap();
         let head = Request {
             id: 1,
             group: 0,
-            delivery: 1,
-            schedule: Schedule::OnChange,
-            samples: vec![Selection {
+            channel: 1,
+            interval: 5_000_000,
+            phase: 0,
+            prediction_offset: 0,
+            sequence_number_format: None,
+            bundles: vec![vec![SampleBinding {
                 descriptor: 0,
                 format: 10,
                 space: 2,
-            }],
+            }]],
         };
         let submit = |peer: &Peer, c: &mut Catalog, s: &mut Session, r: Request| {
             peer.handle_control(
@@ -859,11 +732,11 @@ mod tests {
         let status = Request {
             id: 2,
             group: Group::Inputs as u32,
-            samples: vec![Selection {
+            bundles: vec![vec![SampleBinding {
                 descriptor: active,
                 format: 1,
                 space: 0,
-            }],
+            }]],
             ..head.clone()
         };
         assert!(matches!(
@@ -927,5 +800,152 @@ mod tests {
         assert!(tracking_fits(0, protocol::MAX_SERVER_MESSAGE));
         assert!(!tracking_fits(1, protocol::MAX_SERVER_MESSAGE));
         assert!(!tracking_fits(0, protocol::MAX_SERVER_MESSAGE + 1));
+    }
+    #[test]
+    fn due_publications_wait_only_for_their_selected_channel() {
+        use protocol::{EncodedAcquisition, Request, SampleBinding};
+        let hub = Hub::new("test");
+        hub.initialized.store(true, Ordering::SeqCst);
+        let mut session = Session::new(Catalog::snapshot(&hub).capabilities);
+        session.handle(Message::Offer(vec![1]), 0).unwrap();
+        for channel in [1, 2] {
+            session
+                .handle(
+                    Message::Subscribe(Request {
+                        id: channel as u32,
+                        group: 0,
+                        channel,
+                        interval: 5_000_000,
+                        phase: 0,
+                        prediction_offset: 0,
+                        sequence_number_format: None,
+                        bundles: vec![vec![SampleBinding {
+                            descriptor: 1,
+                            format: 1,
+                            space: 0,
+                        }]],
+                    }),
+                    0,
+                )
+                .unwrap();
+            session.active[&(channel as u32)]
+                .publication
+                .lock()
+                .unwrap()
+                .observe(EncodedAcquisition {
+                    number: 1,
+                    acquired_at: 1,
+                    predicted_for: None,
+                    bundles: vec![vec![0]],
+                });
+        }
+        assert_eq!(
+            next_publication(Some(&session), [false, false]),
+            None,
+            "A due publication cannot arm a zero-duration wake without its channel"
+        );
+        assert_eq!(
+            next_publication(Some(&session), [false, true]),
+            Some(0),
+            "Reliable delivery works before the unreliable channel opens"
+        );
+        session.active[&2]
+            .publication
+            .lock()
+            .unwrap()
+            .opportunity(100);
+        assert_eq!(
+            next_publication(Some(&session), [false, true]),
+            Some(5_000_000),
+            "Unopened unreliable delivery cannot force a busy retry"
+        );
+        assert_eq!(next_publication(Some(&session), [true, false]), Some(0));
+        assert_eq!(next_publication(Some(&session), [false, false]), None);
+        let disconnected = Channels {
+            open: [true, true],
+            ..Default::default()
+        };
+        assert_eq!(disconnected.ready(), [false, false]);
+    }
+    #[tokio::test]
+    async fn saturated_unreliable_ingress_cannot_fail_or_reorder_reliable_controls() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+        let (peer, mut inbox) = Peer::new(Hub::new("test"), protocol::MAX_SERVER_MESSAGE);
+        for n in 0..1024 {
+            let _ = peer.unreliable.try_send(UnreliableEvent::Clock(n, 0));
+        }
+        assert_eq!(inbox.unreliable.len(), 32);
+        for n in 0..32 {
+            peer.enqueue_control(bytes::Bytes::from(vec![n]))
+                .await
+                .unwrap();
+        }
+        let mut blocked = std::pin::pin!(peer.enqueue_control(bytes::Bytes::from_static(&[32])));
+        assert!(
+            matches!(
+                blocked
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Pending
+            ),
+            "Reliable ingress waits for bounded capacity instead of closing"
+        );
+        assert_eq!(inbox.controls.recv().await.unwrap().as_ref(), &[0]);
+        blocked.await.unwrap();
+        for n in 1..=32 {
+            assert_eq!(inbox.controls.recv().await.unwrap().as_ref(), &[n]);
+        }
+        assert_eq!(
+            inbox.unreliable.len(),
+            32,
+            "Reliable backpressure has its own capacity"
+        );
+        peer.enqueue_control(bytes::Bytes::from_static(&[255]))
+            .await
+            .unwrap();
+        assert_eq!(
+            peer.run(inbox).await.unwrap_err(),
+            "Invalid client message tag or direction",
+            "Reliable controls are processed despite queued unreliable traffic"
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn setup_deadline_and_cancellation_release_bounded_ingress() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+        let (peer, inbox) = Peer::new(Hub::new("test"), protocol::MAX_SERVER_MESSAGE);
+        for n in 0..1024 {
+            let _ = peer.unreliable.try_send(UnreliableEvent::Clock(n, 0));
+        }
+        let mut run = std::pin::pin!(peer.run(inbox));
+        assert!(matches!(
+            run.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Pending
+        ));
+        tokio::time::advance(Duration::from_secs(12)).await;
+        assert_eq!(run.await.unwrap_err(), "Protocol setup timed out");
+
+        let (peer, inbox) = Peer::new(Hub::new("test"), protocol::MAX_SERVER_MESSAGE);
+        for _ in 0..32 {
+            peer.enqueue_control(bytes::Bytes::from_static(&[1]))
+                .await
+                .unwrap();
+        }
+        let mut blocked = std::pin::pin!(peer.enqueue_control(bytes::Bytes::from_static(&[2])));
+        assert!(matches!(
+            blocked
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Pending
+        ));
+        // Cancelling the session drops its inbox, including when outbound send is
+        // suspended. The channel poller must not remain stuck on ingress capacity.
+        drop(inbox);
+        assert_eq!(blocked.await.unwrap_err(), "Peer control receiver closed");
     }
 }

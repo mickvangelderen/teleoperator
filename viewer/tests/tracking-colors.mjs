@@ -55,14 +55,15 @@ export async function checkTrackingColors(page, output) {
   assert.deepEqual(result.large.lines, Array(238).fill("c44235"));
 
   await page.evaluate(async () => {
-    const { Session } = await import("/src/session.ts");
+    const sessionUrl = performance.getEntriesByType("resource").find(e => new URL(e.name).pathname === "/src/session.ts")?.name ?? "/src/session.ts";
+    const { Session } = await import(sessionUrl);
     const original = Session.prototype.tracking;
     window.restoreTrackingColors = () => { Session.prototype.tracking = original; };
     Session.prototype.tracking = function (...args) {
       const packet = original.apply(this, args);
-      if (packet) this.active.get(packet.id).request.samples.forEach((selection, i) => {
+      if (packet) this.active.get(packet.id).request.bundles[0].forEach((selection, i) => {
         const descriptor = this.capabilities.descriptors[selection.descriptor];
-        if ([14, 15].includes(descriptor.kind) && /^\/body\/FB\/(\d+)\//.test(descriptor.id) && Number(descriptor.id.split("/")[3]) >= 35) packet.values[i] = false;
+        if ([14, 15].includes(descriptor.kind) && /^\/body\/FB\/(\d+)\//.test(descriptor.id) && Number(descriptor.id.split("/")[3]) >= 35) packet.bundles[0][i] = false;
       });
       return packet;
     };

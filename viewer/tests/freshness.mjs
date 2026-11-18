@@ -37,13 +37,14 @@ export async function checkFreshness(page, output) {
   }
   await page.locator(".metrics").screenshot({ path: output + "freshness-healthy.png" });
   await page.evaluate(async () => {
-    const { Session } = await import("/src/session.ts");
+    const sessionUrl = performance.getEntriesByType("resource").find(e => new URL(e.name).pathname === "/src/session.ts")?.name ?? "/src/session.ts";
+    const { Session } = await import(sessionUrl);
     const original = Session.prototype.tracking, freshness = Session.prototype.freshness, changeSchedule = Session.prototype.changeSchedule;
     window.restoreFreshnessTraffic = () => { Session.prototype.tracking = original; Session.prototype.freshness = freshness; Session.prototype.changeSchedule = changeSchedule; delete window.testFreshness; };
     // Isolate delivery silence from cadence changes, which deliberately reset the baseline.
     Session.prototype.changeSchedule = function (id, schedule) {
-      const current = this.active.get(id)?.request.schedule;
-      return changeSchedule.call(this, id, current?.kind === "periodic" && schedule.kind === "periodic" ? { ...schedule, interval: current.interval } : schedule);
+      const current = this.active.get(id)?.request;
+      return changeSchedule.call(this, id, current ? { ...schedule, interval: current.interval } : schedule);
     };
     Session.prototype.freshness = function (...args) { return window.testFreshness = freshness.apply(this, args); };
     Session.prototype.tracking = () => null;

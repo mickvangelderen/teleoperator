@@ -1,4 +1,5 @@
-import { periodic, NON_MAX } from "../src/protocol";
+import { setClock } from "./clock-fixture";
+import { timing, NON_MAX } from "../src/protocol";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FreshnessBaseline } from "../src/freshness";
@@ -10,9 +11,9 @@ function session(rate = 100, delivery = 1) {
   s.receive({ tag: 3, capabilities: { groups: [200], skeletons: [], descriptors: [
     { id: "button", name: "Button", description: "", kind: 2, formats: [1], spaces: [], group: 0 },
   ] } });
-  s.request({ id: 1, group: 0, delivery, schedule:periodic(rate), samples: [{ descriptor: 0, format: 1, space: 0 }] });
+  s.request({ id: 1, group: 0, delivery, ...timing(rate), sequenceNumberFormat: null, bundles: [[{ descriptor: 0, format: 1, space: 0 }]]});
   s.receive({ tag: 5, id: 1 });
-  s.clock = { offset: 9_007_199_254_740_993n, delay: 20_000_000n, at: 1000 };
+  setClock(s, { offset: 9_007_199_254_740_993n, delay: 20_000_000n, at: 1000 });
   return s;
 }
 function packet(s: Session, acquired: number, arrived: number, id = 1) {
@@ -69,7 +70,7 @@ test("threshold uses two-second median latency, two intervals, and robust jitter
 
 test("one fresh stream cannot mask a late or unmeasurable stream", () => {
   const s = session();
-  s.request({ ...s.active.get(1)!.request, id: 2, schedule:periodic(10) });
+  s.request({ ...s.active.get(1)!.request, id: 2, ...timing(10) });
   s.receive({ tag: 5, id: 2 });
   packet(s, 1000, 1010);
   assert.equal(s.freshness(1010).status, "Unknown");
@@ -78,7 +79,8 @@ test("one fresh stream cannot mask a late or unmeasurable stream", () => {
   assert.equal(s.freshness(1110).status, "Late");
   assert.equal(s.freshness(1110).worst!.id, 1);
   assert.equal(s.freshness(1110).streams.find(x => x.id === 2)!.status, "Fresh");
-  s.changeSchedule(1, { kind: "onChange" });
+  s.request({ ...s.active.get(1)!.request, sequenceNumberFormat: 2, bundles: [[], ...s.active.get(1)!.request.bundles] });
+  s.receive({ tag: 5, id: 1 });
   assert.equal(s.freshness(1110).status, "Fresh", "On-change snapshots do not age the indicator");
   s.stop(2);
   assert.equal(s.freshness(1110).status, "Inactive");
@@ -86,9 +88,9 @@ test("one fresh stream cannot mask a late or unmeasurable stream", () => {
 
 test("missing/expired clocks, replacement and retirement never retain a healthy result", () => {
   const s = session();
-  s.clock = undefined; packet(s, 1000, 1010);
+  setClock(s, undefined); packet(s, 1000, 1010);
   assert.equal(s.freshness(1010).status, "Unknown");
-  s.clock = { offset: 9_007_199_254_740_993n, delay: 20_000_000n, at: 1000 };
+  setClock(s, { offset: 9_007_199_254_740_993n, delay: 20_000_000n, at: 1000 });
   packet(s, 1010, 1020);
   assert.equal(s.freshness(1020).status, "Fresh");
   assert.equal(s.freshness(31_001).status, "Unknown");

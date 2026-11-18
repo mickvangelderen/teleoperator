@@ -1,5 +1,5 @@
 import { Session } from "./session";
-import { preferredFormat, restGroup, periodic, MAX_CLIENT_MESSAGE } from "./protocol";
+import { preferredFormat, restGroup, timing, MAX_CLIENT_MESSAGE } from "./protocol";
 import type { Request } from "./protocol";
 import { profiler } from "./performance";
 import type { Freshness } from "./freshness";
@@ -24,6 +24,7 @@ export const initialState = (): State => ({
   freshness: { status: "Inactive", atMs: 0, streams: [] },
 });
 
+export const MAX_UNRELIABLE_BACKLOG = 4096; // Small ACK/probe backlog; never queue protocol messages locally.
 let nextConnectionId = 1;
 export class Connection {
   private readonly id = nextConnectionId++;
@@ -145,7 +146,7 @@ export class Connection {
                 c.groups.forEach((max, group) => {
                   const samples = c.descriptors.flatMap((d, descriptor) => d.group === group ? [{ descriptor, format: preferredFormat(d), space: d.spaces[0] ?? 0 }] : []);
                   const rest = restGroup(c, group);
-                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, schedule: rest ? { kind: "onChange" } : periodic(Math.min(max, 60)), samples }, true);
+                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, ...timing(Math.min(max, 60)), sequenceNumberFormat: rest ? 2 : null, bundles: rest ? [[], samples] : [samples] }, !rest);
                 });
               }
             }
@@ -154,6 +155,7 @@ export class Connection {
             receivedPublication = packet !== null;
             if (packet) profiler.trackingArrival(packet.id, `${this.id}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
           }
+          for (const ack of this.session.takeAcknowledgments()) this.sendUnreliable(ack);
           this.emit();
         } catch (error) {
           if (name === "control") this.fail(error instanceof Error ? error.message : "Invalid control message");
@@ -226,16 +228,19 @@ export class Connection {
       return false;
     }
   }
-  private probeClock() {
+  private sendUnreliable(bytes: Uint8Array, now = performance.now()) {
     const limit = this.pc.sctp?.maxMessageSize;
-    if (this.stopped || this.tracking.readyState !== "open" || this.tracking.bufferedAmount > 0 || (limit && limit < 5)) return;
-    const now = performance.now(), bytes = this.session.requestClock(now);
-    if (!bytes) return;
+    if (this.stopped || this.tracking.readyState !== "open" || this.tracking.bufferedAmount + bytes.length > MAX_UNRELIABLE_BACKLOG || (limit && bytes.length > limit)) return;
     try {
-      this.tracking.send(bytes);
+      this.tracking.send(bytes as Uint8Array<ArrayBuffer>);
       this.recording?.packet("sent", "unreliable", bytes, now);
       profiler.transfer("sent", bytes.length, now);
-    } catch { /* Lost probes expire; channel callbacks handle connection failure. */ }
+    } catch { /* Unsent ACKs are dropped; a later pending publication repairs loss. */ }
+  }
+  private probeClock() {
+    if (this.stopped || this.tracking.readyState !== "open" || this.tracking.bufferedAmount > 0) return;
+    const now = performance.now(), bytes = this.session.requestClock(now);
+    if (bytes) this.sendUnreliable(bytes, now);
   }
   isAutomatic(id: number) { return this.automatic.has(id); }
 
@@ -247,11 +252,12 @@ export class Connection {
     this.timing.frame(frameTime, now);
     if (this.session.phase !== "ready") return;
     for (const sub of this.session.active.values()) {
-      const { id, group, schedule } = sub.request;
-      if (!this.automatic.has(id) || schedule.kind !== "periodic" || this.session.stopping.has(id)
+      const { id, group } = sub.request;
+      const schedule = sub.request;
+      if (!this.automatic.has(id) || this.session.stopping.has(id)
         || [...this.session.pending.values()].some(p => p.group === group)
         || now - (this.scheduleUpdates.get(id) ?? -Infinity) < SCHEDULE_UPDATE_INTERVAL_MS) continue;
-      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clock, this.session.networkLatency(now), this.session.capabilities!.groups[group], this.session.sampleArrivalDelay(id, now));
+      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clockEstimate(now), this.session.networkLatency(now), this.session.capabilities!.groups[group], this.session.sampleArrivalDelay(id, now));
       if (!next) continue;
       this.scheduleUpdates.set(id, now);
       if (!scheduleNeedsUpdate(schedule, next)) continue;
@@ -270,17 +276,15 @@ export class Connection {
     try {
       const previous = [...this.session.active.values()].find(s => s.request.group === request.group);
       if ([...this.session.pending.values()].some(r => r.group === request.group)) throw new Error("A publication request is already pending");
-      if (automaticTiming && request.schedule.kind === "periodic") request = { ...request, schedule:
-        this.timing.schedule(request.schedule, performance.now(), this.renderToPhotonMs, this.session.clock, this.session.networkLatency(performance.now()), this.session.capabilities?.groups[request.group]) ?? request.schedule };
-      const oldSchedule = previous?.request.schedule, schedule = request.schedule;
-      const scheduleChanged = oldSchedule?.kind !== schedule.kind || (schedule.kind === "periodic" && oldSchedule?.kind === "periodic"
-        && (oldSchedule.interval !== schedule.interval || oldSchedule.phase !== schedule.phase || oldSchedule.consumptionDelay !== schedule.consumptionDelay));
-      if (previous && previous.request.delivery === request.delivery && JSON.stringify(previous.request.samples) === JSON.stringify(request.samples) && scheduleChanged) {
-        bytes = this.session.changeSchedule(previous.request.id, request.schedule);
+      const now = performance.now();
+      if (automaticTiming) request = { ...request, ...this.timing.schedule(request, now, this.renderToPhotonMs, this.session.clockEstimate(now), this.session.networkLatency(now), this.session.capabilities?.groups[request.group]) };
+      if (previous && previous.request.delivery === request.delivery && previous.request.sequenceNumberFormat === request.sequenceNumberFormat
+        && JSON.stringify(previous.request.bundles) === JSON.stringify(request.bundles)) {
+        bytes = this.session.changeSchedule(previous.request.id, request);
         if (!this.send(bytes)) return;
         if (automaticTiming) this.automatic.add(previous.request.id); else this.automatic.delete(previous.request.id);
         this.scheduleUpdates.delete(previous.request.id);
-        this.state.detail = `Subscription ${previous.request.id} schedule updated`; this.emit();
+        this.state.detail = `Subscription ${previous.request.id} timing updated`; this.emit();
         return;
       }
       request = { ...request, id: this.session.allocateId() };
