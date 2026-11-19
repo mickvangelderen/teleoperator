@@ -112,14 +112,68 @@ fn run(
     mode: TrackingMode,
 ) -> Result<(), Box<dyn Error>> {
     let mut env = vm.attach_current_thread_as_daemon()?;
-    let mut session = Session::new(&mut env, context.as_obj())?;
+    let mut prefer_small_preview = true;
+    let mut session = loop {
+        if worker.lock().unwrap().stopped {
+            return Ok(());
+        }
+        let mut session = Session::new(&mut env, context.as_obj())?;
+        let changed = if prefer_small_preview {
+            match session.prefer_small_preview() {
+                Ok(changed) => changed,
+                Err(error) => {
+                    log::warn!("Could not select a smaller camera preview: {error}");
+                    prefer_small_preview = false;
+                    continue;
+                }
+            }
+        } else {
+            false
+        };
+        let configured = configure_camera(&mut session, &mut env, context.as_obj());
+        if worker.lock().unwrap().stopped {
+            return Ok(());
+        }
+        match configured.and_then(|()| Ok(session.resume()?)) {
+            Ok(()) => break session,
+            Err(error) if changed => {
+                log::warn!(
+                    "Smaller preview failed to start, trying the default camera config: {error}"
+                );
+                prefer_small_preview = false;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    {
+        // Do not disturb the fallback's origin while an unavailable camera is
+        // being retried. A retired worker must never switch the active source.
+        let state = worker.lock().unwrap();
+        if state.stopped {
+            return Ok(());
+        }
+        hub.set_tracking_mode(mode, phone::now());
+    }
+    let tracking = track(&mut session, hub, worker);
+    let paused = session.pause();
+    // Once setup succeeded, a failed update can be retried with a new session.
+    tracking.map_err(|e| CameraInterrupted(e.to_string()))?;
+    paused?;
+    Ok(())
+}
+
+fn configure_camera(
+    session: &mut Session,
+    env: &mut JNIEnv<'_>,
+    context: &JObject<'_>,
+) -> Result<(), Box<dyn Error>> {
     let mut config = session.config()?;
     config.set_plane_finding_mode(PlaneFindingMode::Disabled);
     config.set_light_estimation_mode(LightEstimationMode::Disabled);
     config.set_texture_update_mode(TextureUpdateMode::ExposeHardwareBuffer);
     config.apply()?;
     let camera_id = session.camera_id()?;
-    match realtime_camera(&mut env, context.as_obj(), &camera_id) {
+    match realtime_camera(env, context, &camera_id) {
         Ok(true) => {}
         Ok(false) => {
             return Err(format!(
@@ -139,24 +193,6 @@ fn run(
             );
         }
     }
-    if worker.lock().unwrap().stopped {
-        return Ok(());
-    }
-    session.resume()?;
-    {
-        // Do not disturb the fallback's origin while an unavailable camera is
-        // being retried. A retired worker must never switch the active source.
-        let state = worker.lock().unwrap();
-        if state.stopped {
-            return Ok(());
-        }
-        hub.set_tracking_mode(mode, phone::now());
-    }
-    let tracking = track(&mut session, hub, worker);
-    let paused = session.pause();
-    // Once setup succeeded, a failed update can be retried with a new session.
-    tracking.map_err(|e| CameraInterrupted(e.to_string()))?;
-    paused?;
     Ok(())
 }
 

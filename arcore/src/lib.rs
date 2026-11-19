@@ -2,6 +2,7 @@
 //! Call the ARCore availability/install API and obtain camera permission before
 //! creating a session. Session destruction can block for several seconds.
 
+mod camera_config;
 mod config;
 mod frame;
 
@@ -11,7 +12,6 @@ pub use frame::Frame;
 use arcore_sys as sys;
 use jni::{JNIEnv, objects::JObject};
 use std::{
-    ffi::CStr,
     fmt,
     ptr::{self, NonNull},
     rc::Rc,
@@ -170,21 +170,6 @@ impl Session {
                 native: Rc::new(NativeSession { scratch, handle }),
                 resumed: false,
             })
-        }
-    }
-
-    /// Gets the Camera2 ID selected by the current ARCore camera configuration.
-    pub fn camera_id(&self) -> Result<String> {
-        unsafe {
-            let session = self.native.ptr();
-            let mut config = ptr::null_mut();
-            sys::ArCameraConfig_create(session, &mut config);
-            let config = Owned::new(config, sys::ArCameraConfig_destroy, "camera config")?;
-            sys::ArSession_getCameraConfig(session, config.ptr());
-            let mut id = ptr::null_mut();
-            sys::ArCameraConfig_getCameraId(session, config.ptr(), &mut id);
-            let id = Owned::new(id, sys::ArString_release, "camera ID")?;
-            Ok(CStr::from_ptr(id.ptr()).to_string_lossy().into_owned())
         }
     }
 
