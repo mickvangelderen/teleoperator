@@ -77,7 +77,7 @@ fn controls_preserve_displacement_velocity_and_reference() {
     pair(&h, 40 * MS, 40 * MS);
     assert!(estimate().velocity[0] > before.velocity[0]);
     h.action(Action::Recenter, 41 * MS);
-    assert!(h.handset_status(0).held);
+    assert!(!h.handset_status(0).held);
     pair(&h, 50 * MS, 50 * MS);
     assert_eq!(estimate().pose.position, [0.; 3]);
     assert!(estimate().velocity[0] > before.velocity[0]);
@@ -107,11 +107,11 @@ fn missing_source_stays_unavailable_and_recovered_acceleration_restarts_estimate
         h.sensor(0, k * 10 * MS, upright(), k * 10 * MS);
         h.tick(k * 10 * MS);
     }
-    assert!(h.handset_status(0).held);
+    assert!(!h.handset_status(0).held);
     assert!(!valid(&h));
     assert!(h.state.lock().unwrap().fresh(0, 300 * MS));
     h.sensor(1, 300 * MS, [1., GRAVITY, 0., 0.], 300 * MS);
-    assert!(h.handset_status(0).held);
+    assert!(!h.handset_status(0).held);
     pair(&h, 310 * MS, 310 * MS);
     pair(&h, 320 * MS, 320 * MS);
     assert_eq!(
@@ -129,7 +129,7 @@ fn missing_source_stays_unavailable_and_recovered_acceleration_restarts_estimate
     );
 }
 #[test]
-fn invalid_samples_and_gaps_invalidate_the_estimate_without_releasing_the_touch() {
+fn losing_the_integration_reference_ends_the_hold() {
     for (kind, t, received, v) in [
         (1, 40, 40, [f64::NAN, 0., 0., 0.]),
         (0, 40, 40, [f64::NAN, 0., 0., 0.]),
@@ -138,7 +138,7 @@ fn invalid_samples_and_gaps_invalidate_the_estimate_without_releasing_the_touch(
     ] {
         let h = ready();
         h.sensor(kind, t * MS, v, received * MS);
-        assert!(h.handset_status(0).held, "{kind} {t}");
+        assert!(!h.handset_status(0).held, "{kind} {t}");
         assert!(!valid(&h));
     }
     let h = ready();
@@ -147,7 +147,7 @@ fn invalid_samples_and_gaps_invalidate_the_estimate_without_releasing_the_touch(
     assert!(h.handset_status(0).held);
     assert_eq!(h.state.lock().unwrap().serial, serial);
     h.tick(30 * MS + STALE_NS + 1);
-    assert!(h.handset_status(0).held);
+    assert!(!h.handset_status(0).held);
     assert!(!valid(&h));
 }
 #[test]
@@ -193,14 +193,14 @@ fn action_publication_barriers_do_not_starve_delayed_source_freshness() {
     }
 }
 #[test]
-fn recenter_during_hold_preserves_contact_and_heading_does_not_follow_live_orientation() {
+fn recenter_ends_contact_and_heading_does_not_follow_live_orientation() {
     let h = ready();
     let before = h.state.lock().unwrap().heading;
     let q = multiply([0., 0., (0.5_f64).sin(), (0.5_f64).cos()], upright());
     h.sensor(0, 40 * MS, q, 40 * MS);
     assert_eq!(h.state.lock().unwrap().heading, before);
     h.action(Action::Recenter, 41 * MS);
-    assert!(h.handset_status(0).held);
+    assert!(!h.handset_status(0).held);
     h.sensor(0, 42 * MS, q, 42 * MS);
     assert_ne!(h.state.lock().unwrap().heading, before);
 }

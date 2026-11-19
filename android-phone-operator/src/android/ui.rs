@@ -1,6 +1,7 @@
 //! Framework Views, inflated and updated on the Activity's main looper.
 use super::{activity::ActivityId, camera::Tracking, sensors::Sensors};
-use crate::phone::{self, Action, Hub, Motion, TrackingMode};
+use crate::phone::{self, Action, Hub, Motion};
+use crate::tracking::{Output, Selection, TrackingMode};
 use jni::{
     JNIEnv,
     errors::Result,
@@ -20,6 +21,8 @@ pub(super) struct Ui {
     owner: ActivityId,
     activity: GlobalRef,
     prefs: GlobalRef,
+    output: GlobalRef,
+    provider: GlobalRef,
     pub sensors: Sensors,
     pub tracking: Tracking,
     hub: Arc<Hub>,
@@ -131,26 +134,25 @@ impl Ui {
                 &[(&file).into(), 0.into()],
             )?
             .l()?;
-        let key = env.new_string("tracking")?;
-        let source = env
-            .call_method(
-                &prefs,
-                "getInt",
-                "(Ljava/lang/String;I)I",
-                &[(&key).into(), 0.into()],
-            )?
-            .i()?;
-        let source = if (0..3).contains(&source) { source } else { 0 };
-        let spinner = view(env, "source")?;
-        env.call_method(&spinner, "setSelection", "(I)V", &[source.into()])?;
+        let selection = read_selection(env, &prefs)?;
+        let output = view(env, "output")?;
+        let provider = view(env, "provider")?;
+        for (spinner, value) in [
+            (&output, selection.output as i32),
+            (&provider, selection.provider as i32),
+        ] {
+            env.call_method(spinner, "setSelection", "(I)V", &[value.into()])?;
+        }
         let sensors = Sensors::new(env, activity)?;
         super::start(sensors.mask());
         let hub = super::hub();
-        let tracking = Tracking::new(source, sensors.mask(), saved_flags, hub.clone());
+        let tracking = Tracking::new(selection, saved_flags, hub.clone());
         let mut ui = Self {
             owner,
             activity: env.new_global_ref(activity)?,
             prefs: env.new_global_ref(prefs)?,
+            output: output.clone(),
+            provider: provider.clone(),
             sensors,
             tracking,
             hub,
@@ -179,16 +181,34 @@ impl Ui {
             resumed: false,
             focused: false,
         };
+        for (spinner, is_output) in [(output, true), (provider, false)] {
+            ui.listen(
+                env,
+                "android/widget/AdapterView$OnItemSelectedListener",
+                &spinner,
+                "setOnItemSelectedListener",
+                move |ui, env, args| {
+                    if let [_, _, position, _] = args {
+                        let value = env.call_method(*position, "intValue", "()I", &[])?.i()?;
+                        let current = ui.tracking.selection;
+                        let (output, provider) = if is_output {
+                            (value, current.provider as i32)
+                        } else {
+                            (current.output as i32, value)
+                        };
+                        ui.select(env, Selection::from_preferences(0, output, provider))?;
+                    }
+                    Ok(())
+                },
+            )?;
+        }
         ui.listen(
             env,
-            "android/widget/AdapterView$OnItemSelectedListener",
-            &spinner,
-            "setOnItemSelectedListener",
-            |ui, env, args| {
-                if let [_, _, position, _] = args {
-                    let source = env.call_method(*position, "intValue", "()I", &[])?.i()?;
-                    ui.select(env, source)?;
-                }
+            "java/lang/Runnable",
+            &ui.activity.clone(),
+            "setCameraPermissionListener",
+            |ui, _, _| {
+                ui.tracking.check_soon();
                 Ok(())
             },
         )?;
@@ -351,6 +371,12 @@ impl Ui {
         if self.resumed {
             self.pause(env)?;
         }
+        env.call_method(
+            &self.activity,
+            "setCameraPermissionListener",
+            "(Ljava/lang/Runnable;)V",
+            &[(&JObject::null()).into()],
+        )?;
         // Detachment can deliver a final ACTION_CANCEL after Activity.onDestroy.
         // Remove the boolean-returning proxy while its handler is still alive.
         for view in [&self.hold, &self.gripper] {
@@ -438,11 +464,6 @@ impl Ui {
                 let right = env.call_method(view, "getPaddingRight", "()I", &[])?.i()?;
                 let span = (width - left - right).max(1);
                 let value = ((f64::from(x) - f64::from(left)) / f64::from(span)).clamp(0.0, 1.0);
-                let rtl = env
-                    .call_method(view, "getLayoutDirection", "()I", &[])?
-                    .i()?
-                    == 1;
-                let value = if rtl { 1.0 - value } else { value };
                 self.hub.action(
                     Action::SetTrigger((value * 100.0).round() / 100.0),
                     phone::now(),
@@ -484,8 +505,8 @@ impl Ui {
         self.gripper_pointer = None;
         self.action(Action::Cancel);
     }
-    fn select(&mut self, env: &mut JNIEnv, source: i32) -> Result<()> {
-        if self.tracking.source == source {
+    fn select(&mut self, env: &mut JNIEnv, selection: Selection) -> Result<()> {
+        if self.tracking.selection == selection {
             return Ok(());
         }
         let editor = env
@@ -496,27 +517,42 @@ impl Ui {
                 &[],
             )?
             .l()?;
-        let key = env.new_string("tracking")?;
-        env.call_method(
-            &editor,
-            "putInt",
-            "(Ljava/lang/String;I)Landroid/content/SharedPreferences$Editor;",
-            &[(&key).into(), source.into()],
-        )?;
+        for (name, value) in [
+            ("output", selection.output as i32),
+            ("provider", selection.provider as i32),
+        ] {
+            let key = env.new_string(name)?;
+            env.call_method(
+                &editor,
+                "putInt",
+                "(Ljava/lang/String;I)Landroid/content/SharedPreferences$Editor;",
+                &[(&key).into(), value.into()],
+            )?;
+        }
         env.call_method(editor, "apply", "()V", &[])?;
-        self.deadman_pointer = None;
-        self.gripper_pointer = None;
-        self.tracking.select(source);
+        self.cancel_contact();
+        self.tracking.select(selection);
         self.render_controls(env)
     }
     pub fn resume(&mut self, env: &mut JNIEnv) -> Result<()> {
         self.resumed = true;
+        // An overlapping activity can change the process-wide operator's saved choices.
+        let selection = read_selection(env, self.prefs.as_obj())?;
+        if selection != self.tracking.selection {
+            self.tracking.selection = selection;
+            for (spinner, value) in [
+                (&self.output, selection.output as i32),
+                (&self.provider, selection.provider as i32),
+            ] {
+                env.call_method(spinner, "setSelection", "(I)V", &[value.into()])?;
+            }
+        }
         let input = self.hub.handset_status(phone::now()).input;
         set_text(env, &self.input, &input.to_string())?;
         self.action(Action::Resume);
         self.action(Action::Focus(self.focused));
-        self.tracking.resume();
-        self.sensors.resume(env, self.hub.clone())?;
+        let registered = self.sensors.resume(env, self.hub.clone())?;
+        self.tracking.resume(registered);
         self.refresh(env)
     }
     pub fn pause(&mut self, env: &mut JNIEnv) -> Result<()> {
@@ -587,14 +623,14 @@ impl Ui {
         }
         if self.last_motion != Some((state.motion, state.mode)) {
             let (title, hint) = match (state.motion, state.mode) {
-                (Motion::Unavailable, _) => {
+                (Motion::Unavailable, _) | (_, TrackingMode::Unavailable) => {
                     ("Tracking unavailable", "Choose another tracking source.")
                 }
                 (Motion::OrientationOnly, _) => (
                     "Tracking rotation only",
-                    "Position is temporarily unavailable.",
+                    "Using IMU orientation while position is unavailable.",
                 ),
-                (Motion::Calibrating, TrackingMode::Spatial) => (
+                (Motion::Calibrating, TrackingMode::Camera { .. }) => (
                     "Locating the camera",
                     "Move slowly near a well-lit, textured surface.",
                 ),
@@ -606,7 +642,7 @@ impl Ui {
                     "Recovering tracking",
                     "Move slowly while tracking recovers.",
                 ),
-                (Motion::Waiting, TrackingMode::Spatial) => (
+                (Motion::Waiting, TrackingMode::Camera { .. }) => (
                     "Waiting for camera",
                     "Move slowly near a well-lit, textured surface.",
                 ),
@@ -615,10 +651,21 @@ impl Ui {
                     "Waiting for fresh motion measurements.",
                 ),
                 (Motion::Ready, _) => ("Tracking ready", "Waiting for a fresh pose."),
-                (Motion::Tracking, TrackingMode::Orientation) => {
-                    ("Tracking rotation", "Recenter sets the current heading.")
-                }
-                (Motion::Tracking, TrackingMode::Spatial) => (
+                (
+                    Motion::Tracking,
+                    TrackingMode::Orientation
+                    | TrackingMode::Camera {
+                        output: Output::OrientationOnly,
+                        ..
+                    },
+                ) => ("Tracking rotation", "Recenter sets the current heading."),
+                (
+                    Motion::Tracking,
+                    TrackingMode::Camera {
+                        output: Output::FullPose,
+                        ..
+                    },
+                ) => (
                     "Tracking position and rotation",
                     "Recenter sets the current location and heading.",
                 ),
@@ -641,9 +688,13 @@ impl Ui {
             self.tracking.update(env, &self.activity)?;
         }
         self.render_controls(env)?;
-        if self.tracking.message != self.last_source {
-            set_text(env, &self.source_detail, &self.tracking.message)?;
-            self.last_source.clone_from(&self.tracking.message);
+        let source = self
+            .hub
+            .camera_status(phone::now())
+            .unwrap_or_else(|| self.tracking.message.clone());
+        if source != self.last_source {
+            set_text(env, &self.source_detail, &source)?;
+            self.last_source = source;
         }
         if Instant::now() >= self.next_address_check {
             let address = super::operator_address();
@@ -653,7 +704,11 @@ impl Ui {
             }
             self.next_address_check = Instant::now() + Duration::from_secs(2);
         }
-        let visibility = if self.tracking.retry_visible { 0 } else { 8 };
+        let visibility = if self.tracking.retry_action.is_some() {
+            0
+        } else {
+            8
+        };
         env.call_method(&self.retry, "setVisibility", "(I)V", &[visibility.into()])?;
         env.call_method(
             &self.hold,
@@ -663,6 +718,24 @@ impl Ui {
         )?;
         Ok(())
     }
+}
+
+fn read_selection(env: &mut JNIEnv, prefs: &JObject) -> Result<Selection> {
+    let read = |env: &mut JNIEnv, name| -> Result<i32> {
+        let key = env.new_string(name)?;
+        env.call_method(
+            prefs,
+            "getInt",
+            "(Ljava/lang/String;I)I",
+            &[(&key).into(), (-1).into()],
+        )?
+        .i()
+    };
+    Ok(Selection::from_preferences(
+        read(env, "tracking")?,
+        read(env, "output")?,
+        read(env, "provider")?,
+    ))
 }
 
 fn set_text(env: &mut JNIEnv, view: &GlobalRef, value: &str) -> Result<()> {

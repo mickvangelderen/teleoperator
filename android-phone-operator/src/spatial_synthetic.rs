@@ -69,7 +69,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     realtime: true,
                     query_started: at,
                     query_finished: at,
-                    tracking: !dropout,
+                    tracking: if dropout {
+                        Err("Synthetic camera paused")
+                    } else {
+                        Ok(())
+                    },
                     sensor: Pose {
                         position: [0.25 * t.sin(), 0.2 + 0.05 * (t * 0.7).cos(), -0.3],
                         orientation: [0., (yaw / 2.).sin(), 0., (yaw / 2.).cos()],

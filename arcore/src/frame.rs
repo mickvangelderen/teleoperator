@@ -56,6 +56,11 @@ impl Frame<'_> {
     }
 
     pub fn tracking_state(&self) -> Result<TrackingState> {
+        self.tracking_status().map(|(state, _)| state)
+    }
+
+    /// The SDK supplies an actionable failure reason while camera tracking is paused.
+    pub fn tracking_status(&self) -> Result<(TrackingState, sys::ArTrackingFailureReason)> {
         unsafe {
             let session = self.session.native.ptr();
             let mut camera = ptr::null_mut();
@@ -63,7 +68,12 @@ impl Frame<'_> {
             let camera = Owned::new(camera, sys::ArCamera_release, "camera")?;
             let mut state = 0;
             sys::ArCamera_getTrackingState(session, camera.ptr(), &mut state);
-            Ok(state.into())
+            let state = TrackingState::from(state);
+            let mut reason = sys::AR_TRACKING_FAILURE_REASON_NONE as sys::ArTrackingFailureReason;
+            if state == TrackingState::Paused {
+                sys::ArCamera_getTrackingFailureReason(session, camera.ptr(), &mut reason);
+            }
+            Ok((state, reason))
         }
     }
 

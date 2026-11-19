@@ -5,6 +5,7 @@ mod displacement_tests;
 use crate::protocol::{
     self, Capabilities, Descriptor, EncodedAcquisition, PublicationState, Request, Value,
 };
+use crate::tracking::{Output, TrackingMode};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::watch;
 
@@ -75,13 +76,6 @@ pub enum Action {
     Recenter,
     Shutdown,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum TrackingMode {
-    Orientation,
-    Displacement,
-    Spatial,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
     OrientationOnly,
@@ -116,6 +110,8 @@ struct Demand {
     publication: Weak<Mutex<PublicationState>>,
 }
 struct State {
+    mode: TrackingMode,
+    last_pose_from_camera: Option<bool>,
     spatial: Option<crate::spatial::SpatialState>,
     displacement: Option<crate::displacement::Estimator>,
     input: i32,
@@ -312,6 +308,12 @@ impl State {
             self.releases = self.releases.wrapping_add(1);
         }
     }
+    fn release_for_reference_change(&mut self, at: u64, c: &Capabilities) {
+        if self.held {
+            self.cancel();
+            self.publish(3, self.transition_time(at), self.controls(), c);
+        }
+    }
     fn controls(&self) -> Vec<Value> {
         vec![
             Value::Bit(self.held),
@@ -345,18 +347,44 @@ impl State {
     fn refresh_pose(&mut self, at: u64, c: &Capabilities) {
         use crate::spatial::Pose;
         let recent = |t| at.saturating_sub(t) <= STALE_NS;
-        let camera = self
-            .spatial
-            .as_ref()
-            .and_then(|a| Some((a.camera_ready_at?, a.pose?, [true; 4])));
+        let orientation_only = matches!(
+            self.mode,
+            TrackingMode::Camera {
+                output: Output::OrientationOnly,
+                ..
+            }
+        );
+        let camera = self.spatial.as_ref().and_then(|a| {
+            let mut pose = a.pose?;
+            if orientation_only {
+                pose.position = [0.; 3];
+            }
+            Some((
+                a.camera_ready_at?,
+                pose,
+                [!orientation_only, true, !orientation_only, true],
+                true,
+            ))
+        });
         let estimated = self
             .displacement
             .as_ref()
             .and_then(|d| d.estimate)
-            .map(|e| (e.at, e.pose, [true, true, false, true]));
+            .map(|e| (e.at, e.pose, [true, true, false, true], false));
         let imu = self.last[0]
             .zip(self.orientation)
-            .filter(|_| self.good[0] && self.heading_set)
+            .filter(|_| {
+                self.good[0]
+                    && self.heading_set
+                    && !matches!(
+                        self.mode,
+                        TrackingMode::Unavailable
+                            | TrackingMode::Camera {
+                                imu_fallback: false,
+                                ..
+                            }
+                    )
+            })
             .map(|(t, q)| {
                 let h = std::f64::consts::FRAC_1_SQRT_2;
                 let q = multiply(multiply(self.heading, q), [h, 0., 0., h]);
@@ -367,20 +395,28 @@ impl State {
                         ..Pose::IDENTITY
                     },
                     [false, true, false, true],
+                    false,
                 )
             });
         let candidate = [camera, estimated, imu]
             .into_iter()
             .flatten()
-            .find(|(t, _, _)| recent(*t));
-        if let Some((t, pose, quality)) = candidate {
+            .find(|(t, ..)| recent(*t));
+        if let Some((t, pose, quality, camera)) = candidate {
             if t >= self.snapshots[0].timestamp {
+                if self
+                    .last_pose_from_camera
+                    .replace(camera)
+                    .is_some_and(|previous| previous != camera)
+                {
+                    self.release_for_reference_change(at, c);
+                }
                 self.publish(0, t, Self::pose_values(pose, quality), c);
                 return;
             }
             // A delayed camera can take over once its capture catches the last
             // published rotation. Keep the newer rotation visible in the meantime.
-            if quality[0]
+            if (quality[0] || camera)
                 && recent(self.snapshots[0].timestamp)
                 && matches!(self.snapshots[0].values.get(1), Some(Value::Bit(false)))
             {
@@ -456,26 +492,35 @@ impl Hub {
         Self::at(available, source, now())
     }
     pub fn at(available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
-        Self::with_mode(available, source, at, false, false)
+        Self::with_mode(available, source, at, TrackingMode::Orientation)
     }
     pub fn spatial_at(available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
-        Self::with_mode(available, source, at, true, false)
+        Self::with_mode(
+            available,
+            source,
+            at,
+            TrackingMode::Camera {
+                output: Output::FullPose,
+                imu_fallback: true,
+            },
+        )
     }
     pub fn displacement_at(available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
-        Self::with_mode(available, source, at, false, true)
+        Self::with_mode(available, source, at, TrackingMode::Displacement)
     }
     fn with_mode(
         available: [bool; 3],
         source: &'static str,
         at: u64,
-        spatial: bool,
-        displacement: bool,
+        mode: TrackingMode,
     ) -> Arc<Self> {
         let c = Arc::new(catalog(available));
         let (updates, _) = watch::channel(0);
         let mut state = State {
-            spatial: spatial.then(Default::default),
-            displacement: displacement.then(Default::default),
+            mode,
+            last_pose_from_camera: None,
+            spatial: matches!(mode, TrackingMode::Camera { .. }).then(Default::default),
+            displacement: (mode == TrackingMode::Displacement).then(Default::default),
             input: 0,
             trigger: 0.,
             epoch: at,
@@ -513,26 +558,29 @@ impl Hub {
             source,
         })
     }
-    pub fn set_tracking_mode(&self, mode: TrackingMode, has_rotation_sensor: bool, at: u64) {
+    pub fn set_tracking_mode(&self, mode: TrackingMode, at: u64) {
         let mut s = self.state.lock().unwrap();
-        let spatial = mode == TrackingMode::Spatial;
-        let displacement = mode == TrackingMode::Displacement;
-        if spatial == s.spatial.is_some() && displacement == s.displacement.is_some() {
+        if s.mode == mode {
             return;
         }
         let at = s.transition_time(at);
-        // An automatic source transition retains the actual touch. Explicit
-        // source selection and activity lifecycle events cancel it in the UI.
-        s.spatial = spatial.then(|| crate::spatial::SpatialState {
-            generation: at,
-            ..Default::default()
-        });
-        s.displacement = displacement.then(|| {
+        s.release_for_reference_change(at, &self.capabilities);
+        s.mode = mode;
+        s.last_pose_from_camera = None;
+        s.heading_set = false;
+        s.reference_since = at;
+        s.rotations.clear();
+        s.spatial =
+            matches!(mode, TrackingMode::Camera { .. }).then(|| crate::spatial::SpatialState {
+                generation: at,
+                recenter_since: Some(at),
+                ..Default::default()
+            });
+        s.displacement = (mode == TrackingMode::Displacement).then(|| {
             let mut estimator = crate::displacement::Estimator::default();
             estimator.resume(at);
             estimator
         });
-        s.available[0] = has_rotation_sensor;
         s.refresh_pose(at, &self.capabilities);
         self.notify_subscribers(s.serial);
     }
@@ -575,6 +623,8 @@ impl Hub {
             Action::Hold => {}
             Action::Release | Action::Cancel => s.cancel(),
             Action::Recenter => {
+                s.cancel();
+                s.last_pose_from_camera = None;
                 s.reference_since = at;
                 s.heading_set = false;
                 s.rotations.clear();
@@ -595,6 +645,7 @@ impl Hub {
                     s.foreground = matches!(action, Action::Resume);
                 }
                 s.cancel();
+                s.last_pose_from_camera = None;
                 s.epoch = at;
                 s.good = [false; 3];
                 s.orientation = None;
@@ -677,6 +728,7 @@ impl Hub {
         if kind < 2
             && let Some(d) = &mut s.displacement
         {
+            let had_reference = d.has_reference();
             if !valid || previous.is_some_and(|t| timestamp - t > crate::displacement::MAX_GAP_NS) {
                 d.invalidate("Interrupted IMU acquisition");
             }
@@ -689,6 +741,9 @@ impl Hub {
                 if !d.has_reference() && d.ready(timestamp) {
                     d.begin_continuous(timestamp, heading);
                 }
+            }
+            if had_reference && !d.has_reference() {
+                s.release_for_reference_change(received, &self.capabilities);
             }
         }
         if kind == 0 || (kind == 1 && s.displacement.is_some()) {
@@ -711,7 +766,11 @@ impl Hub {
         if let Some(d) = &mut s.displacement
             && d.expired(at)
         {
+            let had_reference = d.has_reference();
             d.invalidate("Waiting for aligned IMU measurements");
+            if had_reference {
+                s.release_for_reference_change(at, &self.capabilities);
+            }
         }
         s.refresh_pose(at, &self.capabilities);
         self.notify_subscribers(s.serial);
@@ -723,18 +782,20 @@ impl Hub {
             at.saturating_sub(pose.timestamp) <= STALE_NS
                 && matches!(pose.values.get(index), Some(Value::Bit(true)))
         };
-        let mode = if s.spatial.is_some() {
-            TrackingMode::Spatial
-        } else if s.displacement.is_some() {
-            TrackingMode::Displacement
-        } else {
+        let mode = s.mode;
+        let orientation_only = matches!(
+            mode,
             TrackingMode::Orientation
-        };
-        let motion = if valid(1) || (valid(2) && mode == TrackingMode::Orientation) {
+                | TrackingMode::Camera {
+                    output: Output::OrientationOnly,
+                    ..
+                }
+        );
+        let motion = if valid(1) || (valid(2) && orientation_only) {
             Motion::Tracking
         } else if valid(2) {
             Motion::OrientationOnly
-        } else if mode != TrackingMode::Spatial && !s.available[0] {
+        } else if mode == TrackingMode::Unavailable || (s.spatial.is_none() && !s.available[0]) {
             Motion::Unavailable
         } else if let Some(a) = &s.spatial {
             if a.origin {
@@ -779,6 +840,8 @@ impl Hub {
                 d.estimate.map(|e| e.pose.position),
                 d.estimate.map(|e| e.velocity)
             )
+        } else if state.mode == TrackingMode::Unavailable {
+            "Pose unavailable".into()
         } else {
             "Rotation sensor · orientation only".into()
         };
@@ -787,6 +850,18 @@ impl Hub {
             sensor(1),
             sensor(2)
         )
+    }
+    pub fn camera_status(&self, now: u64) -> Option<String> {
+        let state = self.state.lock().unwrap();
+        let camera = state.spatial.as_ref()?;
+        if camera.pose.is_some()
+            && camera
+                .camera_ready_at
+                .is_some_and(|at| now.saturating_sub(at) > STALE_NS)
+        {
+            return Some("Waiting for a fresh camera frame".into());
+        }
+        Some(camera.status.clone())
     }
     /// Worker token rejects results crossing pause, focus loss or recenter.
     pub fn spatial_context(&self) -> (u64, bool, Option<u64>) {
@@ -810,6 +885,10 @@ impl Hub {
         if f.generation != a.generation {
             return;
         }
+        if a.origin && matches!(f.anchor, FrameAnchor::Missing) {
+            s.release_for_reference_change(f.query_finished, &self.capabilities);
+        }
+        let a = s.spatial.as_mut().unwrap();
         let capture_age = f
             .metadata_timestamp
             .and_then(|ns| u64::try_from(ns).ok())
@@ -824,11 +903,7 @@ impl Hub {
             capture_age
         );
         a.origin = !matches!(f.anchor, FrameAnchor::Missing);
-        let result = if !f.tracking {
-            Err("Waiting for ARCore camera tracking")
-        } else {
-            a.clock.observe(&f)
-        };
+        let result = f.tracking.and_then(|()| a.clock.observe(&f));
         let result = result.and_then(|acquisition| {
             if let Acquisition::New(capture_time) = acquisition {
                 a.camera_ready_at = Some(capture_time);
@@ -852,7 +927,7 @@ impl Hub {
             Ok(Some((timestamp, pose))) => {
                 let a = s.spatial.as_mut().unwrap();
                 a.pose = Some(pose);
-                a.status = "ARCore TRACKING · verified frame clock".into();
+                a.status = "ARCore tracking".into();
                 // Match yaw at capture time, not at camera callback time. Both
                 // sources use gravity-up and the same phone-to-grip rotation.
                 if let Some((_, imu)) = s
@@ -878,7 +953,7 @@ impl Hub {
                 let a = s.spatial.as_mut().unwrap();
                 a.status = reason.into();
                 a.pose = None;
-                if !f.tracking {
+                if f.tracking.is_err() {
                     a.camera_ready_at = None;
                 }
                 s.refresh_pose(f.query_finished, &self.capabilities);
@@ -1144,7 +1219,7 @@ mod spatial_tests {
             realtime: true,
             query_started: t,
             query_finished: t + 1,
-            tracking: true,
+            tracking: Ok(()),
             sensor: Pose {
                 position: [1., 2., 3.],
                 ..Pose::IDENTITY
@@ -1153,14 +1228,12 @@ mod spatial_tests {
         }
     }
     #[test]
-    fn automatic_source_changes_preserve_contact_and_reject_old_camera_frames() {
+    fn provider_changes_end_contact_and_reject_old_camera_frames() {
         let hub = ready();
-        hub.action(Action::Hold, 20);
-        assert!(hub.handset_status(0).held);
         let old = frame(&hub, 21);
-        hub.set_tracking_mode(TrackingMode::Orientation, true, 22);
+        hub.set_tracking_mode(TrackingMode::Orientation, 22);
         hub.spatial_frame(old);
-        assert!(hub.handset_status(0).held);
+        assert!(!hub.handset_status(22).held);
         assert!(!position_valid(&hub));
 
         let upright = std::f64::consts::FRAC_1_SQRT_2;
@@ -1169,14 +1242,65 @@ mod spatial_tests {
             hub.state.lock().unwrap().snapshots[0].values[2],
             Value::Bit(true)
         ));
-        assert!(hub.handset_status(0).held);
-        hub.action(Action::Cancel, 25); // explicit source picker
-        hub.set_tracking_mode(TrackingMode::Displacement, true, 26);
-        assert!(!hub.handset_status(0).held);
-        hub.set_tracking_mode(TrackingMode::Spatial, true, 27);
+        hub.set_tracking_mode(TrackingMode::Displacement, 26);
+        hub.set_tracking_mode(
+            TrackingMode::Camera {
+                output: Output::FullPose,
+                imu_fallback: true,
+            },
+            27,
+        );
         hub.spatial_frame(old);
         assert_ne!(old.generation, hub.spatial_context().0);
         assert!(!position_valid(&hub));
+        assert_eq!(
+            (
+                hub.handset_status(27).presses,
+                hub.handset_status(27).releases
+            ),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn explicit_camera_quality_uses_only_the_requested_components_and_capture_time() {
+        for output in [Output::FullPose, Output::OrientationOnly] {
+            let hub = ready();
+            hub.set_tracking_mode(
+                TrackingMode::Camera {
+                    output,
+                    imu_fallback: false,
+                },
+                30,
+            );
+            let mut f = frame(&hub, 40);
+            f.query_finished = 200;
+            hub.spatial_frame(f);
+            let position = output == Output::FullPose;
+            let snapshot = hub.state.lock().unwrap().snapshots[0].clone();
+            assert_eq!(snapshot.timestamp, 40);
+            assert_eq!(
+                &snapshot.values[1..],
+                &[position, true, position, true].map(Value::Bit)
+            );
+            if !position {
+                assert!(matches!(&snapshot.values[0], Value::Numbers(v) if v[..3] == [0.; 3]));
+            }
+            hub.sensor(0, 202, [0., 0., 0., 1.], 202);
+            f.tracking = Err("Camera paused");
+            f.query_finished = 204;
+            hub.spatial_frame(f);
+            assert_eq!(
+                &hub.state.lock().unwrap().snapshots[0].values[1..],
+                &[false; 4].map(Value::Bit)
+            );
+            hub.set_tracking_mode(TrackingMode::Unavailable, 215);
+            hub.sensor(0, 218, [0., 0., 0., 1.], 220);
+            assert_eq!(hub.handset_status(220).motion, Motion::Unavailable);
+            assert!(!hub.handset_status(220).held);
+            hub.sensor(2, 220, [0., 1., 2., 0.], 221);
+            assert_eq!(hub.state.lock().unwrap().snapshots[2].timestamp, 220);
+        }
     }
 
     fn ready() -> Arc<Hub> {
@@ -1195,6 +1319,26 @@ mod spatial_tests {
             Value::Bit(true)
         )
     }
+    #[test]
+    fn losing_a_camera_origin_releases_once_before_automatic_reacquisition() {
+        let hub = ready();
+        let mut lost = frame(&hub, 25);
+        lost.anchor = crate::spatial::FrameAnchor::Missing;
+        hub.spatial_frame(lost);
+        assert!(!hub.handset_status(26).held);
+        hub.spatial_frame(frame(&hub, 35));
+        let status = hub.handset_status(36);
+        assert!(status.position_valid);
+        assert_eq!(
+            (status.held, status.presses, status.releases),
+            (false, 1, 1)
+        );
+        assert_eq!(
+            hub.camera_status(36 + STALE_NS).as_deref(),
+            Some("Waiting for a fresh camera frame")
+        );
+    }
+
     #[test]
     fn camera_capture_can_precede_controls_without_losing_freshness_or_reference() {
         let h = ready();
@@ -1267,7 +1411,7 @@ mod spatial_tests {
         assert_eq!(h.spatial_context().2, Some(2));
         let generation = h.spatial_context().0;
         let mut startup = frame(&h, 4);
-        startup.tracking = false;
+        startup.tracking = Err("Camera paused");
         startup.anchor = FrameAnchor::Missing;
         h.spatial_frame(startup);
         assert_eq!(h.handset_status(5).motion, Motion::Calibrating);
@@ -1279,7 +1423,7 @@ mod spatial_tests {
             if anchor_loss {
                 lost.anchor = FrameAnchor::Paused;
             } else {
-                lost.tracking = false;
+                lost.tracking = Err("Camera paused");
             }
             h.spatial_frame(lost);
             assert_eq!(h.handset_status(at + 1).motion, Motion::Recovering);
@@ -1314,7 +1458,7 @@ mod spatial_tests {
             let pending = frame(&h, 100);
             h.action(action, 30);
             h.spatial_frame(pending);
-            assert_eq!(h.handset_status(0).held, matches!(action, Action::Recenter));
+            assert!(!h.handset_status(0).held);
             assert!(!position_valid(&h));
         }
     }
@@ -1330,7 +1474,7 @@ mod spatial_tests {
         let good = h.state.lock().unwrap().snapshots[0].clone();
         h.sensor(0, 40, imu, 42);
         let mut lost = frame(&h, 41);
-        lost.tracking = false;
+        lost.tracking = Err("Camera paused");
         h.spatial_frame(lost);
         let fallback = h.state.lock().unwrap().snapshots[0].clone();
         assert_eq!(fallback.timestamp, 40);
@@ -1354,7 +1498,8 @@ mod spatial_tests {
             &h.state.lock().unwrap().snapshots[0].values[1..],
             &[false; 4].map(Value::Bit)
         );
-        assert!(h.handset_status(0).held);
+        assert!(!h.handset_status(0).held);
+        assert_eq!(h.handset_status(0).releases, 1);
     }
 
     #[test]

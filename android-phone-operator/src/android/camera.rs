@@ -1,6 +1,7 @@
 //! UI-thread install/permission flow. Only the worker owns a camera session.
 use super::camera_worker::CameraWorker;
-use crate::phone::{self, Hub, TrackingMode};
+use crate::phone::{self, Hub};
+use crate::tracking::{CameraPrompts, Permission, Selection, TrackingMode};
 use arcore_sys as ar;
 use jni::{
     JNIEnv,
@@ -12,103 +13,101 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Retry {
+    Service,
+    Permission,
+}
+
 pub(super) struct Tracking {
-    pub source: i32,
+    pub selection: Selection,
     pub message: String,
-    pub retry_visible: bool,
-    pub asked_permission: bool,
-    pub asked_install: bool,
-    install_enabled: bool,
-    failed: bool,
+    pub retry_action: Option<Retry>,
+    pub prompts: CameraPrompts,
+    sensor_mask: i32,
     next_check: Option<Instant>,
     worker: Option<CameraWorker>,
-    has_rotation: bool,
     hub: Arc<Hub>,
 }
 
 impl Tracking {
-    pub fn new(source: i32, mask: i32, flags: u8, hub: Arc<Hub>) -> Self {
+    pub fn new(selection: Selection, flags: u8, hub: Arc<Hub>) -> Self {
         Self {
-            source,
-            has_rotation: mask & 1 != 0,
+            selection,
+            sensor_mask: 0,
             hub,
-            message: Self::sensor_source(source).1.into(),
-            retry_visible: false,
-            asked_permission: flags & 1 != 0,
-            asked_install: flags & 2 != 0,
+            message: String::new(),
+            retry_action: None,
+            prompts: CameraPrompts::restore(flags),
             worker: None,
-            install_enabled: false,
-            failed: false,
             next_check: None,
         }
     }
-    fn sensor_source(source: i32) -> (TrackingMode, &'static str) {
-        if source == 2 {
-            (
-                TrackingMode::Displacement,
-                "Using estimated IMU displacement",
-            )
-        } else {
-            (TrackingMode::Orientation, "Using phone orientation")
-        }
-    }
-    pub fn resume(&mut self) {
-        let (mode, _) = Self::sensor_source(self.source);
-        self.hub
-            .set_tracking_mode(mode, self.has_rotation, phone::now());
-        self.check_soon();
-    }
-    fn sensors(&mut self) {
-        let (mode, message) = Self::sensor_source(self.source);
-        self.hub
-            .set_tracking_mode(mode, self.has_rotation, phone::now());
-        self.message = message.into();
-        self.retry_visible = false;
-    }
-    pub fn select(&mut self, source: i32) {
+
+    fn without_camera(&mut self, reason: &str, retry: Option<Retry>) {
         self.worker.take();
-        self.hub.action(phone::Action::Cancel, phone::now());
-        self.failed = false;
-        self.source = source;
-        self.sensors();
+        self.next_check = None;
+        let mode = self
+            .selection
+            .without_camera(self.sensor_mask & 1 != 0, self.sensor_mask & 2 != 0);
+        self.hub.set_tracking_mode(mode, phone::now());
+        let source = match mode {
+            TrackingMode::Orientation
+                if self.selection.output == crate::tracking::Output::FullPose =>
+            {
+                "IMU orientation · accelerometer unavailable"
+            }
+            TrackingMode::Orientation => "IMU orientation",
+            TrackingMode::Displacement => "IMU estimated displacement",
+            _ => "Pose unavailable",
+        };
+        self.message = if reason.is_empty() {
+            source.into()
+        } else {
+            format!("{source} · {reason}")
+        };
+        self.retry_action = retry;
+    }
+
+    pub fn resume(&mut self, sensor_mask: i32) {
+        self.sensor_mask = sensor_mask;
+        self.without_camera("", None);
         self.check_soon();
+    }
+    pub fn select(&mut self, selection: Selection) {
+        self.selection = selection;
+        self.resume(self.sensor_mask);
     }
     pub fn stop(&mut self) {
-        self.next_check = None;
-        if self.worker.take().is_some() {
-            self.sensors();
-        }
+        self.without_camera("", None);
     }
     pub fn check_soon(&mut self) {
-        if !self.failed && self.source == 0 {
+        if self.worker.is_none() && self.selection.wants_camera(self.sensor_mask & 1 != 0) {
             self.next_check = Some(Instant::now());
         }
     }
-    fn fallback(&mut self, reason: &str, retry: bool) {
-        self.stop();
-        self.message = format!("Using phone orientation · {reason}");
-        self.retry_visible = retry;
-    }
+
     pub fn retry(&mut self, env: &mut JNIEnv, activity: &JObject) -> Result<()> {
         let permission = env.new_string("android.permission.CAMERA")?;
-        if self.asked_permission
-            && env
-                .call_method(
-                    activity,
-                    "checkSelfPermission",
-                    "(Ljava/lang/String;)I",
-                    &[(&permission).into()],
-                )?
-                .i()?
-                != 0
-            && !env
-                .call_method(
-                    activity,
-                    "shouldShowRequestPermissionRationale",
-                    "(Ljava/lang/String;)Z",
-                    &[(&permission).into()],
-                )?
-                .z()?
+        let denied = env
+            .call_method(
+                activity,
+                "checkSelfPermission",
+                "(Ljava/lang/String;)I",
+                &[(&permission).into()],
+            )?
+            .i()?
+            != 0;
+        let rationale = env
+            .call_method(
+                activity,
+                "shouldShowRequestPermissionRationale",
+                "(Ljava/lang/String;)Z",
+                &[(&permission).into()],
+            )?
+            .z()?;
+        if self.retry_action == Some(Retry::Permission)
+            && self.prompts.needs_settings(denied, rationale)
         {
             let pkg = env
                 .call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?
@@ -135,28 +134,29 @@ impl Tracking {
                 &[(&intent).into()],
             )?;
         } else {
-            self.asked_permission = false;
-            self.asked_install = false;
-            self.failed = false;
-            self.install_enabled = true;
+            self.prompts = CameraPrompts::default();
             self.check_soon();
         }
         Ok(())
     }
     pub fn update(&mut self, env: &mut JNIEnv, activity: &GlobalRef) -> Result<()> {
-        if let Some(reason) = self.worker.as_ref().and_then(CameraWorker::failure) {
-            self.failed = true;
-            self.fallback(&reason, true);
+        if let Some(failure) = self.worker.as_ref().and_then(CameraWorker::failure) {
+            self.without_camera(&failure.message, Some(Retry::Service));
+            if failure.transient {
+                self.next_check = Some(Instant::now() + Duration::from_secs(2));
+            }
         } else if self.next_check.is_some_and(|at| at <= Instant::now()) {
+            // A recovering camera may establish a new origin. Finish the user's
+            // current IMU gesture before probing another provider.
+            if self.hub.handset_status(phone::now()).held {
+                return Ok(());
+            }
             self.next_check = None;
             self.try_camera(env, activity.as_obj())?;
         }
         Ok(())
     }
     fn try_camera(&mut self, env: &mut JNIEnv, activity: &JObject) -> Result<()> {
-        if self.source != 0 || self.worker.is_some() {
-            return Ok(());
-        }
         let mut availability = 0;
         // The native SDK borrows this thread's JNIEnv and the live Activity only for these calls.
         unsafe {
@@ -171,22 +171,16 @@ impl Tracking {
                 self.next_check = Some(Instant::now() + Duration::from_millis(500));
                 return Ok(());
             }
-            ar::AR_AVAILABILITY_SUPPORTED_INSTALLED => {}
-            ar::AR_AVAILABILITY_SUPPORTED_NOT_INSTALLED
-            | ar::AR_AVAILABILITY_SUPPORTED_APK_TOO_OLD => {
-                if !self.install_enabled && !self.asked_install {
-                    self.fallback(
-                        "Google Play Services for AR needs installation or an update",
-                        true,
-                    );
-                    return Ok(());
-                }
+            ar::AR_AVAILABILITY_SUPPORTED_INSTALLED
+            | ar::AR_AVAILABILITY_SUPPORTED_NOT_INSTALLED
+            | ar::AR_AVAILABILITY_SUPPORTED_APK_TOO_OLD => {}
+            ar::AR_AVAILABILITY_UNSUPPORTED_DEVICE_NOT_CAPABLE => {
+                self.without_camera("ARCore unsupported on this device", None);
+                return Ok(());
             }
-            state => {
-                self.fallback(
-                    "ARCore unavailable",
-                    state != ar::AR_AVAILABILITY_UNSUPPORTED_DEVICE_NOT_CAPABLE,
-                );
+            _ => {
+                self.without_camera("ARCore availability unknown", Some(Retry::Service));
+                self.next_check = Some(Instant::now() + Duration::from_secs(5));
                 return Ok(());
             }
         }
@@ -195,21 +189,33 @@ impl Tracking {
             ar::ArCoreApk_requestInstall(
                 env.get_raw().cast(),
                 activity.as_raw().cast(),
-                i32::from(!self.asked_install),
+                i32::from(!self.prompts.install_requested),
                 &mut install,
             )
         };
         if result != ar::AR_SUCCESS {
-            self.failed = true;
-            self.fallback(&format!("ARCore install check returned {result}"), true);
+            let reason = match result {
+                ar::AR_UNAVAILABLE_USER_DECLINED_INSTALLATION => {
+                    "AR services installation declined"
+                }
+                ar::AR_UNAVAILABLE_DEVICE_NOT_COMPATIBLE => "ARCore unsupported on this device",
+                _ => "Could not set up AR services",
+            };
+            log::warn!("ARCore install check: {result}");
+            self.without_camera(
+                reason,
+                (result != ar::AR_UNAVAILABLE_DEVICE_NOT_COMPATIBLE).then_some(Retry::Service),
+            );
             return Ok(());
         }
         if install as u32 == ar::AR_INSTALL_STATUS_INSTALL_REQUESTED {
-            self.asked_install = true;
+            self.prompts.install_requested = true;
+            self.message = "Waiting for AR services".into();
             return Ok(());
         }
+        self.prompts.install_requested = false;
         let permission = env.new_string("android.permission.CAMERA")?;
-        if env
+        let granted = env
             .call_method(
                 activity,
                 "checkSelfPermission",
@@ -217,20 +223,18 @@ impl Tracking {
                 &[(&permission).into()],
             )?
             .i()?
-            != 0
-        {
-            self.fallback("Camera permission needed for ARCore", true);
-            if !self.asked_permission {
-                self.asked_permission = true;
-                let permissions = env.new_object_array(1, "java/lang/String", &permission)?;
-                env.call_method(
-                    activity,
-                    "requestPermissions",
-                    "([Ljava/lang/String;I)V",
-                    &[(&permissions).into(), 7.into()],
-                )?;
+            == 0;
+        match self.prompts.permission(granted) {
+            Permission::Granted => {}
+            Permission::Denied => {
+                self.without_camera("Camera permission needed", Some(Retry::Permission));
+                return Ok(());
             }
-            return Ok(());
+            Permission::Request => {
+                self.without_camera("Camera permission needed", Some(Retry::Permission));
+                env.call_method(activity, "requestCameraPermission", "()V", &[])?;
+                return Ok(());
+            }
         }
         let context = env
             .call_method(
@@ -242,11 +246,14 @@ impl Tracking {
             .l()?;
         let context = env.new_global_ref(context)?;
         let vm = env.get_java_vm()?;
-        self.hub
-            .set_tracking_mode(TrackingMode::Spatial, self.has_rotation, phone::now());
-        self.worker = Some(CameraWorker::start(vm, context, self.hub.clone()));
-        self.message = "Using ARCore".into();
-        self.retry_visible = false;
+        self.worker = Some(CameraWorker::start(
+            vm,
+            context,
+            self.hub.clone(),
+            self.selection.camera(),
+        ));
+        self.message = "Starting ARCore".into();
+        self.retry_action = None;
         Ok(())
     }
 }

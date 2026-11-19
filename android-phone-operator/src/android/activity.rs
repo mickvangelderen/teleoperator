@@ -132,9 +132,9 @@ unsafe extern "C" fn focus(native: *mut ANativeActivity, focused: i32) {
 unsafe extern "C" fn save(native: *mut ANativeActivity, size: *mut usize) -> *mut c_void {
     // Android copies the bytes and calls free() on the returned buffer.
     let flags = VIEWS.with_borrow(|views| {
-        views.get(&ActivityId(native as usize)).map(|ui| {
-            u8::from(ui.tracking.asked_permission) | (u8::from(ui.tracking.asked_install) << 1)
-        })
+        views
+            .get(&ActivityId(native as usize))
+            .map(|ui| ui.tracking.prompts.save())
     });
     unsafe {
         *size = 0;

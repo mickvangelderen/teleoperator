@@ -3,6 +3,7 @@
 use crate::{
     phone::{self, Hub},
     spatial::{self, Acquisition, ClockGate, Frame, FrameAnchor, Pose},
+    tracking::TrackingMode,
 };
 use arcore::{
     Anchor, LightEstimationMode, PlaneFindingMode, Session, TextureUpdateMode, TrackingState,
@@ -22,15 +23,20 @@ static CAMERA: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct State {
     stopped: bool,
-    failure: Option<String>,
+    failure: Option<Failure>,
 }
 
+#[derive(Clone)]
+pub(super) struct Failure {
+    pub message: String,
+    pub transient: bool,
+}
 pub(super) struct CameraWorker {
     state: Arc<Mutex<State>>,
 }
 
 impl CameraWorker {
-    pub(super) fn start(vm: JavaVM, context: GlobalRef, hub: Arc<Hub>) -> Self {
+    pub(super) fn start(vm: JavaVM, context: GlobalRef, hub: Arc<Hub>, mode: TrackingMode) -> Self {
         let state = Arc::new(Mutex::new(State::default()));
         let worker = state.clone();
         let spawned = thread::Builder::new()
@@ -40,22 +46,49 @@ impl CameraWorker {
                 if worker.lock().unwrap().stopped {
                     return;
                 }
-                let result = run(&vm, &context, &hub, &worker);
+                let result = run(&vm, &context, &hub, &worker, mode);
                 if let Err(error) = result {
                     let mut state = worker.lock().unwrap();
                     if !state.stopped {
                         log::warn!("ARCore camera failed: {error}");
-                        state.failure = Some(error.to_string());
+                        let busy = matches!(
+                            error.downcast_ref::<arcore::Error>(),
+                            Some(arcore::Error::Status(
+                                _,
+                                arcore_sys::AR_ERROR_CAMERA_NOT_AVAILABLE
+                            ))
+                        );
+                        let setup_changed = matches!(
+                            error.downcast_ref::<arcore::Error>(),
+                            Some(arcore::Error::Status(
+                                _,
+                                arcore_sys::AR_ERROR_CAMERA_PERMISSION_NOT_GRANTED
+                                    | arcore_sys::AR_UNAVAILABLE_ARCORE_NOT_INSTALLED
+                                    | arcore_sys::AR_UNAVAILABLE_APK_TOO_OLD
+                            ))
+                        );
+                        let stopped = error.downcast_ref::<CameraStopped>().is_some();
+                        state.failure = Some(Failure {
+                            message: if busy {
+                                "Camera unavailable".into()
+                            } else {
+                                error.to_string()
+                            },
+                            transient: busy || setup_changed || stopped,
+                        });
                     }
                 }
             });
         if let Err(error) = spawned {
-            state.lock().unwrap().failure = Some(format!("Could not start camera worker: {error}"));
+            state.lock().unwrap().failure = Some(Failure {
+                message: format!("Could not start camera worker: {error}"),
+                transient: true,
+            });
         }
         Self { state }
     }
 
-    pub(super) fn failure(&self) -> Option<String> {
+    pub(super) fn failure(&self) -> Option<Failure> {
         self.state.lock().unwrap().failure.clone()
     }
 }
@@ -73,6 +106,7 @@ fn run(
     context: &GlobalRef,
     hub: &Hub,
     worker: &Mutex<State>,
+    mode: TrackingMode,
 ) -> Result<(), Box<dyn Error>> {
     let mut env = vm.attach_current_thread_as_daemon()?;
     let mut session = Session::new(&mut env, context.as_obj())?;
@@ -102,10 +136,19 @@ fn run(
             );
         }
     }
-    if worker.lock().unwrap().stopped || !hub.spatial_context().1 {
+    if worker.lock().unwrap().stopped {
         return Ok(());
     }
     session.resume()?;
+    {
+        // Do not disturb the fallback's origin while an unavailable camera is
+        // being retried. A retired worker must never switch the active source.
+        let state = worker.lock().unwrap();
+        if state.stopped {
+            return Ok(());
+        }
+        hub.set_tracking_mode(mode, phone::now());
+    }
     track(&mut session, hub, worker)?;
     session.pause()?;
     Ok(())
@@ -168,10 +211,20 @@ fn phone_pose(pose: arcore::Pose) -> Pose {
     }
 }
 
+#[derive(Debug)]
+struct CameraStopped;
+impl std::fmt::Display for CameraStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ARCore stopped tracking")
+    }
+}
+impl Error for CameraStopped {}
+
 fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), Box<dyn Error>> {
     let mut anchor: Option<Anchor> = None;
     let mut anchor_generation = None;
     let mut clock = ClockGate::default();
+    let mut missing_metadata_since = None;
     while !worker.lock().unwrap().stopped {
         let (generation, active, origin_since) = hub.spatial_context();
         if !active {
@@ -186,8 +239,18 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), 
         let frame = session.update()?;
         let timestamp = frame.timestamp_ns();
         let metadata_timestamp = frame.android_camera_timestamp_ns()?;
-        let camera_state = frame.tracking_state()?;
+        let (camera_state, reason) = frame.tracking_status()?;
         let tracking = camera_state == TrackingState::Tracking;
+        // Some camera implementations omit SENSOR_TIMESTAMP despite reporting a
+        // REALTIME clock. Allow startup, then release the unusable camera.
+        if tracking && metadata_timestamp.is_none_or(|t| t <= 0) {
+            let since = *missing_metadata_since.get_or_insert(query_started);
+            if query_started - since >= 5_000_000_000 {
+                return Err("Camera capture timestamps unavailable".into());
+            }
+        } else {
+            missing_metadata_since = None;
+        }
         let sensor = if tracking {
             phone_pose(frame.android_sensor_pose())
         } else {
@@ -200,7 +263,26 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), 
             realtime: true,
             query_started,
             query_finished: phone::now(),
-            tracking,
+            tracking: if tracking {
+                Ok(())
+            } else {
+                Err(match reason as u32 {
+                    arcore_sys::AR_TRACKING_FAILURE_REASON_INSUFFICIENT_LIGHT => {
+                        "ARCore needs more light"
+                    }
+                    arcore_sys::AR_TRACKING_FAILURE_REASON_EXCESSIVE_MOTION => {
+                        "ARCore needs slower movement"
+                    }
+                    arcore_sys::AR_TRACKING_FAILURE_REASON_INSUFFICIENT_FEATURES => {
+                        "Point the camera at a textured surface"
+                    }
+                    arcore_sys::AR_TRACKING_FAILURE_REASON_CAMERA_UNAVAILABLE => {
+                        "ARCore camera in use"
+                    }
+                    arcore_sys::AR_TRACKING_FAILURE_REASON_BAD_STATE => "ARCore lost tracking",
+                    _ => "Waiting for ARCore camera tracking",
+                })
+            },
             sensor,
             anchor: FrameAnchor::Missing,
         };
@@ -245,7 +327,7 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), 
         sample.query_finished = phone::now();
         hub.spatial_frame(sample);
         if camera_state == TrackingState::Stopped {
-            return Err("ARCore stopped tracking the camera".into());
+            return Err(CameraStopped.into());
         }
     }
     Ok(())

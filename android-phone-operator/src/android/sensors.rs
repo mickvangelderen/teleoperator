@@ -71,7 +71,7 @@ impl Sensors {
                 mask | (i32::from(source.is_some()) << i)
             })
     }
-    pub fn resume(&mut self, env: &mut JNIEnv, hub: Arc<Hub>) -> Result<()> {
+    pub fn resume(&mut self, env: &mut JNIEnv, hub: Arc<Hub>) -> Result<i32> {
         self.pause(env)?;
         let listener = JniProxy::build(
             env,
@@ -85,20 +85,25 @@ impl Sensors {
             },
         )?;
         let listener = self.listener.insert(listener);
-        for sensor in self.sources.iter().flatten() {
-            env.call_method(
-                &self.manager,
-                "registerListener",
-                "(Landroid/hardware/SensorEventListener;Landroid/hardware/Sensor;II)Z",
-                &[
-                    listener.as_ref().into(),
-                    sensor.as_obj().into(),
-                    10000.into(),
-                    0.into(),
-                ],
-            )?;
+        let mut registered = 0;
+        for (index, sensor) in self.sources.iter().enumerate() {
+            let Some(sensor) = sensor else { continue };
+            let ok = env
+                .call_method(
+                    &self.manager,
+                    "registerListener",
+                    "(Landroid/hardware/SensorEventListener;Landroid/hardware/Sensor;II)Z",
+                    &[
+                        listener.as_ref().into(),
+                        sensor.as_obj().into(),
+                        10000.into(),
+                        0.into(),
+                    ],
+                )?
+                .z()?;
+            registered |= i32::from(ok) << index;
         }
-        Ok(())
+        Ok(registered)
     }
     pub fn pause(&mut self, env: &mut JNIEnv) -> Result<()> {
         if let Some(listener) = self.listener.take() {

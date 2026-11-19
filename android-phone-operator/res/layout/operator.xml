@@ -24,7 +24,7 @@
                 <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:layout_marginTop="14dp" android:textSize="22sp" android:textColor="#1E283F"
                     android:fontFamily="sans-serif-medium" android:accessibilityLiveRegion="polite" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="220dp"
+                <LinearLayout android:layout_width="match_parent" android:layout_height="308dp"
                     android:layout_weight="1" android:layout_marginTop="14dp"
                     android:orientation="horizontal" android:splitMotionEvents="true">
                     <Button android:id="@+id/hold" android:layout_width="0dp" android:layout_weight="1"
@@ -34,20 +34,24 @@
                         android:text="@string/hold" android:textAllCaps="false" android:textSize="20sp"
                         android:textColor="#FFFFFF" android:fontFamily="sans-serif-medium"
                         android:contentDescription="@string/deadman" />
-                    <FrameLayout android:layout_width="0dp" android:layout_weight="1"
-                        android:layout_marginStart="4dp" android:layout_height="match_parent"
-                        android:background="@drawable/gripper_pad">
-                        <SeekBar android:id="@+id/gripper" android:layout_width="match_parent"
-                            android:layout_height="match_parent" android:paddingHorizontal="16dp"
-                            android:max="100" android:saveEnabled="false" android:contentDescription="@string/gripper" />
+                    <LinearLayout android:layout_width="0dp" android:layout_weight="1"
+                        android:layout_marginStart="4dp" android:layout_height="wrap_content" android:layout_gravity="bottom"
+                        android:orientation="vertical" android:gravity="center_horizontal"
+                        android:paddingVertical="12dp" android:background="@drawable/gripper_pad">
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                            android:layout_gravity="center" android:translationY="-44dp" android:text="@string/gripper"
-                            android:textSize="20sp" android:textColor="#1E283F" android:fontFamily="sans-serif-medium"
-                            android:importantForAccessibility="no" />
+                            android:text="@string/gripper" android:textSize="20sp" android:textColor="#1E283F"
+                            android:fontFamily="sans-serif-medium" android:importantForAccessibility="no" />
+                        <dev.xroperator.phone.VerticalSliderLayout android:id="@+id/gripper_track"
+                            android:layout_width="match_parent" android:layout_height="224dp">
+                            <SeekBar android:id="@+id/gripper" android:layout_width="match_parent"
+                                android:layout_height="match_parent" android:layoutDirection="ltr"
+                                android:paddingHorizontal="26dp" android:max="100" android:thumb="@drawable/gripper_thumb"
+                                android:saveEnabled="false" android:contentDescription="@string/gripper" />
+                        </dev.xroperator.phone.VerticalSliderLayout>
                         <TextView android:id="@+id/gripper_value" android:layout_width="wrap_content" android:layout_height="wrap_content"
-                            android:layout_gravity="center" android:translationY="44dp" android:textSize="20sp"
-                            android:textColor="#354F96" android:fontFamily="sans-serif-medium" android:importantForAccessibility="no" />
-                    </FrameLayout>
+                            android:textSize="20sp" android:textColor="#354F96" android:fontFamily="sans-serif-medium"
+                            android:importantForAccessibility="no" />
+                    </LinearLayout>
                 </LinearLayout>
             </LinearLayout>
         </ScrollView>

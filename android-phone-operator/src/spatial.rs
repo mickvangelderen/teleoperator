@@ -77,7 +77,7 @@ pub struct Frame {
     pub realtime: bool,
     pub query_started: u64,
     pub query_finished: u64,
-    pub tracking: bool,
+    pub tracking: Result<(), &'static str>,
     pub sensor: Pose,
     pub anchor: FrameAnchor,
 }
@@ -246,7 +246,7 @@ mod tests {
             realtime: true,
             query_started: t as u64,
             query_finished: t as u64 + 10,
-            tracking: true,
+            tracking: Ok(()),
             sensor: Pose::IDENTITY,
             anchor: FrameAnchor::Tracking(Pose::IDENTITY),
         }
