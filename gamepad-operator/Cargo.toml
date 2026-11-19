@@ -9,7 +9,7 @@ async-trait = "0.1"
 axum = "0.8"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
-desktop-discovery = { path = "../desktop-discovery" }
+mdns-sd-ext = { path = "../mdns-sd-ext" }
 log = "0.4"
 env_logger = "0.11"
 rtc = "0.21.1"

@@ -11,6 +11,7 @@ use std::{
 };
 
 const DEFAULT_PORT: u16 = 8080;
+const SERVICE_TYPE: &str = "_teleoperator._tcp.local.";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -112,7 +113,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "Gamepad Operator {} http://{viewer_target}",
         if args.synthetic { "SYNTHETIC" } else { "SDL2" },
     );
-    let _advertisement = desktop_discovery::advertise(&listener, "Gamepad Operator");
+    let app_name = env!("CARGO_BIN_NAME");
+    let host = mdns_sd_ext::local_hostname(app_name);
+    let publisher = mdns_sd_ext::advertise(address, SERVICE_TYPE, app_name, &host)
+        .inspect_err(|error| eprintln!("DNS-SD advertisement unavailable: {error}"))
+        .ok();
     if viewer_target == SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)) {
         eprintln!("From the viewer directory, run: pnpm dev");
     } else {
@@ -152,6 +157,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     shutdown.send_replace(true);
     signal.abort();
-    runtime.block_on(serving)??;
+    let result = runtime.block_on(serving);
+    if let Some(daemon) = publisher
+        && let Ok(stopped) = daemon.shutdown()
+    {
+        let _ = stopped.recv_timeout(Duration::from_secs(1));
+    }
+    result??;
     outcome.map_err(Into::into)
 }

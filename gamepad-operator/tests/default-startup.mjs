@@ -1,8 +1,10 @@
 // Run on free default ports from a clean viewer checkout. A physical pad is required
 // for the stock launch. Pass --synthetic to exercise the same defaults without hardware.
+// Pass --loopback to discover and connect to a synthetic pad on a local, OS-assigned port.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
+import {networkInterfaces} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {stripVTControlCharacters} from 'node:util';
@@ -10,8 +12,10 @@ import {stripVTControlCharacters} from 'node:util';
 const operator = fileURLToPath(new URL('../', import.meta.url));
 const viewer = fileURLToPath(new URL('../../viewer/', import.meta.url));
 const {chromium} = createRequire(new URL('../../viewer/package.json', import.meta.url))('playwright-core');
-const synthetic = process.argv[2] === '--synthetic';
-assert.deepEqual(process.argv.slice(2), synthetic ? ['--synthetic'] : []);
+const mode = process.argv[2];
+assert.ok(mode === undefined || mode === '--synthetic' || mode === '--loopback');
+assert.ok(process.argv.length <= 3);
+const synthetic = mode !== undefined;
 
 const env = {...process.env};
 delete env.XR_OPERATOR_URL;
@@ -44,17 +48,30 @@ async function stop(child) {
 
 let browser;
 try {
-  const server = launch('cargo', synthetic ? ['run', '--', '--synthetic'] : ['run'], operator);
+  const serverArgs = synthetic ? ['run', '--', '--synthetic'] : ['run'];
+  if (mode === '--loopback') serverArgs.push('--listen', '127.0.0.1:0');
+  const server = launch('cargo', serverArgs, operator);
   const endpoint = await address(server, /Gamepad Operator \S+ (http:\/\/\S+)/);
   const ui = launch('pnpm', ['dev'], viewer);
   const url = await address(ui, /Local:\s+(http:\/\/\S+)/);
   browser = await chromium.launch({executablePath: process.env.CHROMIUM_EXECUTABLE ?? '/opt/google/chrome/chrome'});
   const page = await browser.newPage();
   await page.goto(url.href);
-  const owned = [endpoint.origin, ...Array.from(server.log.matchAll(/LAN signaling: (http:\/\/\S+)/g), match => new URL(match[1]).origin)];
+  if (mode === '--loopback') {
+    const found = page.locator('[data-nearby] button').filter({hasText: endpoint.origin});
+    await found.click();
+    assert.equal(await page.locator('#target').inputValue(), endpoint.origin);
+  }
   await page.waitForFunction(() => !!document.querySelector('#target')?.value);
+  // Pin the address before comparing /health and /offer while discovery continues.
+  await page.locator('#target').focus();
   const selected = await page.locator('#target').inputValue();
-  assert.ok(owned.includes(selected), `Expected this test's operator, got ${selected}`);
+  // The stock operator owns this port on every local IPv4 address.
+  const target = new URL(selected);
+  const localAddresses = Object.values(networkInterfaces()).flat().filter(i => i?.family === 'IPv4');
+  assert.equal(target.protocol, endpoint.protocol);
+  assert.equal(target.port, endpoint.port);
+  assert.ok(localAddresses.some(i => i.address === target.hostname), `Expected this test's operator, got ${selected}`);
   const health = await page.request.get(new URL('/api/health', url).href, {headers: {'X-Operator-Address': selected}});
   assert.equal(health.status(), 200);
   const info = await health.json();
@@ -66,7 +83,7 @@ try {
   await page.getByRole('dialog').getByRole('button', {name: 'Connect', exact: true}).click();
   const answer = await offer;
   const offered = await answer.request().headerValue('X-Operator-Address');
-  assert.ok(owned.includes(offered), `Unexpected signaling target ${offered}`);
+  assert.equal(offered, selected);
   assert.equal(answer.status(), 200, answer.ok() ? undefined : await answer.text());
   await page.locator('subscription-editor .subscription-message').filter({hasText: /\d+ packets/}).waitFor();
   assert.equal(await page.locator('#status').innerText(), 'Connected');
