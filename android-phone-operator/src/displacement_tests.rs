@@ -29,8 +29,8 @@ fn estimator_pose_and_quality_share_real_timestamp_and_no_tracking_claim() {
     assert!(h.handset_status(0).held);
     assert!(valid(&h));
     let s = h.state.lock().unwrap();
-    assert_eq!(s.snapshots[0].timestamp, 30 * MS);
-    assert_eq!(s.snapshots[1].timestamp, 30 * MS);
+    assert_eq!(s.snapshots[0].represented_at.unwrap(), 30 * MS);
+    assert_eq!(s.snapshots[1].represented_at.unwrap(), 30 * MS);
     assert!(matches!(&s.snapshots[0].values[0],Value::Numbers(v) if (v[0]-0.00005).abs()<1e-12));
     for (i, b) in [(1, true), (2, true), (3, false), (4, true)] {
         assert!(matches!(s.snapshots[0].values[i],Value::Bit(v) if v==b));
@@ -40,9 +40,16 @@ fn estimator_pose_and_quality_share_real_timestamp_and_no_tracking_claim() {
 fn interpolation_wait_does_not_redate_pose_to_orientation_callback() {
     let h = ready();
     h.sensor(1, 35 * MS, [1., GRAVITY, 0., 0.], 36 * MS);
-    assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 30 * MS);
+    assert_eq!(
+        h.state.lock().unwrap().snapshots[0].represented_at.unwrap(),
+        30 * MS
+    );
     h.sensor(0, 40 * MS, upright(), 42 * MS);
-    assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 35 * MS);
+    assert_eq!(
+        h.state.lock().unwrap().snapshots[0].represented_at.unwrap(),
+        35 * MS
+    );
+    assert_eq!(h.state.lock().unwrap().snapshots[0].acquired_at, 42 * MS);
     assert_eq!(h.state.lock().unwrap().last[0], Some(40 * MS));
     assert!(
         matches!(&h.state.lock().unwrap().snapshots[0].values[0],Value::Numbers(v) if (v[0]-0.0001125).abs()<1e-12)
@@ -166,7 +173,10 @@ fn sensor_phase_warmup_and_fault_recovery_do_not_require_exact_timestamp_matches
     assert!(!valid(&h));
     h.sensor(0, 31 * MS, upright(), 31 * MS);
     assert!(valid(&h));
-    assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 30 * MS);
+    assert_eq!(
+        h.state.lock().unwrap().snapshots[0].represented_at.unwrap(),
+        30 * MS
+    );
 }
 #[test]
 fn action_publication_barriers_do_not_starve_delayed_source_freshness() {
@@ -186,8 +196,8 @@ fn action_publication_barriers_do_not_starve_delayed_source_freshness() {
             assert!(h.handset_status(0).held);
             assert!(valid(&h));
             let s = h.state.lock().unwrap();
-            assert!(s.snapshots[0].timestamp >= last_publication);
-            last_publication = s.snapshots[0].timestamp;
+            assert!(s.snapshots[0].acquired_at >= last_publication);
+            last_publication = s.snapshots[0].acquired_at;
             assert_eq!(s.last[1], Some(t));
         }
     }

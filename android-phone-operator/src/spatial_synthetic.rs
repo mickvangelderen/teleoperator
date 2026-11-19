@@ -59,13 +59,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let elapsed = at - start;
                 let t = elapsed as f64 / 1e9;
                 let yaw = 0.3 * t.sin();
-                let (generation, _, request) = source.spatial_context();
+                let context = source.spatial_context();
                 // Briefly lose camera tracking during each hold, retaining the reference.
                 let dropout = (800_000_000..1_000_000_000).contains(&(elapsed % 2_000_000_000));
                 cached = Some(Frame {
-                    generation,
+                    generation: context.generation,
                     timestamp: elapsed as i64 + 1, // distinct SDK time base
-                    metadata_timestamp: Some(at as i64),
+                    // Exercise the processing delay of an image-frame pose.
+                    metadata_timestamp: Some((at - 74_000_000) as i64),
                     realtime: true,
                     query_started: at,
                     query_finished: at,
@@ -78,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         position: [0.25 * t.sin(), 0.2 + 0.05 * (t * 0.7).cos(), -0.3],
                         orientation: [0., (yaw / 2.).sin(), 0., (yaw / 2.).cos()],
                     },
-                    anchor: if request.is_some() {
+                    anchor: if context.origin_since.is_some() {
                         FrameAnchor::Tracking(Pose::IDENTITY)
                     } else {
                         FrameAnchor::Missing

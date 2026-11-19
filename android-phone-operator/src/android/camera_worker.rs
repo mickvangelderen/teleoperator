@@ -2,7 +2,10 @@
 //! session destruction, run under one process-wide lock on background threads.
 use crate::{
     phone::{self, Hub},
-    spatial::{self, Acquisition, ClockGate, Frame, FrameAnchor, Pose},
+    spatial::{
+        Acquisition, AnchorRecovery, CameraProgress, ClockGate, Frame, FrameAnchor, Pose,
+        resumed_origin,
+    },
     tracking::TrackingMode,
 };
 use arcore::{
@@ -67,14 +70,14 @@ impl CameraWorker {
                                     | arcore_sys::AR_UNAVAILABLE_APK_TOO_OLD
                             ))
                         );
-                        let stopped = error.downcast_ref::<CameraStopped>().is_some();
+                        let interrupted = error.downcast_ref::<CameraInterrupted>().is_some();
                         state.failure = Some(Failure {
                             message: if busy {
                                 "Camera unavailable".into()
                             } else {
                                 error.to_string()
                             },
-                            transient: busy || setup_changed || stopped,
+                            transient: busy || setup_changed || interrupted,
                         });
                     }
                 }
@@ -149,8 +152,11 @@ fn run(
         }
         hub.set_tracking_mode(mode, phone::now());
     }
-    track(&mut session, hub, worker)?;
-    session.pause()?;
+    let tracking = track(&mut session, hub, worker);
+    let paused = session.pause();
+    // Once setup succeeded, a failed update can be retried with a new session.
+    tracking.map_err(|e| CameraInterrupted(e.to_string()))?;
+    paused?;
     Ok(())
 }
 
@@ -212,26 +218,29 @@ fn phone_pose(pose: arcore::Pose) -> Pose {
 }
 
 #[derive(Debug)]
-struct CameraStopped;
-impl std::fmt::Display for CameraStopped {
+struct CameraInterrupted(String);
+impl std::fmt::Display for CameraInterrupted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ARCore stopped tracking")
+        f.write_str(&self.0)
     }
 }
-impl Error for CameraStopped {}
+impl Error for CameraInterrupted {}
 
 fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), Box<dyn Error>> {
     let mut anchor: Option<Anchor> = None;
     let mut anchor_generation = None;
+    let mut recovery = AnchorRecovery::default();
     let mut clock = ClockGate::default();
-    let mut missing_metadata_since = None;
+    let mut progress = CameraProgress::default();
     while !worker.lock().unwrap().stopped {
-        let (generation, active, origin_since) = hub.spatial_context();
-        if !active {
+        let context = hub.spatial_context();
+        let generation = context.generation;
+        if !context.active {
             break;
         }
         if anchor_generation != Some(generation) {
             anchor = None;
+            recovery = AnchorRecovery::default();
             anchor_generation = Some(generation);
         }
 
@@ -241,16 +250,6 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), 
         let metadata_timestamp = frame.android_camera_timestamp_ns()?;
         let (camera_state, reason) = frame.tracking_status()?;
         let tracking = camera_state == TrackingState::Tracking;
-        // Some camera implementations omit SENSOR_TIMESTAMP despite reporting a
-        // REALTIME clock. Allow startup, then release the unusable camera.
-        if tracking && metadata_timestamp.is_none_or(|t| t <= 0) {
-            let since = *missing_metadata_since.get_or_insert(query_started);
-            if query_started - since >= 5_000_000_000 {
-                return Err("Camera capture timestamps unavailable".into());
-            }
-        } else {
-            missing_metadata_since = None;
-        }
         let sensor = if tracking {
             phone_pose(frame.android_sensor_pose())
         } else {
@@ -286,25 +285,51 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), 
             sensor,
             anchor: FrameAnchor::Missing,
         };
-        let acquisition = clock.observe(&sample);
-        // A paused anchor can relocalize in the same reference. STOPPED is
-        // terminal. Report that loss before creating a new local reference.
-        if anchor
-            .as_ref()
-            .is_some_and(|a| a.tracking_state() == TrackingState::Stopped)
-        {
+        let capture = match clock.observe(&sample) {
+            Ok(Acquisition::New(at)) => Some(at),
+            _ => None,
+        };
+        // A running session may keep returning cached/unusable frames or report
+        // a camera fault without transitioning to STOPPED. Restart only those
+        // sessions; give environmental tracking loss time to relocalize.
+        let camera_fault = matches!(
+            reason as u32,
+            arcore_sys::AR_TRACKING_FAILURE_REASON_BAD_STATE
+                | arcore_sys::AR_TRACKING_FAILURE_REASON_CAMERA_UNAVAILABLE
+        );
+        if progress.needs_restart(&sample, capture.is_some(), camera_fault) {
+            return Err("Camera frames stopped progressing".into());
+        }
+        let previous = anchor.as_ref().map(|a| a.tracking_state());
+        sample.anchor = match (&anchor, previous) {
+            (Some(a), Some(TrackingState::Tracking)) => FrameAnchor::Tracking(phone_pose(a.pose())),
+            (_, Some(TrackingState::Paused | TrackingState::Unknown(_))) => FrameAnchor::Paused,
+            _ => FrameAnchor::Missing,
+        };
+        let replace = recovery.needs_replacement(sample.anchor, capture.filter(|_| tracking));
+        if replace || previous == Some(TrackingState::Stopped) {
+            // Report the reference boundary (and release any hold) before using a replacement.
             anchor = None;
+            sample.anchor = FrameAnchor::Missing;
         } else if anchor.is_none()
             && tracking
-            && let (Some(since), Ok(Acquisition::New(at))) = (origin_since, acquisition)
+            && let (Some(since), Some(at)) = (context.origin_since, capture)
             && at >= since
-            && let Some(origin) = spatial::origin_pose(sensor)
+            && let Some(origin) = resumed_origin(sensor, context.last_grip)
         {
             match session.create_anchor(arcore::Pose {
                 translation: origin.position.map(|v| v as f32),
                 rotation: origin.orientation.map(|v| v as f32),
             }) {
-                Ok(new_anchor) => anchor = Some(new_anchor),
+                Ok(new_anchor) => {
+                    sample.anchor = match new_anchor.tracking_state() {
+                        TrackingState::Tracking => {
+                            FrameAnchor::Tracking(phone_pose(new_anchor.pose()))
+                        }
+                        _ => FrameAnchor::Paused,
+                    };
+                    anchor = Some(new_anchor);
+                }
                 // The SDK can lose tracking between update and acquisition.
                 Err(arcore::Error::Status(
                     _,
@@ -313,13 +338,6 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), 
                 Err(error) => return Err(error.into()),
             }
         }
-        if let Some(anchor) = &anchor {
-            sample.anchor = match anchor.tracking_state() {
-                TrackingState::Tracking => FrameAnchor::Tracking(phone_pose(anchor.pose())),
-                _ => FrameAnchor::Paused,
-            };
-        }
-
         let state = worker.lock().unwrap();
         if state.stopped {
             break;
@@ -327,7 +345,7 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), 
         sample.query_finished = phone::now();
         hub.spatial_frame(sample);
         if camera_state == TrackingState::Stopped {
-            return Err(CameraStopped.into());
+            return Err("ARCore stopped tracking".into());
         }
     }
     Ok(())

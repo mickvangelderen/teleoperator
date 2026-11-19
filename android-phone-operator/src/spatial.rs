@@ -60,6 +60,44 @@ pub fn origin_pose(sensor: Pose) -> Option<Pose> {
     })
 }
 
+/// A replacement anchor resumes at the last known local position and heading.
+pub fn resumed_origin(sensor: Pose, last_grip: Option<Pose>) -> Option<Pose> {
+    let mut origin = origin_pose(sensor)?;
+    if let Some(last) = last_grip {
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let local_sensor = multiply(last.orientation, [-h, 0., 0., h]);
+        origin.orientation = multiply(origin.orientation, heading_inverse(local_sensor));
+        let offset = rotate(origin.orientation, last.position);
+        origin.position = std::array::from_fn(|i| sensor.position[i] - offset[i]);
+    }
+    origin.checked()
+}
+
+#[derive(Default)]
+pub struct AnchorRecovery {
+    paused_since: Option<u64>,
+}
+impl AnchorRecovery {
+    pub fn needs_replacement(&mut self, anchor: FrameAnchor, capture: Option<u64>) -> bool {
+        if !matches!(anchor, FrameAnchor::Paused) {
+            self.paused_since = None;
+            return false;
+        }
+        // Only a fresh tracked-camera frame can start or complete recovery.
+        let Some(at) = capture else { return false };
+        let since = *self.paused_since.get_or_insert(at);
+        at.saturating_sub(since) >= 1_000_000_000
+    }
+}
+
+#[derive(Default)]
+pub struct CameraContext {
+    pub generation: u64,
+    pub active: bool,
+    pub origin_since: Option<u64>,
+    pub last_grip: Option<Pose>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum FrameAnchor {
     Missing,
@@ -80,6 +118,31 @@ pub struct Frame {
     pub tracking: Result<(), &'static str>,
     pub sensor: Pose,
     pub anchor: FrameAnchor,
+}
+
+#[derive(Default)]
+pub struct CameraProgress {
+    last_frame: Option<i64>,
+    interrupted_since: Option<u64>,
+}
+impl CameraProgress {
+    pub fn needs_restart(&mut self, frame: &Frame, new_capture: bool, camera_fault: bool) -> bool {
+        let advancing = frame.timestamp > 0
+            && self.last_frame.replace(frame.timestamp) != Some(frame.timestamp);
+        // While relocalizing, progressing images are enough to keep the session.
+        // A tracking camera must also supply a verified advancing capture time.
+        let progressing = if frame.tracking.is_ok() {
+            new_capture
+        } else {
+            advancing
+        };
+        if !camera_fault && progressing {
+            self.interrupted_since = None;
+            return false;
+        }
+        let since = *self.interrupted_since.get_or_insert(frame.query_finished);
+        frame.query_finished.saturating_sub(since) >= 5_000_000_000
+    }
 }
 
 #[derive(Default, Debug)]
@@ -130,7 +193,7 @@ impl ClockGate {
 
 #[derive(Debug)]
 pub(crate) struct SpatialState {
-    pub camera_ready_at: Option<u64>,
+    pub capture_at: Option<u64>,
     pub generation: u64,
     pub recenter_since: Option<u64>,
     pub origin: bool,
@@ -142,7 +205,7 @@ pub(crate) struct SpatialState {
 impl Default for SpatialState {
     fn default() -> Self {
         Self {
-            camera_ready_at: None,
+            capture_at: None,
             generation: 0,
             recenter_since: None,
             origin: false,
@@ -155,7 +218,7 @@ impl Default for SpatialState {
 }
 impl SpatialState {
     pub fn invalidate(&mut self, reason: &str) {
-        self.camera_ready_at = None;
+        self.capture_at = None;
         self.generation = self.generation.wrapping_add(1);
         self.recenter_since = None;
         self.origin = false;
@@ -238,6 +301,37 @@ mod tests {
             .is_none()
         );
     }
+    #[test]
+    fn paused_anchor_relocalizes_or_rebuilds_at_last_known_local_pose() {
+        let mut recovery = AnchorRecovery::default();
+        let anchor = Pose {
+            position: [8., 2., -4.],
+            orientation: yaw(-0.7),
+        };
+        let sensor = Pose {
+            position: [10., 2.5, -3.],
+            orientation: yaw(0.3),
+        };
+        let original = relative_grip(sensor, anchor).unwrap();
+        assert!(!recovery.needs_replacement(FrameAnchor::Tracking(anchor), Some(10)));
+        assert!(!recovery.needs_replacement(FrameAnchor::Paused, Some(20)));
+        assert!(!recovery.needs_replacement(FrameAnchor::Paused, None));
+        assert!(!recovery.needs_replacement(FrameAnchor::Tracking(anchor), Some(900_000_020)));
+        assert!(!recovery.needs_replacement(FrameAnchor::Paused, None));
+        assert!(!recovery.needs_replacement(FrameAnchor::Paused, Some(3_000_000_000)));
+        assert!(recovery.needs_replacement(FrameAnchor::Paused, Some(4_000_000_000)));
+        let relocated = world(sensor, yaw(1.9), [-90., 18., 30.]);
+        let restored = relative_grip(
+            relocated,
+            resumed_origin(relocated, Some(original)).unwrap(),
+        )
+        .unwrap();
+        near(&original.position, &restored.position);
+        near(&original.orientation, &restored.orientation);
+        let recentered =
+            relative_grip(relocated, resumed_origin(relocated, None).unwrap()).unwrap();
+        near(&recentered.position, &[0.; 3]);
+    }
     pub fn frame(t: i64) -> Frame {
         Frame {
             generation: 0,
@@ -251,6 +345,28 @@ mod tests {
             anchor: FrameAnchor::Tracking(Pose::IDENTITY),
         }
     }
+    #[test]
+    fn stalled_camera_restarts_but_advancing_relocalization_keeps_the_session() {
+        let mut progress = CameraProgress::default();
+        let mut f = frame(1);
+        for n in 1..10 {
+            f.timestamp = n;
+            f.query_finished = n as u64 * 1_000_000_000;
+            f.tracking = Err("Insufficient features");
+            assert!(!progress.needs_restart(&f, false, false));
+        }
+        for n in 10..=15 {
+            f.query_finished = n * 1_000_000_000;
+            assert_eq!(progress.needs_restart(&f, false, false), n == 15);
+        }
+        f.tracking = Ok(());
+        assert!(!progress.needs_restart(&f, true, false));
+        assert!(!progress.needs_restart(&f, false, false));
+        f.query_finished += 5_000_000_000;
+        assert!(progress.needs_restart(&f, false, false));
+        assert!(!progress.needs_restart(&f, true, false));
+    }
+
     #[test]
     fn clock_bridge_requires_evidence_deduplicates_and_expires() {
         let mut g = ClockGate::default();

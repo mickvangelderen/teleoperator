@@ -1,4 +1,4 @@
-//! Phone source policies: Android BOOTTIME acquisition timestamps, no prediction.
+//! Phone acquisitions and represented sample instants use Android CLOCK_BOOTTIME.
 #[cfg(test)]
 #[path = "displacement_tests.rs"]
 mod displacement_tests;
@@ -102,7 +102,8 @@ pub struct HandsetStatus {
 #[derive(Clone)]
 struct Snapshot {
     number: u64,
-    timestamp: u64,
+    acquired_at: u64,
+    represented_at: Option<u64>,
     values: Vec<Value>,
 }
 struct Demand {
@@ -110,8 +111,10 @@ struct Demand {
     publication: Weak<Mutex<PublicationState>>,
 }
 struct State {
+    completion_clock: Option<fn() -> u64>,
     mode: TrackingMode,
     last_pose_from_camera: Option<bool>,
+    last_camera_grip: Option<crate::spatial::Pose>,
     spatial: Option<crate::spatial::SpatialState>,
     displacement: Option<crate::displacement::Estimator>,
     input: i32,
@@ -293,7 +296,7 @@ impl State {
     fn transition_time(&self, at: u64) -> u64 {
         self.snapshots
             .iter()
-            .map(|s| s.timestamp)
+            .map(|s| s.acquired_at)
             .chain(self.last.iter().flatten().copied())
             .fold(at, u64::max)
     }
@@ -311,7 +314,8 @@ impl State {
     fn release_for_reference_change(&mut self, at: u64, c: &Capabilities) {
         if self.held {
             self.cancel();
-            self.publish(3, self.transition_time(at), self.controls(), c);
+            let at = self.transition_time(at);
+            self.publish(3, at, Some(at), self.controls(), c);
         }
     }
     fn controls(&self) -> Vec<Value> {
@@ -360,7 +364,7 @@ impl State {
                 pose.position = [0.; 3];
             }
             Some((
-                a.camera_ready_at?,
+                a.capture_at?,
                 pose,
                 [!orientation_only, true, !orientation_only, true],
                 true,
@@ -403,39 +407,49 @@ impl State {
             .flatten()
             .find(|(t, ..)| recent(*t));
         if let Some((t, pose, quality, camera)) = candidate {
-            if t >= self.snapshots[0].timestamp {
-                if self
-                    .last_pose_from_camera
-                    .replace(camera)
-                    .is_some_and(|previous| previous != camera)
-                {
-                    self.release_for_reference_change(at, c);
-                }
-                self.publish(0, t, Self::pose_values(pose, quality), c);
-                return;
-            }
-            // A delayed camera can take over once its capture catches the last
-            // published rotation. Keep the newer rotation visible in the meantime.
-            if (quality[0] || camera)
-                && recent(self.snapshots[0].timestamp)
-                && matches!(self.snapshots[0].values.get(1), Some(Value::Bit(false)))
+            if self
+                .last_pose_from_camera
+                .replace(camera)
+                .is_some_and(|previous| previous != camera)
             {
-                return;
+                self.release_for_reference_change(at, c);
             }
+            self.publish(0, at, Some(t), Self::pose_values(pose, quality), c);
+            return;
         }
         if !matches!(self.snapshots[0].values.get(2), Some(Value::Bit(false))) {
-            self.publish(0, at, Self::pose_values(Pose::IDENTITY, [false; 4]), c);
+            self.publish(
+                0,
+                at,
+                None,
+                Self::pose_values(Pose::IDENTITY, [false; 4]),
+                c,
+            );
         }
     }
-    fn publish(&mut self, group: usize, at: u64, values: Vec<Value>, c: &Capabilities) {
+    fn publish(
+        &mut self,
+        group: usize,
+        at: u64,
+        represented_at: Option<u64>,
+        values: Vec<Value>,
+        c: &Capabilities,
+    ) {
         let old = &self.snapshots[group];
-        if at < old.timestamp || (old.timestamp == at && old.values == values) {
+        if old.represented_at == represented_at && old.values == values {
+            return;
+        }
+        // Read the production clock after obtaining the finished values, under the
+        // state lock. Deterministic sources supply their own completion instant.
+        let acquired_at = self.completion_clock.map_or(at, |clock| clock());
+        if acquired_at < old.acquired_at {
             return;
         }
         self.serial += 1;
         let snapshot = Snapshot {
             number: self.serial,
-            timestamp: at,
+            acquired_at,
+            represented_at,
             values,
         };
         self.demands.retain(|d| {
@@ -482,17 +496,23 @@ fn encode(c: &Capabilities, r: &Request, s: &Snapshot) -> protocol::Result<Encod
         .collect::<protocol::Result<Vec<_>>>()?;
     Ok(EncodedAcquisition {
         number: s.number,
-        acquired_at: s.timestamp,
-        predicted_for: None,
+        acquired_at: s.acquired_at,
+        predicted_for: s.represented_at,
         bundles,
     })
 }
 impl Hub {
     pub fn new(available: [bool; 3], source: &'static str) -> Arc<Self> {
-        Self::at(available, source, now())
+        Self::with_mode(
+            available,
+            source,
+            now(),
+            TrackingMode::Orientation,
+            Some(now),
+        )
     }
     pub fn at(available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
-        Self::with_mode(available, source, at, TrackingMode::Orientation)
+        Self::with_mode(available, source, at, TrackingMode::Orientation, None)
     }
     pub fn spatial_at(available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
         Self::with_mode(
@@ -503,22 +523,26 @@ impl Hub {
                 output: Output::FullPose,
                 imu_fallback: true,
             },
+            None,
         )
     }
     pub fn displacement_at(available: [bool; 3], source: &'static str, at: u64) -> Arc<Self> {
-        Self::with_mode(available, source, at, TrackingMode::Displacement)
+        Self::with_mode(available, source, at, TrackingMode::Displacement, None)
     }
     fn with_mode(
         available: [bool; 3],
         source: &'static str,
         at: u64,
         mode: TrackingMode,
+        completion_clock: Option<fn() -> u64>,
     ) -> Arc<Self> {
         let c = Arc::new(catalog(available));
         let (updates, _) = watch::channel(0);
         let mut state = State {
+            completion_clock,
             mode,
             last_pose_from_camera: None,
+            last_camera_grip: None,
             spatial: matches!(mode, TrackingMode::Camera { .. }).then(Default::default),
             displacement: (mode == TrackingMode::Displacement).then(Default::default),
             input: 0,
@@ -540,7 +564,8 @@ impl Hub {
             releases: 0,
             snapshots: std::array::from_fn(|_| Snapshot {
                 number: 0,
-                timestamp: at,
+                acquired_at: at,
+                represented_at: None,
                 values: vec![],
             }),
             demands: vec![],
@@ -548,9 +573,9 @@ impl Hub {
         };
         state.refresh_pose(at, &c);
         for group in 1..3 {
-            state.publish(group, at, state.raw_values(group), &c);
+            state.publish(group, at, None, state.raw_values(group), &c);
         }
-        state.publish(3, at, state.controls(), &c);
+        state.publish(3, at, Some(at), state.controls(), &c);
         Arc::new(Self {
             capabilities: c,
             state: Arc::new(Mutex::new(state)),
@@ -624,6 +649,7 @@ impl Hub {
             Action::Release | Action::Cancel => s.cancel(),
             Action::Recenter => {
                 s.cancel();
+                s.last_camera_grip = None;
                 s.last_pose_from_camera = None;
                 s.reference_since = at;
                 s.heading_set = false;
@@ -665,14 +691,14 @@ impl Hub {
                 for group in 1..3 {
                     let values = s.raw_values(group);
                     if s.snapshots[group].values != values {
-                        s.publish(group, at, values, &self.capabilities);
+                        s.publish(group, at, None, values, &self.capabilities);
                     }
                 }
             }
         }
         let controls = s.controls();
         if controls != controls_before {
-            s.publish(3, at, controls, &self.capabilities);
+            s.publish(3, at, Some(at), controls, &self.capabilities);
         }
         self.notify_subscribers(s.serial);
     }
@@ -705,7 +731,8 @@ impl Hub {
             let raw = s.raw_values(kind);
             s.publish(
                 kind,
-                if valid { timestamp } else { received },
+                received,
+                valid.then_some(timestamp),
                 raw,
                 &self.capabilities,
             );
@@ -759,7 +786,7 @@ impl Hub {
                 s.good[kind] = false;
                 if kind != 0 {
                     let values = s.raw_values(kind);
-                    s.publish(kind, at, values, &self.capabilities);
+                    s.publish(kind, at, None, values, &self.capabilities);
                 }
             }
         }
@@ -779,7 +806,8 @@ impl Hub {
         let s = self.state.lock().unwrap();
         let pose = &s.snapshots[0];
         let valid = |index| {
-            at.saturating_sub(pose.timestamp) <= STALE_NS
+            pose.represented_at
+                .is_some_and(|t| at.saturating_sub(t) <= STALE_NS)
                 && matches!(pose.values.get(index), Some(Value::Bit(true)))
         };
         let mode = s.mode;
@@ -856,7 +884,7 @@ impl Hub {
         let camera = state.spatial.as_ref()?;
         if camera.pose.is_some()
             && camera
-                .camera_ready_at
+                .capture_at
                 .is_some_and(|at| now.saturating_sub(at) > STALE_NS)
         {
             return Some("Waiting for a fresh camera frame".into());
@@ -864,16 +892,17 @@ impl Hub {
         Some(camera.status.clone())
     }
     /// Worker token rejects results crossing pause, focus loss or recenter.
-    pub fn spatial_context(&self) -> (u64, bool, Option<u64>) {
+    pub fn spatial_context(&self) -> crate::spatial::CameraContext {
         let s = self.state.lock().unwrap();
         let Some(a) = &s.spatial else {
-            return (0, false, None);
+            return Default::default();
         };
-        (
-            a.generation,
-            s.foreground && s.focused,
-            a.recenter_since.or(Some(s.epoch)),
-        )
+        crate::spatial::CameraContext {
+            generation: a.generation,
+            active: s.foreground && s.focused,
+            origin_since: a.recenter_since.or(Some(s.epoch)),
+            last_grip: s.last_camera_grip,
+        }
     }
     pub fn spatial_frame(&self, f: crate::spatial::Frame) {
         use crate::spatial::{Acquisition, FrameAnchor, relative_grip};
@@ -881,11 +910,12 @@ impl Hub {
         if !s.foreground || !s.focused {
             return;
         }
-        let Some(a) = &mut s.spatial else { return };
+        let Some(a) = &s.spatial else { return };
         if f.generation != a.generation {
             return;
         }
-        if a.origin && matches!(f.anchor, FrameAnchor::Missing) {
+        let has_anchor = !matches!(f.anchor, FrameAnchor::Missing);
+        if a.origin != has_anchor && (a.origin || s.last_camera_grip.is_some()) {
             s.release_for_reference_change(f.query_finished, &self.capabilities);
         }
         let a = s.spatial.as_mut().unwrap();
@@ -902,12 +932,9 @@ impl Hub {
             f.query_finished,
             capture_age
         );
-        a.origin = !matches!(f.anchor, FrameAnchor::Missing);
+        a.origin = has_anchor;
         let result = f.tracking.and_then(|()| a.clock.observe(&f));
         let result = result.and_then(|acquisition| {
-            if let Acquisition::New(capture_time) = acquisition {
-                a.camera_ready_at = Some(capture_time);
-            }
             let anchor = match f.anchor {
                 FrameAnchor::Missing => return Err("Waiting for an origin anchor"),
                 FrameAnchor::Paused => {
@@ -925,7 +952,9 @@ impl Hub {
         });
         match result {
             Ok(Some((timestamp, pose))) => {
+                s.last_camera_grip = Some(pose);
                 let a = s.spatial.as_mut().unwrap();
+                a.capture_at = Some(timestamp);
                 a.pose = Some(pose);
                 a.status = "ARCore tracking".into();
                 // Match yaw at capture time, not at camera callback time. Both
@@ -954,7 +983,7 @@ impl Hub {
                 a.status = reason.into();
                 a.pose = None;
                 if f.tracking.is_err() {
-                    a.camera_ready_at = None;
+                    a.capture_at = None;
                 }
                 s.refresh_pose(f.query_finished, &self.capabilities);
                 self.notify_subscribers(s.serial);
@@ -999,7 +1028,7 @@ mod tests {
                 .unwrap()
                 .snapshots
                 .each_ref()
-                .map(|s| (s.number, s.timestamp))
+                .map(|s| (s.number, s.acquired_at))
         };
         let before = stamps();
         for (i, action) in [
@@ -1130,14 +1159,20 @@ mod tests {
         h.sensor(1, 5, [1., 2., 3., 0.], 6);
         h.sensor(2, 6, [4., 5., 6., 0.], 7);
         let s = h.state.lock().unwrap();
-        assert_eq!(s.snapshots[0].timestamp, 4);
-        assert_eq!(s.snapshots[1].timestamp, 5);
-        assert_eq!(s.snapshots[2].timestamp, 6);
+        assert_eq!(s.snapshots[0].represented_at.unwrap(), 4);
+        assert_eq!(s.snapshots[1].represented_at.unwrap(), 5);
+        assert_eq!(s.snapshots[2].represented_at.unwrap(), 6);
         drop(s);
         h.sensor(0, 3, upright(), 8);
-        assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 4);
+        assert_eq!(
+            h.state.lock().unwrap().snapshots[0].represented_at.unwrap(),
+            4
+        );
         h.sensor(0, 99, upright(), 8);
-        assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 4);
+        assert_eq!(
+            h.state.lock().unwrap().snapshots[0].represented_at.unwrap(),
+            4
+        );
         h.sensor(0, 9, [f64::NAN, 0., 0., 1.], 9);
         assert!(h.handset_status(0).held);
         assert!(!bit(&h, 0, 2));
@@ -1198,8 +1233,8 @@ mod tests {
         );
         assert_eq!(
             u64::from_le_bytes(pending.body[12..20].try_into().unwrap()),
-            u64::MAX,
-            "Requested prediction offset is not a returned target"
+            6,
+            "Controls represent their state transition, independent of the requested target"
         );
         h.action(Action::Pause, 8);
         let inactive = p.lock().unwrap().candidate().unwrap();
@@ -1213,7 +1248,7 @@ mod spatial_tests {
     use crate::spatial::{Frame, Pose};
     fn frame(h: &Hub, t: u64) -> Frame {
         Frame {
-            generation: h.spatial_context().0,
+            generation: h.spatial_context().generation,
             timestamp: t as i64,
             metadata_timestamp: Some(t as i64),
             realtime: true,
@@ -1251,7 +1286,7 @@ mod spatial_tests {
             27,
         );
         hub.spatial_frame(old);
-        assert_ne!(old.generation, hub.spatial_context().0);
+        assert_ne!(old.generation, hub.spatial_context().generation);
         assert!(!position_valid(&hub));
         assert_eq!(
             (
@@ -1278,7 +1313,7 @@ mod spatial_tests {
             hub.spatial_frame(f);
             let position = output == Output::FullPose;
             let snapshot = hub.state.lock().unwrap().snapshots[0].clone();
-            assert_eq!(snapshot.timestamp, 40);
+            assert_eq!(snapshot.represented_at.unwrap(), 40);
             assert_eq!(
                 &snapshot.values[1..],
                 &[position, true, position, true].map(Value::Bit)
@@ -1299,15 +1334,81 @@ mod spatial_tests {
             assert_eq!(hub.handset_status(220).motion, Motion::Unavailable);
             assert!(!hub.handset_status(220).held);
             hub.sensor(2, 220, [0., 1., 2., 0.], 221);
-            assert_eq!(hub.state.lock().unwrap().snapshots[2].timestamp, 220);
+            assert_eq!(
+                hub.state.lock().unwrap().snapshots[2]
+                    .represented_at
+                    .unwrap(),
+                220
+            );
         }
+    }
+
+    #[test]
+    fn delayed_camera_automatically_recovers_from_an_imu_gap_without_recenter() {
+        const MS: u64 = 1_000_000;
+        let hub = ready();
+        let generation = hub.spatial_context().generation;
+        let mut lost = frame(&hub, 100 * MS);
+        lost.tracking = Err("ARCore paused");
+        hub.spatial_frame(lost);
+        hub.sensor(0, 200 * MS, IDENTITY, 203 * MS);
+        let old = hub.state.lock().unwrap().snapshots[0].clone();
+        assert_eq!(
+            (old.acquired_at, old.represented_at),
+            (203 * MS, Some(200 * MS))
+        );
+        hub.action(Action::Hold, 204 * MS);
+        let mut recovered = frame(&hub, 150 * MS);
+        recovered.query_finished = 224 * MS;
+        hub.spatial_frame(recovered);
+        let snapshot = hub.state.lock().unwrap().snapshots[0].clone();
+        assert_eq!(
+            (snapshot.acquired_at, snapshot.represented_at),
+            (224 * MS, Some(150 * MS))
+        );
+        assert_eq!(&snapshot.values[1..], &[true; 4].map(Value::Bit));
+        assert_eq!(hub.spatial_context().generation, generation);
+        assert!(!hub.handset_status(224 * MS).held);
+        recovered.query_finished += 10 * MS;
+        hub.spatial_frame(recovered);
+        hub.tick(240 * MS);
+        assert_eq!(
+            hub.state.lock().unwrap().snapshots[0].number,
+            snapshot.number
+        );
+    }
+
+    #[test]
+    fn restarted_session_continues_last_local_grip_until_explicit_recenter() {
+        use crate::spatial::{FrameAnchor, resumed_origin};
+        let hub = ready();
+        let camera = hub.handset_status(22).mode;
+        let previous = hub.spatial_context().last_grip.unwrap();
+        hub.action(Action::Focus(false), 30);
+        hub.set_tracking_mode(TrackingMode::Unavailable, 31);
+        hub.action(Action::Focus(true), 32);
+        hub.set_tracking_mode(camera, 33);
+        let mut f = frame(&hub, 90_000_000_000);
+        assert_eq!(hub.spatial_context().last_grip, Some(previous));
+        f.sensor.position = [23., -6., 0.5];
+        f.anchor = FrameAnchor::Tracking(
+            resumed_origin(f.sensor, hub.spatial_context().last_grip).unwrap(),
+        );
+        hub.spatial_frame(f);
+        assert_eq!(hub.spatial_context().last_grip, Some(previous));
+        assert!(position_valid(&hub));
+        assert!(!hub.handset_status(f.query_finished).held);
+        hub.set_tracking_mode(TrackingMode::Orientation, f.query_finished + 1);
+        hub.action(Action::Recenter, f.query_finished + 2);
+        hub.set_tracking_mode(camera, f.query_finished + 3);
+        assert_eq!(hub.spatial_context().last_grip, None);
     }
 
     fn ready() -> Arc<Hub> {
         let h = Hub::spatial_at([true; 3], "SYNTHETIC test", 0);
         h.action(Action::Resume, 1);
         h.action(Action::Focus(true), 2);
-        assert!(h.spatial_context().2.is_some());
+        assert!(h.spatial_context().origin_since.is_some());
         h.spatial_frame(frame(&h, 10));
         h.action(Action::Hold, 11);
         h.spatial_frame(frame(&h, 20));
@@ -1342,18 +1443,21 @@ mod spatial_tests {
     #[test]
     fn camera_capture_can_precede_controls_without_losing_freshness_or_reference() {
         let h = ready();
-        let generation = h.spatial_context().0;
+        let generation = h.spatial_context().generation;
         h.action(Action::Release, 140_000_000);
         let mut f = frame(&h, 33_000_000);
         f.query_finished += 135_000_000;
         h.spatial_frame(f);
-        assert_eq!(h.spatial_context().0, generation);
-        assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 33_000_000);
+        assert_eq!(h.spatial_context().generation, generation);
+        assert_eq!(
+            h.state.lock().unwrap().snapshots[0].represented_at.unwrap(),
+            33_000_000
+        );
         assert!(position_valid(&h));
     }
 
     #[test]
-    fn spatial_hold_publishes_at_camera_capture_time_when_sdk_timestamps_differ() {
+    fn spatial_hold_reports_camera_capture_time_when_sdk_timestamps_differ() {
         let h = Hub::spatial_at([true; 3], "SYNTHETIC separate frame clock", 0);
         h.action(Action::Resume, 1);
         h.action(Action::Focus(true), 2);
@@ -1369,7 +1473,7 @@ mod spatial_tests {
         h.spatial_frame(next);
         assert!(position_valid(&h));
         assert_eq!(
-            h.state.lock().unwrap().snapshots[0].timestamp,
+            h.state.lock().unwrap().snapshots[0].represented_at.unwrap(),
             capture + 33_333_333
         );
         h.action(Action::Release, next.query_finished + 1);
@@ -1388,11 +1492,17 @@ mod spatial_tests {
             h.spatial_frame(f);
             h.tick(t);
             assert!(h.handset_status(0).held);
-            assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 20);
+            assert_eq!(
+                h.state.lock().unwrap().snapshots[0].represented_at.unwrap(),
+                20
+            );
             assert_eq!(h.state.lock().unwrap().serial, serial);
         }
         h.spatial_frame(frame(&h, 2000));
-        assert_eq!(h.state.lock().unwrap().snapshots[0].timestamp, 2000);
+        assert_eq!(
+            h.state.lock().unwrap().snapshots[0].represented_at.unwrap(),
+            2000
+        );
         let mut f = frame(&h, 2000);
         f.query_started = 2000 + STALE_NS;
         f.query_finished = f.query_started + 1;
@@ -1408,8 +1518,8 @@ mod spatial_tests {
         let h = Hub::spatial_at([true; 3], "camera", 0);
         h.action(Action::Resume, 1);
         h.action(Action::Focus(true), 2);
-        assert_eq!(h.spatial_context().2, Some(2));
-        let generation = h.spatial_context().0;
+        assert_eq!(h.spatial_context().origin_since, Some(2));
+        let generation = h.spatial_context().generation;
         let mut startup = frame(&h, 4);
         startup.tracking = Err("Camera paused");
         startup.anchor = FrameAnchor::Missing;
@@ -1428,7 +1538,7 @@ mod spatial_tests {
             h.spatial_frame(lost);
             assert_eq!(h.handset_status(at + 1).motion, Motion::Recovering);
             assert!(!position_valid(&h));
-            assert_eq!(h.spatial_context().0, generation);
+            assert_eq!(h.spatial_context().generation, generation);
             h.spatial_frame(frame(&h, at + 10));
             assert!(position_valid(&h));
         }
@@ -1441,7 +1551,7 @@ mod spatial_tests {
         h.action(Action::Release, 75);
         h.spatial_frame(frame(&h, 80));
         assert!(position_valid(&h));
-        assert!(h.spatial_context().2.is_some());
+        assert!(h.spatial_context().origin_since.is_some());
         let s = h.state.lock().unwrap();
         assert_eq!((s.presses, s.releases), (0, 0));
     }
@@ -1477,7 +1587,7 @@ mod spatial_tests {
         lost.tracking = Err("Camera paused");
         h.spatial_frame(lost);
         let fallback = h.state.lock().unwrap().snapshots[0].clone();
-        assert_eq!(fallback.timestamp, 40);
+        assert_eq!(fallback.represented_at.unwrap(), 40);
         assert_eq!(
             &fallback.values[1..],
             &[false, true, false, true].map(Value::Bit)
@@ -1507,8 +1617,8 @@ mod spatial_tests {
         let h = ready();
         h.sensor(1, 25, [0., 9.81, 0., 0.], 25);
         let s = h.state.lock().unwrap();
-        assert_eq!(s.snapshots[0].timestamp, 20);
-        assert_eq!(s.snapshots[1].timestamp, 25);
+        assert_eq!(s.snapshots[0].represented_at.unwrap(), 20);
+        assert_eq!(s.snapshots[1].represented_at.unwrap(), 25);
         assert!(matches!(s.snapshots[1].values[3], Value::Bit(true)));
         assert!(matches!(&s.snapshots[0].values[0],Value::Numbers(v) if v[..3]==[1.,2.,3.]));
     }

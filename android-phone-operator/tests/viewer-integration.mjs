@@ -54,13 +54,14 @@ async function run(mode) {
     await wait(async()=> (await fetch(url)).ok);
     browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE||'/opt/google/chrome/chrome',headless:true});
     const page=await browser.newPage({viewport:{width:1400,height:1000}});
+    page.on('pageerror',e=>console.error('Viewer error',e));
     await page.goto(url);
     await page.getByRole('dialog').getByLabel('Operator address').fill(`http://127.0.0.1:${serverPort}`);
     const normal=await page.evaluate(async mode=>{
       const {Connection}=await import('/src/connection.ts');
       const {currentValues,spatialFrames}=await import('/src/tracking-view.ts');
       const controls=new Set(), qualities=new Set(), errors=[];
-      let packets=0, rawMeasurements=0, closedFormChecks=0, previous;
+      let packets=0, rawMeasurements=0, closedFormChecks=0, timelyCamera=0, previous;
       const gravity=mode==='displacement' ? 9.80665 : 9.81;
       const c=new Connection(state=>{if(state.status==='Error')errors.push(state.detail);});
       try {
@@ -94,13 +95,20 @@ async function run(mode) {
               if(view.poses.poses[0].flags!==flags)throw Error('Viewer quality disagrees with wire flags');
               if(o){
                 const [x,y,z]=pose.value;
+                const represented=pose.packet.predictedFor;
+                if(represented==null || represented>pose.packet.timestamp)throw Error('Invalid represented pose time');
+                if(mode==='spatial' && pt){
+                  const stream=c.session.freshness(now).streams.find(s=>s.group===0);
+                  if(pose.packet.timestamp-represented!==74_000_000n)throw Error('Camera capture time lost');
+                  if(stream?.status==='Fresh' && stream.ageMs<74)timelyCamera++;
+                }
                 if(!ot || (pt && (!p || mode!=='spatial')) || (p && mode==='orientation'))throw Error('Unexpected pose quality');
                 if(!p && (x||y||z))throw Error('Invalid position is not a zero placeholder');
                 if(mode==='spatial' && p && (Math.abs(z+0.3)>0.0001 || Math.abs(x)>0.251 || y<0.149 || y>0.251))
                   throw Error('Incorrect synthetic spatial position');
                 if(mode==='displacement' && p){
                   if(x<0 || Math.abs(y)>0.0001 || Math.abs(z)>0.0001)throw Error('Incorrect estimated displacement');
-                  const t=pose.packet.timestamp;
+                  const t=represented;
                   if(previous && x>previous.x && t>previous.t){
                     // Continuous acceleration 0.2 m/s² from rest gives x = 0.1t².
                     if(Math.abs(Math.sqrt(x/0.1)-Math.sqrt(previous.x/0.1)-Number(t-previous.t)/1e9)>0.003)
@@ -119,7 +127,7 @@ async function run(mode) {
               }
             }
             for(const sub of c.session.active.values()){
-              if(sub.packet?.predictedFor!=null)throw Error('Invented prediction');
+              if(sub.packet?.predictedFor!=null && sub.packet.predictedFor>sub.packet.timestamp)throw Error('Invented future target');
               packets=Math.max(packets,sub.packets);
             }
           }
@@ -127,7 +135,7 @@ async function run(mode) {
         }
         return {controls:[...controls],qualities:[...qualities],groups:c.session.active.size,
           descriptors:c.session.capabilities?.descriptors.length,clock:!!c.session.clockEstimate(performance.now()),
-          packets,rawMeasurements,closedFormChecks,errors};
+          packets,rawMeasurements,closedFormChecks,timelyCamera,errors};
       }finally{c.close();}
     },mode);
     for(const input of ['false/-7/0','true/-7/0.25','true/42/0.75','false/42/1'])
@@ -135,6 +143,7 @@ async function run(mode) {
     for(const flags of mode==='orientation'?[5]:mode==='spatial'?[5,15]:[7])
       assert.ok(normal.qualities.includes(flags),'Expected pose flags '+flags);
     if(mode==='displacement')assert.ok(normal.closedFormChecks>0);
+    if(mode==='spatial')assert.ok(normal.timelyCamera>0, 'Tracked delayed images can be delivered on time');
     assert.equal(normal.groups,4);assert.equal(normal.descriptors,22);
     assert.equal(normal.clock,true);assert.ok(normal.packets>0);assert.ok(normal.rawMeasurements>0);
     assert.deepEqual(normal.errors,[]);
@@ -165,7 +174,7 @@ async function run(mode) {
           drop=false;await pause(100);const sub=s.active.get(id),settled=sub.packets;await pause(120);if(sub.packets!==settled)throw Error('ACK failed to quiesce');
           reliable.send(s.changeSchedule(id,timing(100,11_000_000n,60_000_000n)));await pause(100);if(sub.packets!==settled)throw Error('Timing reset ACK state');
           const invalid=s.request(request);new DataView(invalid.buffer).setUint32(5,99,true);reliable.send(invalid);await wait(()=>!s.pending.has(id),'rejection');if(s.active.get(id)!==sub||!s.detail.includes('rejected'))throw Error('Rejected replacement changed active');
-          reports.push({delivery,packets:settled,predictedFor:sub.packet.predictedFor});
+          reports.push({delivery,packets:settled,represented:sub.packet.predictedFor, acquired:sub.packet.timestamp});
           reliable.send(s.stop(id));await wait(()=>!s.stopping.has(id),'unsubscribe');
         }
         const id=s.allocateId(),r={id,group:0,delivery:1,...timing(50),sequenceNumberFormat:1,bundles:[[binding],[binding]]};
@@ -176,11 +185,15 @@ async function run(mode) {
         return {reports,clock:true,errors};
       }finally{pc.close();s.retire();}
     });
-    assert.deepEqual(protocol.errors,[]);assert.ok(protocol.reports.every(r=>r.predictedFor===null&&r.packets>=3));
+    assert.deepEqual(protocol.errors,[]);assert.ok(protocol.reports.every(r=>r.represented!==null&&r.represented<=r.acquired&&r.packets>=3));
     // Exercise the unchanged production UI, using its ordinary connect action.
+    await page.getByRole('dialog').getByLabel('Operator address').fill(`http://127.0.0.1:${serverPort}`);
     await page.getByRole('dialog').getByRole('button',{name:'Connect',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('#status')?.textContent==='Connected');
-    await page.waitForFunction(()=>document.querySelector('#poses')?.dataset.poseCount==='1');
+    await page.waitForFunction(()=>document.querySelector('#poses')?.dataset.poseCount==='1').catch(async error=>{
+      console.error('Viewer state',await page.locator('#status,#graphics-status,#body-quality,#workspace-title,#sample-summary').allTextContents());
+      throw error;
+    });
     await page.locator('subscription-editor [data-action="select"][data-group="0"]').first().click();
     {
       const poseRow='tr[data-descriptor="/phone/input/grip/pose"]';
@@ -195,6 +208,26 @@ async function run(mode) {
         if (mode === 'spatial') return Math.abs(values[2]+0.3)<0.003;
         return values[0]>0.001 && Math.abs(values[1])<0.003 && Math.abs(values[2])<0.003;
       },{selector:poseRow,mode});
+    }
+    if(mode==='spatial'){
+      // Observe the normal UI's next rendered tracked handset, including both
+      // the position marker and the actual housing and jaw materials.
+      await page.evaluate(async()=>{
+        const {SpatialView}=await import('/src/spatial.ts');
+        const render=SpatialView.prototype.renderFrame;
+        await new Promise((resolve,reject)=>{
+          const timeout=setTimeout(()=>{SpatialView.prototype.renderFrame=render;reject(Error('No timely tracked gripper'));},10000);
+          SpatialView.prototype.renderFrame=function(...args){
+            const result=render.apply(this,args);
+            const hand=this.poses.get('/phone/input/grip/pose');
+            if(hand?.group.visible && hand.marker.material.color.getHex()===0x286b4c &&
+               hand.shape.children.length>=5 && hand.shape.children.every(mesh=>mesh.material.color.getHex()===0x286b4c)){
+              clearTimeout(timeout);SpatialView.prototype.renderFrame=render;resolve();
+            }
+            return result;
+          };
+        });
+      });
     }
     await page.locator('subscription-editor [data-action="select"][data-group="1"]').first().click();
     const rawRow='tr[data-descriptor="/phone/accelerometer/y"]';
