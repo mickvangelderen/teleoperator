@@ -1,5 +1,7 @@
+import { phoneControlsOnly } from "./phone-controls";
 import { Session } from "./session";
-import { preferredFormat, restGroup, timing, MAX_CLIENT_MESSAGE } from "./protocol";
+import { restGroup, timing, MAX_CLIENT_MESSAGE } from "./protocol";
+import { defaultBundles } from "./default-bundles";
 import type { Request } from "./protocol";
 import { profiler } from "./performance";
 import type { Freshness } from "./freshness";
@@ -147,9 +149,15 @@ export class Connection {
                 this.freshnessTimer = setInterval(() => this.emit(), 16);
                 const c = this.session.capabilities!;
                 c.groups.forEach((max, group) => {
-                  const samples = c.descriptors.flatMap((d, descriptor) => d.group === group ? [{ descriptor, format: preferredFormat(d), space: d.spaces[0] ?? 0 }] : []);
                   const rest = restGroup(c, group);
-                  if (samples.length && !this.stopped) this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, ...timing(Math.min(max, 60)), sequenceNumberFormat: rest ? 2 : null, bundles: rest ? [[], samples] : [samples] }, !rest);
+                  const bundles = defaultBundles(c, group, rest);
+                  if (bundles.length === 1 && phoneControlsOnly(bundles[0].map(s => c.descriptors[s.descriptor]))) {
+                    bundles.unshift([]); // Phone controls publish on change, with no continuous samples.
+                  }
+                  if (!this.stopped && bundles.some(b => b.length)) {
+                    this.publish({ id: group + 1, group, delivery: rest ? 2 : 1, ...timing(Math.min(max, 60)),
+                      sequenceNumberFormat: bundles.length > 1 ? 2 : null, bundles }, !rest);
+                  }
                 });
               }
             }
@@ -262,7 +270,7 @@ export class Connection {
       if (!this.automatic.has(id) || this.session.stopping.has(id)
         || [...this.replacements].some(([pending, previous]) => previous === id && this.session.pending.has(pending))
         || now - (this.scheduleUpdates.get(id) ?? -Infinity) < SCHEDULE_UPDATE_INTERVAL_MS) continue;
-      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clockEstimate(now), this.session.networkLatency(now), this.session.capabilities!.groups[group]);
+      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clockEstimate(now), this.session.networkLatency(now), this.session.capabilities!.groups[group], sub.controllerTiming?.deliveryMs());
       if (!next) continue;
       this.scheduleUpdates.set(id, now);
       if (!scheduleNeedsUpdate(schedule, next)) continue;

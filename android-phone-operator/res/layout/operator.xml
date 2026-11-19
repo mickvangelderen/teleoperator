@@ -1,0 +1,56 @@
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:fitsSystemWindows="true">
+    <androidx.drawerlayout.widget.DrawerLayout android:id="@+id/drawer"
+        android:layout_width="match_parent" android:layout_height="match_parent">
+        <ScrollView android:layout_width="match_parent" android:layout_height="match_parent"
+            android:fillViewport="true">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:paddingHorizontal="16dp" android:paddingVertical="12dp"
+                android:focusableInTouchMode="true" android:keepScreenOn="true">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical" android:orientation="horizontal">
+                    <TextView style="@style/SectionLabel" android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" android:text="@string/input_number" android:labelFor="@id/input" />
+                    <EditText android:id="@+id/input" android:layout_width="0dp" android:layout_weight="1"
+                        android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_height="wrap_content"
+                        android:minHeight="48dp" android:inputType="numberSigned" android:imeOptions="actionDone"
+                        android:singleLine="true" android:selectAllOnFocus="true" android:saveEnabled="false" />
+                    <Button android:id="@+id/recenter" style="@style/TextAction" android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" android:text="@string/recenter" />
+                    <ImageButton android:id="@+id/open_settings" style="@style/SettingsIcon"
+                        android:src="@drawable/settings" android:contentDescription="@string/settings"
+                        android:tooltipText="@string/settings" />
+                </LinearLayout>
+                <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp" android:textSize="22sp" android:textColor="#1E283F"
+                    android:fontFamily="sans-serif-medium" android:accessibilityLiveRegion="polite" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="220dp"
+                    android:layout_weight="1" android:layout_marginTop="14dp"
+                    android:orientation="horizontal" android:splitMotionEvents="true">
+                    <Button android:id="@+id/hold" android:layout_width="0dp" android:layout_weight="1"
+                        android:layout_height="match_parent" android:layout_marginEnd="4dp"
+                        android:background="@drawable/hold_pad" android:backgroundTint="@color/hold_tint"
+                        android:stateListAnimator="@null" android:paddingHorizontal="4dp"
+                        android:text="@string/hold" android:textAllCaps="false" android:textSize="20sp"
+                        android:textColor="#FFFFFF" android:fontFamily="sans-serif-medium"
+                        android:contentDescription="@string/deadman" />
+                    <FrameLayout android:layout_width="0dp" android:layout_weight="1"
+                        android:layout_marginStart="4dp" android:layout_height="match_parent"
+                        android:background="@drawable/gripper_pad">
+                        <SeekBar android:id="@+id/gripper" android:layout_width="match_parent"
+                            android:layout_height="match_parent" android:paddingHorizontal="16dp"
+                            android:max="100" android:saveEnabled="false" android:contentDescription="@string/gripper" />
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                            android:layout_gravity="center" android:translationY="-44dp" android:text="@string/gripper"
+                            android:textSize="20sp" android:textColor="#1E283F" android:fontFamily="sans-serif-medium"
+                            android:importantForAccessibility="no" />
+                        <TextView android:id="@+id/gripper_value" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                            android:layout_gravity="center" android:translationY="44dp" android:textSize="20sp"
+                            android:textColor="#354F96" android:fontFamily="sans-serif-medium" android:importantForAccessibility="no" />
+                    </FrameLayout>
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+        <include layout="@layout/settings" />
+    </androidx.drawerlayout.widget.DrawerLayout>
+</FrameLayout>
