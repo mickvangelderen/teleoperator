@@ -448,11 +448,11 @@ impl Hub {
                 {
                     if !old && *new {
                         s.presses[index] = s.presses[index].wrapping_add(1);
-                        if let Some(pose) = &mut s.virtual_pose {
-                            pose.press(index);
-                        }
                     } else if *old && !new {
                         s.releases[index] = s.releases[index].wrapping_add(1);
+                    }
+                    if let Some(pose) = &mut s.virtual_pose {
+                        pose.button_edge(index, *new);
                     }
                 }
                 s.last_activity = Some(at);
@@ -848,10 +848,24 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(
-            virtual_hub.capabilities.descriptors[..raw.capabilities.descriptors.len()],
-            raw.capabilities.descriptors
-        );
+        for (v, r) in virtual_hub
+            .capabilities
+            .descriptors
+            .iter()
+            .zip(&raw.capabilities.descriptors)
+        {
+            let mut expected = r.clone();
+            if matches!(
+                r.id.as_str(),
+                "/user/gamepad/input/trigger_left/value"
+                    | "/user/gamepad/input/trigger_right/value"
+            ) {
+                assert!(v.description.starts_with(&r.description) && v.name.starts_with(&r.name));
+                expected.name = v.name.clone();
+                expected.description = v.description.clone();
+            }
+            assert_eq!(v, &expected);
+        }
         let request = Request {
             bundles: vec![
                 raw.capabilities

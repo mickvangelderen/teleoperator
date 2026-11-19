@@ -902,16 +902,23 @@ pub fn synthetic_virtual_values(tick: u64) -> Vec<InputValue> {
         50..=54 | 700..=704 | 800..=804 => values[5] = InputValue::Button(true),
         60..=109 => values[14] = InputValue::Stick([0., 1.]),
         110..=159 => values[14] = InputValue::Stick([1., 0.]),
-        160..=209 => values[17] = InputValue::Scalar(1.),
-        210..=259 => values[16] = InputValue::Scalar(1.),
+        160..=209 => values[6] = InputValue::Button(true), // LB: up
+        210..=259 => values[7] = InputValue::Button(true), // RB: down
         260..=309 => values[15] = InputValue::Stick([1., 0.]),
         310..=359 => values[15] = InputValue::Stick([0., 1.]),
-        360..=409 => values[7] = InputValue::Button(true),
-        410..=459 => values[6] = InputValue::Button(true),
+        360..=409 => values[1] = InputValue::Button(true), // East: clockwise
+        410..=459 => values[2] = InputValue::Button(true), // West: counterclockwise
         460..=509 => values[15] = InputValue::Stick([-1., 0.]),
         510..=559 => values[15] = InputValue::Stick([0., -1.]),
-        560..=609 => values[14] = InputValue::Stick([0., -1.]),
-        610..=659 => values[14] = InputValue::Stick([-1., 0.]),
+        560..=609 => {
+            values[14] = InputValue::Stick([0., -1.]);
+            values[16] = InputValue::Scalar(0.5);
+        }
+        610..=659 => {
+            values[14] = InputValue::Stick([-1., 0.]);
+            values[16] = InputValue::Scalar(1.);
+        }
+        670..=699 => values[17] = InputValue::Scalar(0.5), // Gripper only, pose enabled
         705..=749 | 805..=849 => {
             values[14] = InputValue::Stick([0.6, 0.8]);
             values[15] = InputValue::Stick([0.6, 0.8]);
@@ -919,6 +926,8 @@ pub fn synthetic_virtual_values(tick: u64) -> Vec<InputValue> {
             values[7] = InputValue::Button(true);
         }
         750..=754 | 850..=854 => values[4] = InputValue::Button(true),
+        760..=774 => values[17] = InputValue::Scalar(0.25), // Gripper only, pose paused
+        775..=789 => values[17] = InputValue::Scalar(1.),
         _ => {}
     }
     values

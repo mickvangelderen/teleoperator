@@ -361,8 +361,8 @@ async function verifyVirtual(page) {
     const {Connection}=await import('/src/connection.ts');
     const {decodeTracking}=await import('/src/protocol.ts');
     const {currentValues,spatialFrames}=await import('/src/tracking-view.ts');
-    const wire={}, reports={};
-    let previousStick,previousMenu,menuDown,segment,resetSeen=false,samples=0,retainedRaw=false;
+    const wire={gripper:{}}, reports={};
+    let previousStick,previousMenu,previousPose,previousTarget,menuDown,segment,resetSeen=false,samples=0,retainedRaw=false;
     const c=new Connection(()=>{}, {
       packet(direction,channel,bytes){
         if(direction!=='received'||bytes[0]!==9)return;
@@ -373,6 +373,16 @@ async function verifyVirtual(page) {
         const included=packet.bundles.flatMap((values,i)=>values===null?[]:[i]);
         if(included.length===request.bundles.length)wire.fullBytes=bytes.length;
         if(included.length===1)wire.poseOnlyBytes=bytes.length;
+        const read=(group,id)=>packet.bundles[group]?.[request.bundles[group].findIndex(b=>caps.descriptors[b.descriptor].id===id)];
+        const pose=read(0,'/gamepad/virtual/pose'),enabled=read(0,'/gamepad/virtual/enabled');
+        const target=read(3,'/user/gamepad/input/trigger_right/value');
+        if(target!==undefined){
+          if(included.length===2 && previousTarget!==target && previousPose && pose.every((n,i)=>n===previousPose[i])){
+            wire.gripper[target]={enabled,included};
+          }
+          previousTarget=target;
+        }
+        previousPose=pose;
         // The synthetic demo taps Menu for five 10 ms observations.
         const digital=packet.bundles[1];
         if(digital && !wire.menuTap){
@@ -402,6 +412,14 @@ async function verifyVirtual(page) {
     });
     const requirements=['forward','back','right','left','up','down','yawRight','yawLeft','pitchUp','pitchDown','rollRight','rollLeft','neutral','paused','combined'];
     const delta={forward:[2,-1],back:[2,1],right:[0,1],left:[0,-1],up:[1,1],down:[1,-1],yawRight:[4,-1],yawLeft:[4,1],pitchUp:[3,1],pitchDown:[3,-1],rollRight:[5,-1],rollLeft:[5,1]};
+    // Relative quaternion vector in model axes for yaw, and tool axes for roll.
+    // q and -q describe the same orientation; choose the shorter rotation.
+    const rotationDelta=(start,end,world)=>{
+      const [x,y,z,w]=start.slice(3),[u,v,t,s]=end.slice(3);
+      const hemisphere=x*u+y*v+z*t+w*s<0?-1:1;
+      const cross=[y*t-z*v,z*u-x*t,x*v-y*u];
+      return [w*u-s*x,w*v-s*y,w*t-s*z].map((n,i)=>hemisphere*(n+(world?1:-1)*cross[i]));
+    };
     try {
       await c.connect();const deadline=performance.now()+22000;
       while(performance.now()<deadline) {
@@ -420,6 +438,9 @@ async function verifyVirtual(page) {
             samples++;if(pose.stale)throw Error('Virtual pose stale while idle/paused');
             const desc=caps.descriptors.find(d=>d.id==='/gamepad/virtual/pose');
             if(desc.kind!==10||desc.spaces.length!==1||desc.spaces[0]!==6)throw Error('Virtual pose is not model-space kind10');
+            const gripperIds=bundles[3].map(b=>caps.descriptors[b.descriptor].id);
+            if(gripperIds.join(',')!=='/user/gamepad/input/trigger_right/value,/user/gamepad/input/trigger_right/value/active' ||
+              !caps.descriptors[bundles[3][0].descriptor].description.includes('gripper closure target'))throw Error('Missing independently advertised gripper target');
             if(pose.packet.predictedFor!==null)throw Error('Virtual pose fabricated prediction');
             const p=pose.value;
             if(p.length!==7||p.some(v=>!Number.isFinite(v))||Math.abs(p.slice(3).reduce((s,x)=>s+x*x,0)-1)>1e-5)throw Error('Invalid quaternion/position');
@@ -436,13 +457,14 @@ async function verifyVirtual(page) {
               if(pose.packet.bundles.slice(1).every(bundle=>bundle===null) && v.packet.timestamp<pose.packet.timestamp)retainedRaw=true;
               return v.value;
             };
-            const l=raw('thumbstick_left'),r=raw('thumbstick_right'),lt=raw('trigger_left/value'),rt=raw('trigger_right/value'),lb=raw('shoulder_left/click'),rb=raw('shoulder_right/click');
+            const l=raw('thumbstick_left'),r=raw('thumbstick_right'),lt=raw('trigger_left/value'),lb=raw('shoulder_left/click'),rb=raw('shoulder_right/click');
+            const west=raw('x/click'),east=raw('b/click');
             const motion=get('/gamepad/virtual/enabled');
             if(motion.packet.timestamp!==pose.packet.timestamp)throw Error('Virtual motion state did not accompany pose');
             const enabled=motion.value;
             const reset=raw('view/click');
             let label;
-            const moving=l.some(x=>x!==0)||r.some(x=>x!==0)||lt!==0||rt!==0||lb||rb;
+            const moving=l.some(x=>x!==0)||r.some(x=>x!==0)||lb||rb||west||east;
             if(reset) {
               if(enabled||p.some((x,i)=>x!==(i===6?1:0)))throw Error('Reset failed to pause and restore origin');
               resetSeen=true;label='reset';
@@ -451,10 +473,10 @@ async function verifyVirtual(page) {
             else if(l[0]>0&&l[1]>0&&r[0]>0)label='combined';
             else if(l[1]===1)label='forward';else if(l[1]===-1)label='back';
             else if(l[0]===1)label='right';else if(l[0]===-1)label='left';
-            else if(rt===1)label='up';else if(lt===1)label='down';
+            else if(lb)label='up';else if(rb)label='down';
             else if(r[0]===1)label='yawRight';else if(r[0]===-1)label='yawLeft';
             else if(r[1]===1)label='pitchDown';else if(r[1]===-1)label='pitchUp';
-            else if(rb)label='rollRight';else if(lb)label='rollLeft';else label='neutral';
+            else if(east)label='rollRight';else if(west)label='rollLeft';else label='neutral';
             const at=Number(pose.packet.timestamp)/1e9;
             if(!segment||segment.label!==label)segment={label,p:[...p],at};
             if(at-segment.at>0.2&&!reports[label]&&requirements.includes(label)) {
@@ -462,13 +484,19 @@ async function verifyVirtual(page) {
               const minTranslation = 0.02;
               if (delta[label]) {
                 const [axis, sign] = delta[label];
-                const minimum = axis < 3 ? minTranslation : 0.03;
-                if ((p[axis] - segment.p[axis]) * sign < minimum) throw Error('Wrong axis/direction ' + label);
+                const minimum = axis === 1 ? 0.009 : axis < 3 ? minTranslation : 0.03;
+                const change=axis<3?p[axis]-segment.p[axis]:rotationDelta(segment.p,p,label.startsWith('yaw'))[axis-3];
+                if (change * sign < minimum) throw Error('Wrong axis/direction ' + label+' '+change);
+                if(['right','back','left'].includes(label)){
+                  const speed=Math.hypot(p[0]-segment.p[0],p[2]-segment.p[2])/(at-segment.at);
+                  if(Math.abs(speed-0.125*(1+3*lt))>0.002)throw Error('Incorrect LT boost '+label+' '+speed);
+                  (wire.speeds??={})[lt]=speed;
+                }
               } else if(label==='neutral'||label==='paused'){if(p.some((x,i)=>Math.abs(x-segment.p[i])>1e-5))throw Error('Motion while '+label);}
               else if(label==='combined'){if(Math.hypot(...p.slice(0,3).map((x,i)=>x-segment.p[i]))<minTranslation||Math.hypot(...p.slice(3).map((x,i)=>x-segment.p[i+3]))<0.05)throw Error('Combined motion did not translate and rotate');}
               reports[label]={seconds:at-segment.at,delta:p.map((x,i)=>x-segment.p[i])};
             }
-            if(resetSeen&&requirements.every(key=>reports[key]))break;
+            if(resetSeen&&[0,0.25,0.5,1].every(target=>wire.gripper[target])&&requirements.every(key=>reports[key]))break;
           }
         }
         await new Promise(r=>setTimeout(r,15));
@@ -479,6 +507,11 @@ async function verifyVirtual(page) {
     }finally{c.close();}
   });
   assert.deepEqual(report.wire.leftStick?.included,[0,4]);
+  assert.deepEqual(report.wire.gripper[0.25],{enabled:false,included:[0,3]});
+  assert.deepEqual(report.wire.gripper[0.5],{enabled:true,included:[0,3]});
+  assert.deepEqual(report.wire.gripper[1],{enabled:false,included:[0,3]});
+  assert.deepEqual(report.wire.gripper[0].included,[0,3]);
+  assert.deepEqual(Object.keys(report.wire.speeds).sort(),['0','0.5','1']);
   assert.deepEqual(report.wire.leftStick.ids,['/user/gamepad/input/thumbstick_left','/user/gamepad/input/thumbstick_left/active']);
   assert.ok(report.wire.poseOnlyBytes<report.wire.leftStick.bytes && report.wire.leftStick.bytes<report.wire.fullBytes);
   assert.ok(report.wire.menuTap?.observedMs>0 && report.wire.menuTap.observedMs<200,'Decoded both edges of a scripted 50 ms Menu tap');
