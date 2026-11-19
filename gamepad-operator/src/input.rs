@@ -12,6 +12,7 @@ use tokio::sync::watch;
 
 pub const RATE: f32 = 100.;
 pub const OBSERVATION_PERIOD_NS: u64 = (1e9 / RATE as f64) as u64;
+const HANDOFF_NS: u64 = 1_000_000;
 pub struct Clock(Instant);
 impl Default for Clock {
     fn default() -> Self {
@@ -90,6 +91,8 @@ struct State {
     releases: Vec<u64>,
     number: u64,
     at: u64,
+    last_nominal: u64,
+    retry: Option<(u64, u64)>,
     last_activity: Option<u64>,
     demands: Vec<Demand>,
 }
@@ -291,6 +294,8 @@ impl Hub {
                 releases: vec![0; count],
                 number: 1,
                 at,
+                last_nominal: at,
+                retry: None,
                 last_activity: None,
                 demands: vec![],
             }),
@@ -324,7 +329,10 @@ impl Hub {
     }
 
     fn refresh_plan(&self, state: &State) -> u64 {
-        let earliest = state.at + OBSERVATION_PERIOD_NS;
+        // The nominal grid limits opportunities. A late wake must not move it.
+        // Real acquisition spacing is enforced when the snapshot completes.
+        let earliest = state.last_nominal.saturating_add(OBSERVATION_PERIOD_NS);
+        let after_observation = state.at.saturating_add(1);
         let schedules: Vec<_> = state
             .demands
             .iter()
@@ -349,12 +357,19 @@ impl Hub {
                 // expired slot, trigger a free-running poll and consume the budget
                 // for the first real slot under the device's rate cap.
                 let first = schedules.iter().map(|(_, due)| *due).min()?;
-                grid.next_at((state.at + 1).max(first))
+                grid.next_at(after_observation.max(first).max(earliest))
                     .filter(|&slot| slot >= earliest && slot - earliest < OBSERVATION_PERIOD_NS)
             });
         self.planned_slot
             .store(aligned.unwrap_or(0), Ordering::Release);
-        aligned.unwrap_or(earliest)
+        if let Some((slot, eligible)) = state.retry {
+            if aligned == Some(slot) {
+                return eligible;
+            }
+        }
+        // Incompatible consumers have no common phase. Preserve the ordinary
+        // rate-limited poll in that case.
+        aligned.unwrap_or_else(|| state.at.saturating_add(OBSERVATION_PERIOD_NS))
     }
 
     pub fn wait_for_observation(&self, pump_by: Option<u64>) -> u64 {
@@ -386,7 +401,7 @@ impl Hub {
     /// Keep a one-millisecond timer fallback if the input thread stalls.
     pub fn publication_deadline(&self, slot: u64) -> u64 {
         if slot != 0 && self.planned_slot.load(Ordering::Acquire) == slot {
-            slot.saturating_add(1_000_000)
+            slot.saturating_add(HANDOFF_NS)
         } else {
             slot
         }
@@ -398,14 +413,34 @@ impl Hub {
             .encode(&self.capabilities, r)
             .map(|_| ())
     }
-    /// Drain ordered native transitions, then atomically install one observation.
-    /// Intermediate changes update ACK revisions, but never become acquisitions.
     pub fn batch(
         &self,
         events: &[(usize, InputValue)],
         values: &[InputValue],
         at: u64,
     ) -> protocol::Result<()> {
+        self.install_batch(events, values, at, None).map(|_| ())
+    }
+
+    /// The SDL event pump may read retained input between acquisition slots.
+    /// Only accepted complete snapshots advance the group or consume its edges.
+    pub fn scheduled_batch(
+        &self,
+        events: &[(usize, InputValue)],
+        values: &[InputValue],
+        at: u64,
+        deadline: u64,
+    ) -> protocol::Result<bool> {
+        self.install_batch(events, values, at, Some(deadline))
+    }
+
+    fn install_batch(
+        &self,
+        events: &[(usize, InputValue)],
+        values: &[InputValue],
+        at: u64,
+        deadline: Option<u64>,
+    ) -> protocol::Result<bool> {
         let mut s = self.state.lock().unwrap();
         if !s.connected {
             return Err("Disconnected epoch cannot reactivate".into());
@@ -421,6 +456,40 @@ impl Hub {
             .any(|(i, v)| *i >= s.values.len() || !valid(&self.definitions[*i], v))
         {
             return Err("Invalid native event".into());
+        }
+        if let Some(deadline) = deadline {
+            let retry = s.retry.take().filter(|&(_, wake)| wake == deadline);
+            let nominal = retry.map_or(deadline, |(slot, _)| slot);
+            let eligible = s.at.saturating_add(OBSERVATION_PERIOD_NS);
+            if at < eligible {
+                // Retry a slightly early snapshot while the sender is still
+                // waiting for this slot. Otherwise skip it and retain every edge.
+                if self.planned_slot.load(Ordering::Acquire) == nominal
+                    && eligible <= nominal.saturating_add(HANDOFF_NS)
+                {
+                    // The first attempt measures this wake plus the snapshot
+                    // read. If there is room, start one retry that much ahead
+                    // of eligibility. A second early read waits for the hard
+                    // limit directly. Only a real, eligible snapshot is used.
+                    let compensated = eligible.saturating_sub(at.saturating_sub(deadline));
+                    let wake = if retry.is_none() && compensated > at {
+                        compensated
+                    } else {
+                        eligible
+                    };
+                    s.retry = Some((nominal, wake));
+                } else {
+                    s.last_nominal = nominal;
+                    self.planned_slot.store(0, Ordering::Release);
+                    self.updates.send_replace(s.number);
+                }
+                return Ok(false);
+            }
+            let elapsed_ticks = at.saturating_sub(nominal) / OBSERVATION_PERIOD_NS;
+            s.last_nominal = nominal + elapsed_ticks * OBSERVATION_PERIOD_NS;
+        } else {
+            s.retry = None;
+            s.last_nominal = at;
         }
         if let Some(pose) = &mut s.virtual_pose {
             pose.begin(at, values);
@@ -483,7 +552,7 @@ impl Hub {
         }
         self.planned_slot.store(0, Ordering::Release);
         self.updates.send_replace(s.number);
-        Ok(())
+        Ok(true)
     }
     pub fn disconnect(&self, at: u64) {
         let mut s = self.state.lock().unwrap();
@@ -612,6 +681,102 @@ mod tests {
         r.phase = 0;
         first.lock().unwrap().update(r.timing(), 0);
         assert_eq!(h.next_observation(), 18_000_000);
+    }
+
+    #[test]
+    fn equal_rate_ticks_keep_phase_and_rate_when_wakes_are_late() {
+        let h = hub(false);
+        let mut r = request(&h);
+        r.phase = 10;
+        let p = Arc::new(Mutex::new(PublicationState::new(&r, 10)));
+        h.observe(&r, &p).unwrap();
+        assert!(p.lock().unwrap().opportunity(10));
+        let period = OBSERVATION_PERIOD_NS;
+        let values = [InputValue::Button(false)];
+        for i in 1..=200 {
+            let slot = 10 + i * period;
+            assert_eq!(h.next_observation(), slot);
+            assert!(
+                h.scheduled_batch(&[], &values, slot + 70_000, slot)
+                    .unwrap()
+            );
+            assert!(p.lock().unwrap().opportunity(slot + 70_000));
+            assert_eq!(h.state.lock().unwrap().at, slot + 70_000);
+        }
+
+        let slot = 10 + 201 * period;
+        assert_eq!(h.next_observation(), slot);
+        let edges = [
+            (0, InputValue::Button(true)),
+            (0, InputValue::Button(false)),
+        ];
+        assert!(
+            !h.scheduled_batch(&edges, &values, slot + 50_000, slot)
+                .unwrap()
+        );
+        assert_eq!(h.state.lock().unwrap().at, slot - period + 70_000);
+        let retry = h.next_observation();
+        assert_eq!(retry, slot + 70_000);
+        assert!(
+            h.scheduled_batch(&edges, &values, retry + 40_000, retry)
+                .unwrap()
+        );
+        assert_eq!(h.state.lock().unwrap().presses[0], 1);
+        assert_eq!(h.state.lock().unwrap().releases[0], 1);
+        assert!(p.lock().unwrap().opportunity(retry + 40_000));
+
+        let next = slot + period;
+        assert_eq!(h.next_observation(), next);
+        assert!(
+            h.scheduled_batch(&[], &values, next + 2_000_000, next)
+                .unwrap()
+        );
+        assert!(p.lock().unwrap().opportunity(next + 2_000_000));
+        let skipped = next + period;
+        assert_eq!(h.next_observation(), skipped);
+        assert!(
+            !h.scheduled_batch(&[], &values, skipped + 60_000, skipped)
+                .unwrap()
+        );
+        assert_eq!(h.publication_deadline(skipped), skipped);
+        assert_eq!(h.next_observation(), skipped + period);
+        assert_eq!(h.state.lock().unwrap().at, next + 2_000_000);
+    }
+
+    #[test]
+    fn early_read_retries_once_with_measured_cost_and_respects_the_absolute_limit() {
+        let h = hub(false);
+        let mut r = request(&h);
+        r.phase = 10;
+        let p = Arc::new(Mutex::new(PublicationState::new(&r, 10)));
+        h.observe(&r, &p).unwrap();
+        assert!(p.lock().unwrap().opportunity(10));
+        let values = [InputValue::Button(false)];
+        let first = h.next_observation();
+        assert!(
+            h.scheduled_batch(&[], &values, first + 250_000, first)
+                .unwrap()
+        );
+        assert!(p.lock().unwrap().opportunity(first + 250_000));
+        let next = h.next_observation();
+        assert!(
+            !h.scheduled_batch(&[], &values, next + 70_000, next)
+                .unwrap()
+        );
+        let retry = h.next_observation();
+        assert_eq!(retry, next + 180_000);
+        assert!(
+            !h.scheduled_batch(&[], &values, retry + 35_000, retry)
+                .unwrap()
+        );
+        let eligible = h.next_observation();
+        assert_eq!(eligible, next + 250_000);
+        assert!(
+            h.scheduled_batch(&[], &values, eligible + 40_000, eligible)
+                .unwrap()
+        );
+        assert!(p.lock().unwrap().opportunity(eligible + 40_000));
+        assert_eq!(h.next_observation(), next + OBSERVATION_PERIOD_NS);
     }
 
     #[test]

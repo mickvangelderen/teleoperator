@@ -1,7 +1,7 @@
 import type { Timing } from "./protocol";
 import { median } from "./statistics";
 
-import type { ClockEstimate } from "./clock";
+import { BROWSER_CLOCK_PRECISION_NS, type ClockEstimate } from "./clock";
 const ns = (ms: number) => BigInt(Math.round(ms * 1e6));
 const modulo = (value: bigint, interval: bigint) => ((value % interval) + interval) % interval;
 export const SCHEDULE_UPDATE_INTERVAL_MS = 1000;
@@ -70,11 +70,14 @@ export class PublicationTiming {
     const arrivalMargin = 2 + Math.min(50, 2 * frameJitter + probeJitter);
     let lead = transit + Math.min(50, receiveCost) + arrivalMargin;
     if (controllerDeliveryMs !== undefined) {
-      // Budget the observed high water mark and allow for an earlier callback
-      // and the phase-update deadband. Preserve the requested consumption target.
+      // Delivery ends at callback entry. Add actual receive work and phase
+      // uncertainty once. A fresh clock filter sample on the data channel
+      // already includes sender wake, transport and browser dispatch.
+      const resolution = Number(BROWSER_CLOCK_PRECISION_NS) / 1e6;
+      const measuredCost = costs[Math.floor((costs.length - 1) * 0.9)];
+      const decode = measuredCost === undefined ? receiveCost : measuredCost + resolution;
       const earlyCallback = callbackDelay - Math.min(...this.callbackDelays);
-      const margin = Number(phaseDeadbandNs) / 1e6 + earlyCallback + 2 * frameJitter + probeJitter;
-      lead = Math.max(transit, controllerDeliveryMs) + Math.min(50, receiveCost) + margin;
+      lead = controllerDeliveryMs + decode + resolution + earlyCallback + 2 * frameJitter;
     }
     // Choose an upcoming render far enough away for the reliable update to reach the server.
     const anchor = this.lastFrame + callbackDelay;
@@ -88,11 +91,11 @@ export class PublicationTiming {
   }
 }
 
-export function scheduleNeedsUpdate(current: Timing, next: Timing) {
+export function scheduleNeedsUpdate(current: Timing, next: Timing, phaseTolerance = phaseDeadbandNs) {
   if (current.interval !== next.interval) return true;
   const distance = modulo(next.phase - current.phase, current.interval);
   const phaseError = distance < current.interval - distance ? distance : current.interval - distance;
   const delayError = next.predictionOffset - current.predictionOffset;
   // Avoid churn from timestamp quantization, callback jitter and small probe changes.
-  return phaseError > phaseDeadbandNs || delayError > 500_000n || delayError < -500_000n;
+  return phaseError > phaseTolerance || delayError > 500_000n || delayError < -500_000n;
 }

@@ -1,3 +1,4 @@
+import { BROWSER_CLOCK_PRECISION_NS } from "./clock";
 import { phoneControlsOnly } from "./phone-controls";
 import { Session } from "./session";
 import { restGroup, timing, MAX_CLIENT_MESSAGE } from "./protocol";
@@ -268,12 +269,21 @@ export class Connection {
       const { id, group } = sub.request;
       const schedule = sub.request;
       if (!this.automatic.has(id) || this.session.stopping.has(id)
-        || [...this.replacements].some(([pending, previous]) => previous === id && this.session.pending.has(pending))
-        || now - (this.scheduleUpdates.get(id) ?? -Infinity) < SCHEDULE_UPDATE_INTERVAL_MS) continue;
-      const next = this.timing.schedule(schedule, now, renderToPhotonMs, this.session.clockEstimate(now), this.session.networkLatency(now), this.session.capabilities!.groups[group], sub.controllerTiming?.deliveryMs());
-      if (!next) continue;
+        || [...this.replacements].some(([pending, previous]) => previous === id && this.session.pending.has(pending))) continue;
+      const checked = this.scheduleUpdates.get(id) ?? -Infinity;
+      const early = now - checked < SCHEDULE_UPDATE_INTERVAL_MS;
+      // A newly admitted path estimate can exceed the entire existing budget.
+      const budget = Number(schedule.predictionOffset) / 1e6 - renderToPhotonMs;
+      if (early && !sub.controllerTiming?.missedBudgetSince(budget, checked)) continue;
+      const clock = this.session.clockEstimate(now);
+      // Without an attributable gamepad slot, half the filtered probe RTT is
+      // the symmetric-path estimate available from the protocol.
+      const controllerDelivery = sub.controllerTiming && clock
+        ? sub.controllerTiming.deliveryMs() ?? Number(clock.delay) / 2e6 : undefined;
+      const next = this.timing.schedule(schedule, now, renderToPhotonMs, clock, this.session.networkLatency(now), this.session.capabilities!.groups[group], controllerDelivery);
+      if (!next || (early && (next.interval !== schedule.interval || next.predictionOffset <= schedule.predictionOffset))) continue;
       this.scheduleUpdates.set(id, now);
-      if (!scheduleNeedsUpdate(schedule, next)) continue;
+      if (!scheduleNeedsUpdate(schedule, next, controllerDelivery === undefined ? undefined : BROWSER_CLOCK_PRECISION_NS)) continue;
       if (!this.send(this.session.changeSchedule(id, next))) return;
     }
   }

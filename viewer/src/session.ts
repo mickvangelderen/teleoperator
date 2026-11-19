@@ -71,7 +71,10 @@ export class Session {
     validateTiming(timing);
     const bytes = updateSchedule(id, timing);
     if (sub.request.interval !== timing.interval) sub.freshness = new FreshnessBaseline();
-    if (sub.request.phase !== timing.phase || sub.request.interval !== timing.interval) sub.controllerTiming?.changed(performance.now());
+    if (sub.controllerTiming && (sub.request.phase !== timing.phase || sub.request.interval !== timing.interval)) {
+      const now = performance.now();
+      sub.controllerTiming.changed(now, this.upperOffset(now));
+    }
     Object.assign(sub.request, { interval: timing.interval, phase: timing.phase, predictionOffset: timing.predictionOffset });
     return bytes;
   }
@@ -235,14 +238,16 @@ export class Session {
     let packet: Packet;
     try { packet = decodeTracking(bytes, this.capabilities, active.request); }
     catch { this.discarded++; return null; }
-    if (active.controllerTiming) {
-      const clock = this.clockEstimate(arrivedAt), upper = this.upperOffset(arrivedAt);
-      if (clock && upper !== undefined) active.controllerTiming.observe(packet.timestamp, arrivedAt, active.request, clock, upper);
-    }
     const format = active.request.sequenceNumberFormat;
     const position = format === null ? packet.timestamp : sequencePosition(packet.sequenceNumber!, active.newestPosition, format);
     if (position === null) { this.discarded++; return null; }
     if (active.newestPosition === undefined || position > active.newestPosition) {
+      if (active.controllerTiming) {
+        const clock = this.clockEstimate(arrivedAt), upper = this.upperOffset(arrivedAt);
+        if (clock && upper !== undefined) {
+          active.controllerTiming.observe(packet.timestamp, arrivedAt, active.request, clock, upper, format === null ? undefined : position);
+        }
+      }
       active.newestPosition = position;
     }
     if (format !== null && packet.bundles.some((b, i) => i > 0 && b !== null) && !this.pending.has(packet.id)) {

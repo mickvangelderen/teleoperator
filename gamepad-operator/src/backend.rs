@@ -752,9 +752,15 @@ pub fn run_sdl(
                 if source.clock.now() >= next_observation {
                     match pad.snapshot() {
                         Ok(values) => {
-                            hub.batch(&transitions, &values, source.clock.now())?;
+                            if hub.scheduled_batch(
+                                &transitions,
+                                &values,
+                                source.clock.now(),
+                                next_observation,
+                            )? {
+                                transitions.clear();
+                            }
                             pad.values = values;
-                            transitions.clear();
                         }
                         Err(e) => {
                             hub.disconnect(source.clock.now());
@@ -942,6 +948,8 @@ pub fn run_synthetic(
     let started = source.clock.now();
     let mut hub: Option<Arc<Hub>> = None;
     let mut previous = vec![];
+    let mut transitions = Vec::new();
+    let mut next_observation = 0;
     source.report(serde_json::json!({"name":"SYNTHETIC","status":"Deterministic software events, no physical input opened","lifecycle":lifecycle,"virtual_demo":virtual_demo}));
     while !stop.load(Ordering::Relaxed) {
         let tick = (source.clock.now() - started) / OBSERVATION_PERIOD_NS;
@@ -966,24 +974,31 @@ pub fn run_synthetic(
                     virtual_config,
                 )?;
                 source.install(h.clone());
-                h.wait_for_observation(None);
+                next_observation = h.wait_for_observation(None);
+                transitions.clear();
                 hub = Some(h);
                 previous = values.clone();
                 continue;
             }
-            let events = values
-                .iter()
-                .enumerate()
-                .filter(|(i, v)| previous[*i] != **v)
-                .map(|(i, v)| (i, v.clone()))
-                .collect::<Vec<_>>();
-            hub.as_ref()
-                .unwrap()
-                .batch(&events, &values, source.clock.now())?;
+            transitions.extend(
+                values
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, v)| previous[*i] != **v)
+                    .map(|(i, v)| (i, v.clone())),
+            );
+            if hub.as_ref().unwrap().scheduled_batch(
+                &transitions,
+                &values,
+                source.clock.now(),
+                next_observation,
+            )? {
+                transitions.clear();
+            }
             previous = values;
         }
         if let Some(h) = &hub {
-            h.wait_for_observation(None);
+            next_observation = h.wait_for_observation(None);
         } else {
             std::thread::sleep(Duration::from_nanos(OBSERVATION_PERIOD_NS));
         }

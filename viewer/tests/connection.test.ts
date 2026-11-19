@@ -217,6 +217,43 @@ test("automatic schedules encode bounded updates, preserve freshness, and follow
   } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
 });
 
+test("a newly admitted gamepad delay can advance the schedule inside the ordinary update interval", context => {
+  const original = globalThis.RTCPeerConnection;
+  Object.assign(globalThis, { RTCPeerConnection: Peer });
+  let now = 1000;
+  context.mock.method(performance, "now", () => now);
+  const cap = caps(), pose = cap.descriptors[0];
+  cap.descriptors.push({ ...pose, id: "/gamepad/connected" }, { ...pose, id: "/user/gamepad/input/a/click" });
+  const c = connection(cap);
+  try {
+    c.publish(request, true);
+    c.session.receive({ tag: 5, id: 1 });
+    setClock(c.session, { offset: 0n, delay: 400_000n, at: now });
+    timingFrames(c, now, 0);
+    const sub = c.session.active.get(1)!;
+    const initial = decodeSchedule(updates().at(-1)!);
+    const count = updates().length;
+    const emit = (i: number, delay: number) => {
+      const slot = sub.request.phase + BigInt(i) * sub.request.interval;
+      now = Number(slot) / 1e6 + delay;
+      setClock(c.session, { offset: 0n, delay: 400_000n, at: now });
+      sub.controllerTiming!.observe(slot + 20_000n, now, sub.request, c.session.clockEstimate(now)!, 300_000n, BigInt(i));
+      c.frame(now, now, 0);
+    };
+    for (let i = 80; i <= 89; i++) emit(i, 0.4);
+    assert.equal(updates().length, count);
+    emit(90, 6);
+    assert.equal(updates().length, count);
+    for (let i = 91; i <= 96; i++) emit(i, 6);
+    assert.equal(updates().length, count, "Transient slow deliveries cannot change the applied lead");
+    emit(97, 6);
+    assert.equal(updates().length, count + 1);
+    assert.ok(decodeSchedule(updates().at(-1)!).delay > initial.delay);
+    c.frame(now + 1, now + 1, 0);
+    assert.equal(updates().length, count + 1, "The same evidence cannot send a second update");
+  } finally { c.close(); Object.assign(globalThis, { RTCPeerConnection: original }); }
+});
+
 test("retained acquisitions and skipped slots do not advance the automatic publication phase", context => {
   context.mock.method(performance, "now", () => 1000);
   const original = globalThis.RTCPeerConnection;
