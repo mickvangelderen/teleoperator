@@ -31,7 +31,14 @@ Without --synthetic-tracking, no tracking data is acquired."
         println!("XR Operator signaling: http://{bound}");
     }
     #[cfg(not(target_os = "android"))]
-    let _advertisement = desktop_discovery::advertise(&listener, "XR Operator");
+    let publisher = {
+        const SERVICE_TYPE: &str = "_teleoperator._tcp.local.";
+        let app_name = env!("CARGO_BIN_NAME");
+        let host = mdns_sd_ext::local_hostname(app_name);
+        mdns_sd_ext::advertise(bound, SERVICE_TYPE, app_name, &host)
+            .inspect_err(|error| eprintln!("DNS-SD advertisement unavailable: {error}"))
+            .ok()
+    };
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let hub = xr_operator::tracking::Hub::new(if synthetic { "synthetic" } else { "none" });
     if synthetic {
@@ -58,5 +65,12 @@ Without --synthetic-tracking, no tracking data is acquired."
         }
         let _ = stop.send(true);
     });
-    xr_operator::server::serve(listener, shutdown, hub).await
+    let result = xr_operator::server::serve(listener, shutdown, hub).await;
+    #[cfg(not(target_os = "android"))]
+    if let Some(daemon) = publisher
+        && let Ok(stopped) = daemon.shutdown()
+    {
+        let _ = stopped.recv_timeout(std::time::Duration::from_secs(1));
+    }
+    result
 }

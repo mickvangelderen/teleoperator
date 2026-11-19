@@ -523,17 +523,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
-name = "desktop-discovery"
-version = "0.1.0"
-dependencies = [
- "hostname",
- "if-addrs",
- "mdns-sd",
- "socket2",
- "tokio",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -786,17 +775,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest",
-]
-
-[[package]]
-name = "hostname"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
-dependencies = [
- "cfg-if",
- "libc",
- "windows-link",
 ]
 
 [[package]]
@@ -1219,6 +1197,13 @@ dependencies = [
  "mio",
  "socket-pktinfo",
  "socket2",
+]
+
+[[package]]
+name = "mdns-sd-ext"
+version = "0.1.0"
+dependencies = [
+ "mdns-sd",
 ]
 
 [[package]]
@@ -2824,10 +2809,10 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
- "desktop-discovery",
  "jni 0.21.1",
  "libc",
  "log",
+ "mdns-sd-ext",
  "openxr",
  "rtc",
  "serde",

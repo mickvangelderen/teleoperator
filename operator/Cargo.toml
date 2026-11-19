@@ -28,7 +28,7 @@ webrtc = "0.21.1"
 tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-desktop-discovery = { path = "../desktop-discovery" }
+mdns-sd-ext = { path = "../mdns-sd-ext" }
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 libc = "0.2"

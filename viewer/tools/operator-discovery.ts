@@ -76,7 +76,6 @@ export function browseOperators() {
     const active = new Set<string>();
     for (const [name, interfaces] of Object.entries(networkInterfaces())) {
       for (const nic of interfaces ?? []) {
-        if (nic.internal) continue;
         const ipv6 = nic.family === "IPv6";
         const iface = ipv6 ? `::%${nic.scopeid || name}` : nic.address;
         if (active.has(iface)) continue;
