@@ -1,3 +1,4 @@
+import { controlReading, type Reading } from "./control-reading";
 import { setAttribute, setText } from "./dom";
 import type { Capabilities } from "./protocol";
 import type { CurrentValue } from "./tracking-view";
@@ -30,12 +31,9 @@ export function mappedControls(c: Capabilities) {
   return controls;
 }
 
-type Reading = { state: string; sample?: CurrentValue };
 export class ControllerView {
-  private readonly indices: Map<string, number>;
   private readonly refresh: ((read: (path: string) => Reading) => void)[] = [];
   constructor(host: HTMLElement, private readonly caps: Capabilities, readonly controls: Map<string, number>) {
-    this.indices = new Map(caps.descriptors.map((d, i) => [d.id, i]));
     const pad = document.createElement("div");
     pad.className = "gamepad";
     host.replaceChildren(pad);
@@ -95,25 +93,7 @@ export class ControllerView {
   }
 
   update(values: Map<number, CurrentValue>) {
-    const read = (path: string): Reading => {
-      const index = this.controls.get(path);
-      if (index === undefined) return { state: "Not advertised" };
-      const sample = values.get(index);
-      if (!sample) return { state: "Not subscribed" };
-      if (!sample.packet) return { state: "Waiting" };
-      if (sample.stale) return { state: "Stale" };
-      const connected = this.indices.get("/gamepad/connected");
-      const device = connected === undefined ? undefined : values.get(connected);
-      if (device?.value === false && !device.stale && device.packet && device.packet.timestamp >= sample.packet.timestamp) return { state: "Disconnected" };
-      const flag = this.indices.get(prefix + path + "/active");
-      if (flag !== undefined && this.caps.descriptors[flag].group === this.caps.descriptors[index].group &&
-        this.caps.descriptors[flag].kind === 1 && this.caps.descriptors[flag].formats.includes(1)) {
-        const active = values.get(flag);
-        if (!active || active.stale || active.packet?.timestamp !== sample.packet.timestamp) return { state: "Activity unknown" };
-        if (active.value !== true) return { state: "Inactive" };
-      }
-      return { state: "", sample };
-    };
+    const read = (path: string) => controlReading(this.caps, values, this.controls.get(path));
     for (const refresh of this.refresh) refresh(read);
   }
 }

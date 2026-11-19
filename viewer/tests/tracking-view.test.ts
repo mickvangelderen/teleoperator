@@ -280,3 +280,36 @@ test("standalone rest skin has no live subscription dependency", () => {
   assert.ok(spatialFrames(s, 60_000, true).bodyMesh);
   assert.equal(spatialFrames(s, 60_000).bodyMesh, undefined);
 });
+
+test("gripper closure uses its own subscribed and active trigger acquisition", () => {
+  for (const [id, trigger] of [["/gamepad/virtual/pose", "/user/gamepad/input/trigger_right/value"], ["/phone/input/grip/pose", "/phone/input/trigger/value"]]) {
+    const s = new Session();
+    const gamepad = id === "/gamepad/virtual/pose";
+    const descriptors = [
+      { id, group: 0, kind: 10, formats: [10], spaces: [2] },
+      { id: trigger, group: 1, kind: 8, formats: [10], spaces: [] },
+      ...(gamepad ? [{ id: trigger + "/active", group: 1, kind: 1, formats: [1], spaces: [] }] : []),
+    ].map(d => ({ ...d, name: d.id, description: "" }));
+    s.receive({ tag: 2, version: 1 }); s.receive({ tag: 3, capabilities: { groups: [60, 60], descriptors, skeletons: [] } });
+    const accept = (group: number, onChange: boolean) => {
+      const samples = descriptors.flatMap((d, descriptor) => d.group === group ? [{ descriptor, format: d.formats[0], space: d.spaces[0] ?? 0 }] : []);
+      s.request({ id: group, group, delivery: 1, ...timing(60), sequenceNumberFormat: onChange ? 2 : null, bundles: onChange ? [[], samples] : [samples] });
+      s.receive({ tag: 5, id: group });
+    };
+    accept(0, false); accept(1, false);
+    const read = (now: number) => spatialFrames(s, now).poses.poses[0].closure;
+    assert.equal(read(100), undefined);
+    publish(s, 1, 1n, gamepad ? [0.75, true] : [0.75]);
+    assert.equal(read(101), 0.75);
+    assert.equal(read(1000), undefined, "Stale continuous trigger");
+    if (gamepad) {
+      publish(s, 1, 2n, [1, false]);
+      assert.equal(read(101), undefined, "Inactive right trigger");
+    }
+    s.stop(1); s.receive({ tag: 8, id: 1, reason: "Replaced" });
+    assert.equal(read(101), undefined);
+    accept(1, true);
+    publish(s, 1, 3n, gamepad ? [0.25, true] : [0.25]);
+    assert.equal(read(10_000), 0.25, "A quiet on-change control retains its last measurement");
+  }
+});

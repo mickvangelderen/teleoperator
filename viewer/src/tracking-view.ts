@@ -1,3 +1,4 @@
+import { controlReading, descriptorIndices } from "./control-reading";
 import { Quaternion, Vector3 } from "three";
 import type { Pose, PoseFrame, JointHierarchy, BodyMeshFrame } from "./body-model";
 import type { Session, Subscription } from "./session";
@@ -5,6 +6,11 @@ import { selectedBundle } from "./session";
 import { width, publicationRate, bindings, restGroup, changedOnly } from "./protocol";
 import type { Capabilities, Packet, Value } from "./protocol";
 
+// Viewer conventions for the two operators that advertise a normalized gripper input.
+export const gripperTriggers = new Map([
+  ["/phone/input/grip/pose", "/phone/input/trigger/value"],
+  ["/gamepad/virtual/pose", "/user/gamepad/input/trigger_right/value"],
+]);
 export const poseSources = new Map([
   ["/user/head/input/pose", "head"],
   ["/user/hand/left/input/aim/pose", "left/aim"], ["/user/hand/left/input/grip/pose", "left/grip"],
@@ -47,7 +53,7 @@ export function currentValues(session: Session | undefined, now: number) {
 }
 const missingPose = (): Pose => ({ position: [0, 0, 0], orientation: [0, 0, 0, 1], flags: 0, active: false });
 export type StandalonePose = Pose & {
-  subscription: Subscription; space: number; stale: boolean;
+  subscription: Subscription; space: number; stale: boolean; closure?: number;
   positionTracked?: boolean; orientationTracked?: boolean;
 };
 // Standalone display references follow the selected acquisition even when another view is open.
@@ -196,11 +202,19 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
     const last = previous?.get(index);
     const reference = last?.subscription === subscription && last.space === space ? last : undefined;
     const pose = result?.pose ?? missingPose();
-    const display = { ...pose, subscription, space,
+    const display: StandalonePose = { ...pose, subscription, space,
       position: pose.flags & 2 ? pose.position : reference?.position ?? [0, 0, 0],
       orientation: pose.flags & 1 ? pose.orientation : reference?.orientation ?? [0, 0, 0, 1],
       positionTracked: result?.positionTracked, orientationTracked: result?.orientationTracked,
       stale: sample.stale || lateGenerations.has(subscription.generation) };
+    const trigger = gripperTriggers.get(d.id);
+    if (trigger) {
+      const input = descriptorIndices(c!).get(trigger);
+      if (input !== undefined && c!.descriptors[input].kind === 8) {
+        const closure = controlReading(c!, current, input, lateGenerations).sample?.value;
+        if (typeof closure === "number") display.closure = closure;
+      }
+    }
     references.set(index, display);
     if (!rest) {
       poses.push(display); sources.push(poseSources.get(d.id) ?? d.id); spaces.add(space);

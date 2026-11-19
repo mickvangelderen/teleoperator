@@ -10,7 +10,8 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 import { BodyModel } from "./body-model";
 import type { PoseFrame, JointHierarchy, BodyMeshFrame } from "./body-model";
-import type { StandalonePose } from "./tracking-view";
+import { gripperTriggers, type StandalonePose } from "./tracking-view";
+import { addGripper } from "./gripper";
 import { profiler } from "./performance";
 import { RollingRate } from "./statistics";
 
@@ -212,6 +213,7 @@ export class SpatialView {
       count++;
       object.group.position.fromArray(pose.position);
       object.group.quaternion.fromArray(pose.orientation);
+      object.setClosure?.(pose.closure);
       object.marker.material.color.copy(jointColor(pose.positionTracked, pose.stale || !(pose.flags & 2)));
       tint(object.shape, jointColor(pose.orientationTracked, pose.stale || !(pose.flags & 1)));
     }
@@ -278,7 +280,10 @@ export class SpatialView {
 
 function poseObject(name: string, builtIn = false) {
   const group = new Group(), shape = new Group();
-  if (builtIn && name.endsWith("/aim")) {
+  let setClosure: ReturnType<typeof addGripper> | undefined;
+  if (gripperTriggers.has(name)) {
+    setClosure = addGripper(shape);
+  } else if (builtIn && name.endsWith("/aim")) {
     shape.add(new Line(new BufferGeometry().setFromPoints([new Vector3(), new Vector3(0, 0, -0.35)]), new LineBasicMaterial()));
   } else if (builtIn) {
     shape.add(new AxesHelper(name === "head" ? 0.12 : 0.07));
@@ -293,7 +298,7 @@ function poseObject(name: string, builtIn = false) {
   marker.renderOrder = 2; // Keep position quality readable through the model.
   group.add(shape, marker);
   group.visible = false;
-  return { group, shape, marker, builtIn };
+  return { group, shape, marker, builtIn, setClosure };
 }
 
 export function alignTouchPlusToGrip(model: Object3D) {
