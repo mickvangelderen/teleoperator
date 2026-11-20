@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GroupMetrics } from "../src/group-metrics";
+import { groupLabel } from "../src/group-name";
 import { Session } from "../src/session";
 import type { Request, Packet } from "../src/protocol";
 import { timing } from "../src/protocol";
 import { setClock } from "./clock-fixture";
 
 const ns = (ms: number) => BigInt(Math.round(ms * 1e6));
-function session() {
+function session(dynamicThird = false) {
   const s = new Session(); s.receive({ tag: 2, version: 1 });
-  s.receive({ tag: 3, capabilities: { groups: [200, 200, 200], skeletons: [{ joints: [{ parent: 0, pose_sample: 0, rest_pose_sample: 2 }] }], descriptors: [
+  s.receive({ tag: 3, capabilities: { groups: [200, 200, 200], skeletons: dynamicThird ? [] : [{ joints: [{ parent: 0, pose_sample: 0, rest_pose_sample: 2 }] }], descriptors: [
     { id: "pose", name: "Pose", description: "", group: 0, kind: 10, formats: [10], spaces: [2] },
     { id: "button", name: "Button", description: "", group: 1, kind: 2, formats: [1], spaces: [] },
-    { id: "rest", name: "Rest", description: "", group: 2, kind: 10, formats: [10], spaces: [5] },
+    { id: "rest", name: "Rest", description: "", group: 2, kind: 10, formats: [10], spaces: dynamicThird ? [2] : [5] },
   ] } });
   setClock(s, { offset: 0n, delay: 100_000n, at: 0 }); return s;
 }
@@ -91,14 +92,14 @@ test("continuous and changed-only streams in one group contribute arrivals once 
   assert.equal(retainedOnly.groups[0].arrival, 10, "Changed-only arrivals remain visible after leaving the headline");
 });
 
-test("missing, stale or clockless members make the age unknown without hiding known traces", () => {
+test("missing groups are excluded without hiding known medians or inventing timing", () => {
   const s = session(), metrics = new GroupMetrics(); subscribe(s, 1, 0); subscribe(s, 2, 1);
   sample(s, 1, 980, 1000);
   let result = metrics.update(s, 1000);
-  assert.equal(result.age, undefined); assert.equal(result.groups[0].age, 20); assert.equal(result.groups[1].age, undefined);
-  sample(s, 2, 980, 0); assert.equal(metrics.update(s, 1000).age, undefined);
+  assert.equal(result.age, 20); assert.equal(result.groups[0].age, 20); assert.equal(result.groups[1].age, undefined);
+  sample(s, 2, 980, 0); assert.equal(metrics.update(s, 1000).age, 20);
   sample(s, 2, 960, 1000); assert.equal(metrics.update(s, 1000).age, 30);
-  sample(s, 2, 960, 1000, null); assert.equal(metrics.update(s, 1000).age, undefined, "Unknown sample time has no age");
+  sample(s, 2, 960, 1000, null); assert.equal(metrics.update(s, 1000).age, 20, "Unknown target excludes only its group");
   sample(s, 2, 960, 1000);
   setClock(s, undefined); assert.equal(metrics.update(s, 1000).age, undefined);
   setClock(s, { offset: 0n, delay: 100_000n, at: 0 });
@@ -128,8 +129,32 @@ test("replacement, membership changes and disconnect reset only the affected gro
   subscribe(s, 1, 0); sample(s, 1, 1190, 1200); sample(s, 2, 1200, 1200);
   let result = metrics.update(s, 1200);
   assert.notEqual(result.groups[0].key, oldKey); assert.equal(result.age, 25);
-  subscribe(s, 3, 0); result = metrics.update(s, 1200); assert.equal(result.age, undefined);
+  subscribe(s, 3, 0); result = metrics.update(s, 1200); assert.equal(result.age, 40, "Missing member excludes its group, not other groups");
   s.stop(3); result = metrics.update(s, 1200); assert.equal(result.groups[0].medianAge, 10);
   s.stop(1); assert.equal(metrics.update(s, 1200).groups.length, 1);
   s.retire(); assert.deepEqual(metrics.update(s, 1201), { groups: [], arrival: undefined, age: undefined });
+});
+
+
+test("available group medians use arithmetic mean, including signed ages and zero", () => {
+  const s = session(true), metrics = new GroupMetrics();
+  for (const group of [0, 1, 2]) subscribe(s, group + 1, group);
+  sample(s, 1, 998, 1000); sample(s, 2, 997, 1000); sample(s, 3, 960, 1000);
+  assert.equal(metrics.update(s, 1000).age, 15, "Mean of 2, 3, 40 is 15, not the median 3");
+  sample(s, 3, 960, 1000, null);
+  assert.equal(metrics.update(s, 1000).age, 2.5);
+  sample(s, 1, 998, 1000, null); sample(s, 2, 997, 1000, null);
+  assert.equal(metrics.update(s, 1000).age, undefined, "Dash only when no eligible group has data");
+  sample(s, 1, 990, 1000, 1010); sample(s, 2, 1000, 1000);
+  assert.equal(metrics.update(s, 1000).age, -5, "Negative actual target ages and zero are retained");
+});
+
+
+test("metric labels reuse display group names and retain an unambiguous fallback", () => {
+  const c = session().capabilities!;
+  assert.equal(groupLabel(c, 0), "Poses · Group 0");
+  assert.equal(groupLabel(c, 1), "Inputs · Group 1");
+  assert.equal(groupLabel(c, 2), "Rest skeleton · Group 2");
+  assert.equal(groupLabel(undefined, 7), "Group 7");
+  assert.equal(groupLabel({ groups: [60], skeletons: [], descriptors: [] }, 0), "Group 0");
 });

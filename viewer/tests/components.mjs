@@ -17,7 +17,7 @@ try {
   assert.equal(await page.locator("#missing-metric .metric-value").textContent(), "—");
 
   // Keyboard and pointer access use the same tooltip, including Escape dismissal.
-  const trigger = page.locator("#example-chart"), tooltip = page.locator("#example-chart-tooltip");
+  const trigger = page.locator("#example-metric"), tooltip = page.locator("#example-chart-tooltip");
   assert.equal(await tooltip.isVisible(), false);
   await page.keyboard.press("Tab");
   assert.equal(await trigger.evaluate(el => el === document.activeElement), true);
@@ -31,6 +31,57 @@ try {
   assert.equal(await tooltip.isVisible(), true, "Tooltip stays available while its text is hovered");
   await page.mouse.move(0, 0);
   assert.equal(await tooltip.isVisible(), false);
+
+  for (const target of [trigger.locator(".metric-label"), trigger.locator(".metric-value"), trigger.locator("svg")]) {
+    await target.hover(); assert.equal(await tooltip.isVisible(), true);
+    await tooltip.hover(); assert.equal(await tooltip.isVisible(), true);
+    await page.mouse.move(0, 0); assert.equal(await tooltip.isVisible(), false);
+  }
+  const tile = await trigger.boundingBox();
+  await page.mouse.move(tile.x + 2, tile.y + tile.height / 2);
+  assert.equal(await tooltip.isVisible(), true, "Padding belongs to the hover target too");
+  assert.equal(await tooltip.locator('[data-group="0"] .group-label').textContent(), "Body tracking");
+  assert.equal(await tooltip.locator('[data-group="1"] .group-label').textContent(), "Group 1");
+  assert.equal(await tooltip.locator('[data-group="1"] .group-note').textContent(), "Unavailable");
+  await page.evaluate(() => {
+    let tick = 0;
+    window.selectionNodes = [...document.querySelectorAll("#example-metric .metric-label, #example-metric strong, #example-chart-tooltip .group-label, #example-chart-tooltip .group-median")].map(node => [node, node.firstChild]);
+    window.selectionTimer = setInterval(() => {
+      tick++; window.componentsFixture.metric.update(-3 - tick / 100);
+      window.componentsFixture.legend([{ group: 0, label: "Body tracking", value: -3 - tick / 100 }, { group: 1 }]);
+    }, 30);
+  });
+  try {
+    // Real mouse selections must survive refresh: assigning Text.data on the
+    // same node would reset selection offsets even with stable element identity.
+    for (const selector of ["#example-metric .metric-label", '#example-chart-tooltip [data-group="0"] .group-label', '#example-chart-tooltip [data-group="0"] .group-median', "#example-metric strong"]) {
+      await trigger.hover();
+      const bounds = await page.locator(selector).evaluate(node => {
+        const range = document.createRange(); range.selectNodeContents(node);
+        const r = range.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height };
+      });
+      await page.mouse.move(bounds.x + 1, bounds.y + bounds.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(bounds.x + bounds.width - 1, bounds.y + bounds.height / 2, { steps: 8 });
+      await page.mouse.up();
+      const selected = await page.evaluate(() => getSelection().toString());
+      assert.ok(selected.length > 2, `Mouse selected text in ${selector}`);
+      const headline = await trigger.locator("strong").textContent();
+      await page.waitForTimeout(240);
+      assert.equal(await page.evaluate(() => getSelection().toString()), selected, `Selection survives refresh in ${selector}`);
+      assert.equal(await page.evaluate(() => window.selectionNodes.every(([node, text]) => node.isConnected && node.firstChild === text)), true, "Heading, scalar and group text nodes are reused");
+      if (!selector.endsWith("strong")) assert.notEqual(await trigger.locator("strong").textContent(), headline, "Other values stay live");
+      await page.evaluate(() => getSelection().removeAllRanges());
+    }
+    const frozen = await trigger.locator("strong").textContent();
+    await page.waitForFunction(old => document.querySelector("#example-metric strong").textContent !== old, frozen);
+  } finally {
+    await page.evaluate(() => { clearInterval(window.selectionTimer); getSelection().removeAllRanges(); window.componentsFixture.metric.update(-3); });
+  }
+  await page.mouse.move(0, 0);
+
+  assert.deepEqual(await page.locator("#freshness-chart-tooltip .group-median").allTextContents(), ["50.0 ms", "40.0 ms"], "Freshness exposes per-group medians, using the worst member of each group");
+  assert.equal(await page.locator("#freshness-example strong").first().textContent(), "50.0 ms", "Existing worst-stream freshness headline is unchanged");
 
   // All native controls of a given density share typography, border and height.
   const controls = await page.evaluate(() => ["default", "compact"].map(size => {

@@ -39,6 +39,7 @@ main { max-width: 1570px; margin: auto; padding: var(--space-6) var(--space-10);
 @media (min-width: 801px) and (max-width: 1200px) {
   .metrics { grid-template-columns: repeat(3, 1fr); gap: var(--space-5) 0; }
   .metric:nth-child(3n) { border: 0; }
+  .metrics .metric .tooltip-content { left: 0; right: auto; }
   .metric:nth-child(3n) .tooltip-content { left: auto; right: 0; }
 }
 @media (min-width: 900px) { .viewport { height: 440px; } }
@@ -53,7 +54,7 @@ main { max-width: 1570px; margin: auto; padding: var(--space-6) var(--space-10);
   main { padding: var(--space-5); }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-6) 0; }
   .metric:nth-child(2n) { border: 0; }
-  .metric .tooltip-content { left: 0; right: auto; }
+  .metrics .metric .tooltip-content { left: 0; right: auto; }
   .metric:nth-child(2n) .tooltip-content { left: auto; right: 0; }
 }
 @media (max-width: 600px) {

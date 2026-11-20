@@ -16,7 +16,8 @@ export async function checkFreshness(page, output) {
   assert.equal(await page.locator("#freshness-threshold").isVisible(), false);
   await page.locator("#freshness-chart").hover();
   assert.equal(await page.locator("#freshness-threshold").isVisible(), true);
-  assert.ok((await page.locator("#freshness-chart-tooltip").textContent()).length < 160);
+  assert.match(await page.locator("#freshness-chart-tooltip").textContent(), /2 s medians/);
+  assert.ok(await page.locator("#freshness-chart-tooltip .group-median").count() > 0);
   await page.locator("#arrival-chart").hover();
   assert.equal(await page.locator("#arrival-chart-tooltip").isVisible(), true);
   assert.match(await page.locator("#arrival-chart-tooltip").textContent(), /Solid.*Dashed/);

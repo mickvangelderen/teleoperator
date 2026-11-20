@@ -8,6 +8,8 @@ import type { SubscriptionPort } from "../src/subscription-editor";
 import { MetricSummaryTable } from "../src/ui/metric-summary-table";
 import { TimeSeriesGraph } from "../src/ui/time-series-graph";
 import { panelHeader } from "../src/ui/panel";
+import { mountFreshnessIndicator } from "../src/freshness-view";
+import { summarizeFreshness } from "../src/freshness";
 import { mountSparkline, mountGroupLegend, groupColor } from "../src/sparkline";
 import type { Request, Capabilities } from "../src/protocol";
 
@@ -20,8 +22,8 @@ fixture.innerHTML = `<h1>Viewer components</h1>
 const metric = fixture.querySelector<MetricDisplay>("#example-metric")!;
 metric.update(-3);
 const chart = mountSparkline(metric, "example-chart", "Solid: measured. Dashed: reference.");
-const legend = mountGroupLegend(chart.tooltip);
-legend([{ group: 0 }, { group: 1 }]);
+const legend = mountGroupLegend(chart.tooltip, "ms", 2);
+legend([{ group: 0, label: "Body tracking", value: -3 }, { group: 1 }]);
 for (let now = 0; now <= 10000; now += 100) chart.update([
   { key: "measured", color: groupColor(0), value: now === 5000 ? undefined : 10 + 4 * Math.sin(now / 1000) },
   { key: "reference", color: groupColor(0), value: 20, dashed: true },
@@ -45,6 +47,15 @@ const capabilities: Capabilities = {
     { id: `button-${group}`, name: "Button", description: "Example button", kind: 2, formats: [1], group, spaces: [] },
   ]),
 };
+const freshnessMetric = new MetricDisplay();
+freshnessMetric.id = "freshness-example"; freshnessMetric.setAttribute("label", "FRESHNESS");
+freshnessMetric.setAttribute("unit", "ms"); freshnessMetric.setAttribute("precision", "1");
+fixture.querySelector(".metrics")!.append(freshnessMetric);
+const freshness = mountFreshnessIndicator(freshnessMetric);
+for (const [atMs, ages] of [[1000, [10, 40, 30]], [1100, [20, 60, 50]]] as const) {
+  freshness.update(summarizeFreshness(ages.map((ageMs, i) => ({ id: i, group: i === 2 ? 1 : 0, generation: i,
+    status: "Fresh", ageMs, thresholdMs: 100, intervalMs: 16 })), atMs), capabilities);
+}
 const requests: Request[] = [], session = new Session(), automatic = new Set<number>();
 session.receive({ tag: 2, version: 1 }); session.receive({ tag: 3, capabilities });
 capabilities.groups.forEach((_, group) => {
@@ -69,6 +80,6 @@ const series = [{ key: "example", color: groupColor(0), samples: [{ at: 0, value
 summary.update(series);
 layout.append(graph, summary); fixture.append(layout);
 graph.update(series, 10000, 10000);
-const state = { metric, chart, editor, requests, session, graph, summary, series };
+const state = { metric, chart, legend, editor, requests, session, graph, summary, series };
 declare global { interface Window { componentsFixture: typeof state } }
 window.componentsFixture = state;

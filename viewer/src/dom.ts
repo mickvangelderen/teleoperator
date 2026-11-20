@@ -10,3 +10,16 @@ export function setAttribute(element: Element, name: string, value: string | nul
   if (value === null) element.removeAttribute(name);
   else element.setAttribute(name, value);
 }
+
+// Keep selected text as a readable snapshot while the rest of the UI stays live.
+// Even assigning Text.data on the same node resets the browser's selection offsets.
+export function setSelectableText(element: Element, value: string) {
+  if (element.textContent === value) return;
+  const selection = element.ownerDocument.getSelection();
+  if (selection && !selection.isCollapsed) {
+    for (let i = 0; i < selection.rangeCount; i++) {
+      if (selection.getRangeAt(i).intersectsNode(element)) return;
+    }
+  }
+  setText(element, value);
+}

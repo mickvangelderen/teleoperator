@@ -10,8 +10,10 @@ export type GroupMetric = {
   arrival: number; requested?: number; age?: number;
   medianArrival?: number; medianAge?: number;
 };
-const mean = (values: (number | undefined)[]) => values.length && values.every(v => v !== undefined)
-  ? (values as number[]).reduce((sum, value) => sum + value, 0) / values.length : undefined;
+const mean = (values: (number | undefined)[]) => {
+  const available = values.filter((value): value is number => value !== undefined && Number.isFinite(value));
+  return available.length ? available.reduce((sum, value) => sum + value, 0) / available.length : undefined;
+};
 
 // One observation per render tick and acquisition group, independent of sample count.
 export class GroupMetrics {

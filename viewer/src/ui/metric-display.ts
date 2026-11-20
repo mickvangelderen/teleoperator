@@ -1,5 +1,5 @@
 import "./metric-display.css";
-import { setText } from "../dom";
+import { setSelectableText } from "../dom";
 import { formatMeasurement } from "./format";
 
 export class MetricDisplay extends HTMLElement {
@@ -22,7 +22,7 @@ export class MetricDisplay extends HTMLElement {
 
   update(value: number | undefined) {
     this.connectedCallback();
-    setText(this.valueElement!, formatMeasurement(value, this.getAttribute("unit") ?? "", Number(this.getAttribute("precision") ?? 2)));
+    setSelectableText(this.valueElement!, formatMeasurement(value, this.getAttribute("unit") ?? "", Number(this.getAttribute("precision") ?? 2)));
   }
 }
 customElements.define("viewer-metric", MetricDisplay);

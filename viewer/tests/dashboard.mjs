@@ -24,6 +24,7 @@ try {
     await pause(50);
   }
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE ?? "/opt/google/chrome/chrome", headless: true });
+  await mkdir(fileURLToPath(new URL("../../.artifacts/viewer/dashboard/", import.meta.url)), { recursive: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.addInitScript(() => {
@@ -105,10 +106,11 @@ try {
   const ageColors = await page.locator("#age-chart path").evaluateAll(lines => lines.map(e => e.getAttribute("stroke")));
   assert.equal(new Set(ageColors).size, 2);
   assert.deepEqual(ageColors, (await page.locator(".arrival-actual-line").evaluateAll(lines => lines.map(e => e.getAttribute("stroke")))).slice(0, 2));
-  await page.locator("#age-chart").focus();
+  await page.locator("#age-metric").focus();
   assert.equal(await page.locator("#age-chart-tooltip").isVisible(), true);
-  assert.match(await page.locator("#age-chart-tooltip").textContent(), /mean of 2 s group medians/);
+  assert.match(await page.locator("#age-chart-tooltip").textContent(), /mean of available 2 s group medians/);
   await page.keyboard.press("Escape");
+  await page.locator("header #connect").focus();
   const pulse = await page.evaluate(async () => {
     const { GroupMetrics } = await import("/src/group-metrics.ts");
     const update = GroupMetrics.prototype.update, observed = [];
@@ -139,20 +141,48 @@ try {
   assert.ok(parseFloat(await page.locator("#sample-age").textContent()) < 100, "A brief group spike does not replace the headline median");
   assert.ok(await page.locator("#age-chart path").first().evaluate(el => /[ML][^,]+,4\.00/.test(el.getAttribute("d"))), "Raw age trace retains the spike");
   await page.evaluate(() => { window.dashboardFixture.ages[0] = 20; window.dashboardFixture.paused = true; });
-  await page.waitForFunction(() => document.querySelector("#sample-age").textContent === "—");
+  await page.waitForFunction(() => document.querySelector('#age-chart-tooltip [data-group="1"] .group-median').textContent === "—");
+  const available = await page.evaluate(() => ({
+    headline: document.querySelector("#sample-age").textContent,
+    known: document.querySelector('#age-chart-tooltip [data-group="0"] .group-median').textContent,
+    missing: document.querySelector('#age-chart-tooltip [data-group="1"] .group-note').textContent,
+  }));
+  assert.equal(available.headline, available.known, "One missing group does not hide the known group median");
+  assert.equal(available.missing, "Unavailable");
   assert.ok((await page.locator("#age-chart path").first().getAttribute("d")).includes("L"), "Known group trace remains visible");
-  await page.evaluate(() => { window.dashboardFixture.paused = false; });
+  await page.locator("#age-metric .metric-label").hover();
+  assert.equal(await page.locator("#age-chart-tooltip").isVisible(), true);
+  assert.match(await page.locator('#age-chart-tooltip [data-group="0"] .group-label').textContent(), /Inputs/);
+  await page.locator("#age-chart-tooltip").hover();
+  assert.equal(await page.locator("#age-chart-tooltip").isVisible(), true);
+  await page.screenshot({ path: fileURLToPath(new URL("../../.artifacts/viewer/dashboard/available-median-tooltip.png", import.meta.url)) });
+  await page.evaluate(() => { window.dashboardFixture.ages[0] = -60; });
+  await page.waitForFunction(() => parseFloat(document.querySelector("#sample-age").textContent) < 0);
+  await page.evaluate(() => { window.dashboardFixture.paused = false; window.dashboardFixture.ages[0] = 20; });
   await page.waitForFunction(() => document.querySelector("#sample-age").textContent.endsWith(" ms"));
 
   const screenshots = fileURLToPath(new URL("../../.artifacts/viewer/dashboard/", import.meta.url));
   await mkdir(screenshots, { recursive: true });
-  for (const width of [1440, 800, 390, 320]) {
+  for (const width of [1440, 820, 800, 390, 320]) {
     await page.setViewportSize({ width, height: 1000 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `No horizontal overflow at ${width}`);
     const controls = await page.locator("header .brand, header #choose-operator, header #status, header #connect").evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return { x: r.x, right: r.right, y: r.y, bottom: r.bottom }; }));
     assert.ok(controls.every(r => r.x >= 0 && r.right <= width), `Header controls fit at ${width}`);
     const header = await page.locator("header").boundingBox(), metrics = await page.locator(".metrics").boundingBox();
     assert.ok(metrics.y - (header.y + header.height) < 75, "No unused hero spacing");
+    for (const metric of await page.locator(".metrics viewer-metric").all()) {
+      await page.mouse.move(0, 0); await page.locator("header #connect").focus();
+      await metric.locator(".metric-label").hover();
+      const tooltip = metric.locator('[role="tooltip"]');
+      assert.equal(await tooltip.isVisible(), true, "Every dashboard label opens its tooltip");
+      const bounds = await tooltip.boundingBox();
+      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width, `Tooltip fits ${width}px: ${await metric.getAttribute("id")} at ${JSON.stringify(bounds)}`);
+      await tooltip.hover(); assert.equal(await tooltip.isVisible(), true, "Pointer can enter every tooltip");
+      await page.mouse.move(0, 0); await metric.focus();
+      assert.equal(await tooltip.isVisible(), true, "Every dashboard tile supports keyboard focus");
+      await page.keyboard.press("Escape"); assert.equal(await tooltip.isVisible(), false);
+    }
+    await page.locator("header #connect").focus(); await page.mouse.move(0, 0);
     await page.screenshot({ path: `${screenshots}${width}.png` });
   }
   await page.locator("header #connect").click();

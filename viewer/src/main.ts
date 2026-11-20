@@ -18,6 +18,7 @@ import { setAttribute, setText } from "./dom";
 import { Visualization } from "./visualization";
 import { RollingRate, TwoSecondMedian } from "./statistics";
 import { GroupMetrics } from "./group-metrics";
+import { groupLabel } from "./group-name";
 import { mountFreshnessIndicator } from "./freshness-view";
 import { groupColor, mountGroupLegend, mountSparkline, neutralColor } from "./sparkline";
 
@@ -113,11 +114,11 @@ let frame = requestAnimationFrame(animate);
 const performancePanel = mountPerformancePanel(element("performance"));
 const freshnessIndicator = mountFreshnessIndicator(element<MetricDisplay>("freshness"));
 const arrivalChart = mountSparkline(element("arrival-metric"), "arrival-chart", "Message arrivals per second by group.\nHeadline: mean of 2 s group medians, continuous dynamic groups only.\nSolid: actual. Dashed: requested.");
-const arrivalGroups = mountGroupLegend(arrivalChart.tooltip);
-const latencyChart = mountSparkline(element("latency-metric"), "latency-chart", "Estimated one-way latency.");
-const frameChart = mountSparkline(element("frame-metric"), "frame-chart", "Frames rendered per second.");
-const ageChart = mountSparkline(element("age-metric"), "age-chart", "Age at frame consumption by continuous dynamic group.\nHeadline: mean of 2 s group medians; unknown if any group is missing.\nNegative means the actual device target is ahead.");
-const ageGroups = mountGroupLegend(ageChart.tooltip);
+const arrivalGroups = mountGroupLegend(arrivalChart.tooltip, "Hz");
+const latencyChart = mountSparkline(element("latency-metric"), "latency-chart", "Estimated one-way latency.\nHeadline: 2 s median.");
+const frameChart = mountSparkline(element("frame-metric"), "frame-chart", "Frames rendered per second.\nHeadline: 2 s median.");
+const ageChart = mountSparkline(element("age-metric"), "age-chart", "Age at frame consumption by continuous dynamic group.\nHeadline: mean of available 2 s group medians, equally weighted.\nUnavailable groups are excluded.\nNegative means the actual device target is ahead.");
+const ageGroups = mountGroupLegend(ageChart.tooltip, "ms", 2);
 let metricSession: Session | undefined;
 void import("./spatial").then(({ SpatialView }) => {
   spatial = new SpatialView(element("poses"), setGraphicsStatus);
@@ -133,7 +134,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     for (const chart of [freshnessIndicator, arrivalChart, latencyChart, ageChart]) chart.reset();
     latencyMedian.reset();
   }
-  freshnessIndicator.update(state.freshness);
+  freshnessIndicator.update(state.freshness, state.session?.capabilities);
   text("graphics-status", graphicsStatus);
   if (recording) {
     const status = element("recording-status");
@@ -168,14 +169,14 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   const received = subscriptions.filter(s => s.arrivedAt !== undefined);
   const metrics = groupMetrics.update(session, now);
   element<MetricDisplay>("arrival-metric").update(metrics.arrival);
-  arrivalGroups(metrics.groups);
+  arrivalGroups(metrics.groups.map(g => ({ ...g, label: groupLabel(session?.capabilities, g.group), value: g.medianArrival })));
   arrivalChart.update(metrics.groups.flatMap(group => [
     ...group.requested === undefined ? [] : [{ key: `${group.key}:requested`, value: group.requested, color: groupColor(group.group), dashed: true, className: "arrival-requested-line" }],
     { key: `${group.key}:actual`, value: group.arrival, color: groupColor(group.group), className: "arrival-actual-line" },
   ]), now);
   element<MetricDisplay>("age-metric").update(metrics.age);
   const ageMetrics = metrics.groups.filter(group => group.continuous);
-  ageGroups(ageMetrics);
+  ageGroups(ageMetrics.map(g => ({ ...g, label: groupLabel(session?.capabilities, g.group), value: g.medianAge })));
   ageChart.update(ageMetrics.map(group => ({ key: group.key, value: group.age, color: groupColor(group.group), peak: true })), now);
   const latency = session?.latestNetworkLatency(now);
   const displayedLatency = latencyMedian.update(latency, now);

@@ -30,14 +30,7 @@ export function sameDraft(a: SubscriptionDraft, b: SubscriptionDraft) {
 }
 export const dirtySubscription = (entry: EditorSubscription) => !sameDraft(entry.draft, entry.applied);
 
-export function groupName(c: Capabilities, group: number) {
-  if (restGroup(c, group)) return "Rest skeleton";
-  const descriptors = c.descriptors.filter(d => d.group === group);
-  if (descriptors.some(d => d.id.startsWith("/body/"))) return "Body tracking";
-  if (descriptors.some(d => d.kind === 10)) return "Poses";
-  if (descriptors.some(d => d.kind >= 2 && d.kind <= 9)) return "Inputs";
-  return "Samples";
-}
+export { groupName } from "./group-name";
 
 function descriptorIds(c: Capabilities) {
   return new Map(c.descriptors.map((d, i) => [d.id, i]));
