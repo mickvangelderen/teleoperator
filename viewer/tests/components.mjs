@@ -81,7 +81,7 @@ try {
   await page.mouse.move(0, 0);
 
   assert.deepEqual(await page.locator("#freshness-chart-tooltip .group-median").allTextContents(), ["50.0 ms", "40.0 ms"], "Freshness exposes per-group medians, using the worst member of each group");
-  assert.equal(await page.locator("#freshness-example strong").first().textContent(), "50.0 ms", "Existing worst-stream freshness headline is unchanged");
+  assert.equal(await page.locator("#freshness-example strong").first().textContent(), "50.0 ms", "Freshness headline is the median of the oldest used sample");
 
   // All native controls of a given density share typography, border and height.
   const controls = await page.evaluate(() => ["default", "compact"].map(size => {

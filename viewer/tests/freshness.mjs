@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 export async function checkFreshness(page, output) {
   await page.waitForFunction(() => document.querySelector("#freshness").dataset.status === "Fresh");
   await page.waitForFunction(() => document.querySelector(".freshness-age-line").getAttribute("d").includes("L"));
-  const threshold = await page.locator("#freshness-threshold").textContent();
-  assert.match(threshold, /^Late above \d+\.\d ms$/);
+  const threshold = await page.locator("#freshness-delivery").textContent();
+  assert.match(threshold, /^Delivery: fresh · \d+\.\d ms · late above \d+\.\d ms$/);
   assert.equal(await page.locator("#freshness-chart > :not(path)").count(), 0, "The inline graph has no axes or labels");
   assert.equal(await page.locator(".metric").count(), 5);
   assert.equal(await page.locator(".metric-chart").count(), 5);
@@ -13,9 +13,9 @@ export async function checkFreshness(page, output) {
   assert.equal(await page.locator(".metric").last().getAttribute("id"), "frame-metric");
   assert.doesNotMatch(await page.locator(".metrics").innerText(), /median|rolling|one-way|Late above|Requested|\bFresh\b/);
   assert.equal(await page.locator("#freshness-status, #freshness .status-dot, #requested-rate").count(), 0);
-  assert.equal(await page.locator("#freshness-threshold").isVisible(), false);
+  assert.equal(await page.locator("#freshness-delivery").isVisible(), false);
   await page.locator("#freshness-chart").hover();
-  assert.equal(await page.locator("#freshness-threshold").isVisible(), true);
+  assert.equal(await page.locator("#freshness-delivery").isVisible(), true);
   assert.match(await page.locator("#freshness-chart-tooltip").textContent(), /2 s medians/);
   assert.ok(await page.locator("#freshness-chart-tooltip .group-median").count() > 0);
   await page.locator("#arrival-chart").hover();
@@ -79,7 +79,7 @@ export async function checkFreshness(page, output) {
     await page.waitForFunction(() => document.querySelector("#freshness").dataset.status === "Stalled" && document.querySelector("#freshness-age").textContent === "—");
     assert.equal(await page.locator("#status").textContent(), "Connected");
     assert.deepEqual(await page.evaluate(() => window.testFreshness.streams.map(s => ({ id: s.id, threshold: s.thresholdMs }))), frozen, "Silence must not relax the underlying freshness threshold");
-    assert.notEqual(await page.locator(".freshness-age-line").first().getAttribute("d"), await page.locator(".freshness-threshold-line").first().getAttribute("d"));
+    assert.match(await page.locator("#freshness-delivery").textContent(), /^Delivery: no new samples · — · late above \d+\.\d ms$/, "Delivery threshold stays explicitly separate from sample freshness");
     assert.deepEqual(await page.locator(".freshness-age-line").evaluateAll(lines => lines.map(e => e.getAttribute("stroke"))), colors.freshness, "Lateness does not change group identity");
     await page.waitForFunction(() => parseFloat(document.querySelector("#arrival-rate").textContent) === 0);
     assert.ok(parseFloat(await page.locator("#frame-rate").textContent()) > 0, "Rendering continues during a delivery pause");

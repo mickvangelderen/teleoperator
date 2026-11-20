@@ -42,7 +42,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <div id="error" class="status-message" data-tone="error" role="alert" hidden></div>
     <p id="recording-status" class="recording-status" role="status" hidden></p>
     <section class="metrics" aria-label="Viewer metrics">
-      <viewer-metric id="freshness" label="FRESHNESS" value-id="freshness-age" unit="ms" precision="1"></viewer-metric>
+      <viewer-metric id="freshness" label="SAMPLE FRESHNESS" value-id="freshness-age" unit="ms" precision="1"></viewer-metric>
       <viewer-metric id="arrival-metric" label="ARRIVAL RATE" value-id="arrival-rate" unit="Hz" precision="1"></viewer-metric>
       <viewer-metric id="latency-metric" label="NETWORK LATENCY" value-id="estimated-latency" unit="ms" precision="2"></viewer-metric>
       <viewer-metric id="age-metric" label="SAMPLE AGE" value-id="sample-age" unit="ms" precision="2"></viewer-metric>
@@ -122,7 +122,7 @@ const arrivalChart = mountSparkline(element("arrival-metric"), "arrival-chart", 
 const arrivalGroups = mountGroupLegend(arrivalChart.tooltip, "Hz");
 const latencyChart = mountSparkline(element("latency-metric"), "latency-chart", "Estimated one-way latency.\nHeadline: 2 s median.");
 const frameChart = mountSparkline(element("frame-metric"), "frame-chart", "Frames rendered per second.\nHeadline: 2 s median.");
-const ageChart = mountSparkline(element("age-metric"), "age-chart", "Age at frame consumption by continuous dynamic group.\nHeadline: mean of available 2 s group medians, equally weighted.\nUnavailable groups are excluded.\nNegative means the actual device target is ahead.");
+const ageChart = mountSparkline(element("age-metric"), "age-chart", "Sample time (actual prediction target) → estimated effect time.\nEffect time = frame computation time + render-to-photon delay.\nHeadline: mean of available 2 s group medians, equally weighted.\nUnavailable groups are excluded.\nMissing actual sample times stay unavailable. Negative means the sample time is ahead of the estimated effect.");
 const ageGroups = mountGroupLegend(ageChart.tooltip, "ms", 2);
 let metricSession: Session | undefined;
 void import("./spatial").then(({ SpatialView }) => {
@@ -139,7 +139,6 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
     for (const chart of [freshnessIndicator, arrivalChart, latencyChart, ageChart]) chart.reset();
     latencyMedian.reset();
   }
-  freshnessIndicator.update(state.freshness, state.session?.capabilities);
   text("graphics-status", graphicsStatus);
   setAttribute(element("graphics-status"), "hidden", graphicsStatus ? null : "");
   if (recording) {
@@ -171,7 +170,8 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
       : busy ? "Waiting for operator capabilities…" : "Connect to discover selectable samples.");
   }
   if (session?.capabilities && mountedSession !== session) mountCapabilities(session);
-  const metrics = groupMetrics.update(session, now);
+  const metrics = groupMetrics.update(session, now, renderToPhotonMs);
+  freshnessIndicator.update(metrics.groups, state.freshness, session?.capabilities);
   element<MetricDisplay>("arrival-metric").update(metrics.arrival);
   arrivalGroups(metrics.groups.map(g => ({ ...g, label: groupLabel(session?.capabilities, g.group), value: g.medianArrival })));
   arrivalChart.update(metrics.groups.flatMap(group => [

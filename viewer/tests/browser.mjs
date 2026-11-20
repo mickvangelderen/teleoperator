@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import { isolateSyntheticBrowser } from "./synthetic-browser.mjs";
 import { checkMetricMedians, checkFrameRefresh, checkFrameRate } from "./frame-refresh.mjs";
 import { checkFreshness } from "./freshness.mjs";
 import { checkProtocol } from "./protocol-browser.mjs";
@@ -24,6 +25,7 @@ const output = fileURLToPath(
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ executablePath, headless: true });
 try {
+  const isolation = await isolateSyntheticBrowser(browser, url);
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1120 },
     deviceScaleFactor: 1,
@@ -64,7 +66,10 @@ try {
   await page.waitForFunction(() => document.querySelector("#poses").dataset.poseCount === "5" && document.querySelector("#poses").dataset.bodyJoints === "70");
   assert.match(await page.locator("#sample-summary").textContent(), /545 samples/);
   await page.waitForFunction(() => parseFloat(document.querySelector("#arrival-rate").textContent) > 40);
-  await page.waitForFunction(() => document.querySelector("#estimated-latency").textContent.endsWith(" ms") && document.querySelector("#age-chart path")?.getAttribute("d")?.includes("L"));
+  await page.waitForFunction(() => document.querySelector("#estimated-latency").textContent.endsWith(" ms") && [...document.querySelectorAll("#age-chart path")].some(path => path.getAttribute("d")?.includes("L")));
+  assert.deepEqual(await page.locator("#age-chart path").evaluateAll(paths => paths.map(path => path.getAttribute("d").includes("L"))), [true, false, true], "Synthetic poses/body have actual represented timestamps; input traces remain gaps");
+  assert.equal(await page.locator('#age-chart-tooltip [data-group="1"] .group-median').textContent(), "—");
+  assert.equal(await page.locator("#freshness .metric-label").textContent(), "SAMPLE FRESHNESS");
   assert.equal(await page.locator(".metric").filter({ has: page.locator("#sample-age") }).locator(".metric-label").textContent(), "SAMPLE AGE");
   assert.equal(await page.locator(".metric").filter({ has: page.locator("#estimated-latency") }).locator(".metric-label").textContent(), "NETWORK LATENCY");
   assert.equal(await page.getByRole("heading", { name: "Transport details" }).count(), 0);
@@ -173,6 +178,7 @@ try {
   assert.match(await page.locator("#graphics-status").textContent(), /could not load/);
   assert.equal(await page.getByRole("dialog").getByRole("button", { name: "Connect" }).isEnabled(), true);
   assert.deepEqual(errors, []);
+  isolation.assertIsolated();
   console.log(
     `PASS: v1 WebRTC negotiation/capabilities, all device poses/inputs/70 joints, reliable/unreliable delivery, clock estimates, change-driven rest retention and replacement, f64/rate/selection replacement, rejection, individual joint rendering, unsubscribe/resubscribe, fresh reconnects, WebGL/orbit, mobile layout, signaling and asset failures. Captures: ${output}`,
   );

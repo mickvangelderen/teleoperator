@@ -48,12 +48,13 @@ const capabilities: Capabilities = {
   ]),
 };
 const freshnessMetric = new MetricDisplay();
-freshnessMetric.id = "freshness-example"; freshnessMetric.setAttribute("label", "FRESHNESS");
+freshnessMetric.id = "freshness-example"; freshnessMetric.setAttribute("label", "SAMPLE FRESHNESS");
 freshnessMetric.setAttribute("unit", "ms"); freshnessMetric.setAttribute("precision", "1");
 fixture.querySelector(".metrics")!.append(freshnessMetric);
 const freshness = mountFreshnessIndicator(freshnessMetric);
 for (const [atMs, ages] of [[1000, [10, 40, 30]], [1100, [20, 60, 50]]] as const) {
-  freshness.update(summarizeFreshness(ages.map((ageMs, i) => ({ id: i, group: i === 2 ? 1 : 0, generation: i,
+  freshness.update([0, 1].map(group => ({ group, key: String(group), continuous: true, onChange: false, arrival: 60,
+    freshness: ages[group + 1], medianFreshness: group === 0 ? (atMs === 1000 ? 40 : 50) : (atMs === 1000 ? 30 : 40) })), summarizeFreshness(ages.map((ageMs, i) => ({ id: i, group: i === 2 ? 1 : 0, generation: i,
     status: "Fresh", ageMs, thresholdMs: 100, intervalMs: 16 })), atMs), capabilities);
 }
 const requests: Request[] = [], session = new Session(), automatic = new Set<number>();

@@ -158,3 +158,48 @@ test("metric labels reuse display group names and retain an unambiguous fallback
   assert.equal(groupLabel(undefined, 7), "Group 7");
   assert.equal(groupLabel({ groups: [60], skeletons: [], descriptors: [] }, 0), "Group 0");
 });
+
+
+test("frame freshness and effect age use distinct endpoints with the selected sample's real times", () => {
+  const s = session(); subscribe(s, 1, 0);
+  // A large server epoch detects conversion to Number before subtracting clocks.
+  const epoch = 9_007_199_254_740_993n;
+  setClock(s, { offset: epoch, delay: 100_000n, at: 0 });
+  sample(s, 1, 100, 115, 110);
+  const snapshot = s.active.get(1)!.bundles[0]!;
+  snapshot.packet.timestamp += epoch; snapshot.packet.predictedFor! += epoch;
+  const measure = (now: number, photon = 0) => new GroupMetrics().update(s, now, photon).groups[0];
+  for (const [photon, age] of [[0, 10], [5, 15], [30, 40]]) {
+    s.consume(120, photon);
+    const result = measure(120, photon);
+    assert.equal(result.freshness, 20, "Acquisition-to-compute never includes photon delay");
+    assert.equal(result.age, age, "Photon delay is added exactly once to represented-time-to-effect");
+  }
+  assert.equal(measure(105, 0).age, -5, "Actual represented time ahead of compute remains signed");
+  assert.equal(measure(125, 5).freshness, 25, "Genuine repeated use gets older");
+  assert.equal(measure(125, 5).age, 20);
+  s.active.get(1)!.bundles[0]!.arrivedAt = 600;
+  assert.equal(measure(616).freshness, undefined, "Repeated delivery cannot refresh an acquisition no longer used");
+  assert.equal(measure(616).age, undefined, "Idle time after the stale cutoff is not frame use");
+  snapshot.packet.predictedFor = null;
+  assert.equal(measure(120, 5).freshness, 20, "Unknown prediction does not hide a known acquisition");
+  assert.equal(measure(120, 5).age, undefined, "A requested horizon cannot invent represented time");
+  setClock(s, undefined);
+  assert.equal(measure(120, 5).freshness, undefined);
+  assert.equal(measure(120, 5).age, undefined);
+});
+
+test("both intervals use the selected prediction and conservatively retain each endpoint within a group", () => {
+  const s = session(), first = subscribe(s, 1, 0); subscribe(s, 2, 0);
+  sample(s, 1, 100, 115, 110);
+  const used = first.bundles[0]!;
+  sample(s, 1, 115, 119, 150);
+  first.bundles[0]!.consumed = used;
+  sample(s, 2, 105, 117, 108);
+  const result = new GroupMetrics().update(s, 120, 5).groups[0];
+  assert.equal(result.freshness, 20, "The selected older acquisition, not newest receipt, starts freshness");
+  assert.equal(result.age, 17, "Oldest represented time can come from another consumed subscription");
+  assert.equal(result.medianFreshness, 20);
+  assert.equal(first.bundles[0]!.packet.timestamp, ns(115), "Measuring does not rewrite acquisitions");
+  assert.equal(used.packet.timestamp, ns(100));
+});

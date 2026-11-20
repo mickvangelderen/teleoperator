@@ -4,11 +4,11 @@ import type { Session, Subscription } from "./session";
 import { TwoSecondMedian } from "./statistics";
 import { staleBundle } from "./tracking-view";
 
-type History = { membership: string; arrival: TwoSecondMedian; age: TwoSecondMedian };
+type History = { membership: string; arrival: TwoSecondMedian; age: TwoSecondMedian; freshness: TwoSecondMedian };
 export type GroupMetric = {
   group: number; key: string; continuous: boolean; onChange: boolean;
-  arrival: number; requested?: number; age?: number;
-  medianArrival?: number; medianAge?: number;
+  arrival: number; requested?: number; age?: number; freshness?: number;
+  medianArrival?: number; medianAge?: number; medianFreshness?: number;
 };
 const mean = (values: (number | undefined)[]) => {
   const available = values.filter((value): value is number => value !== undefined && Number.isFinite(value));
@@ -20,7 +20,7 @@ export class GroupMetrics {
   private session?: Session;
   private histories = new Map<number, History>();
 
-  update(session: Session | undefined, now: number) {
+  update(session: Session | undefined, now: number, renderToPhotonMs = 0) {
     if (session !== this.session) { this.histories.clear(); this.session = session; }
     const subscriptions = new Map<number, Subscription[]>();
     for (const sub of session?.active.values() ?? []) {
@@ -34,25 +34,34 @@ export class GroupMetrics {
       const membership = members.map(s => `${s.request.id}:${s.generation}`).join(",");
       let history = this.histories.get(group);
       if (!history || history.membership !== membership) {
-        history = { membership, arrival: new TwoSecondMedian(), age: new TwoSecondMedian() };
+        history = { membership, arrival: new TwoSecondMedian(), age: new TwoSecondMedian(), freshness: new TwoSecondMedian() };
         this.histories.set(group, history);
       }
       const timed = members.filter(s => !changedOnly(s.request));
       const continuous = timed.length > 0 && !restGroup(session!.capabilities!, group);
       // This counts messages, including repeated acquisitions, not source samples.
       const arrival = members.reduce((sum, s) => sum + s.arrivals.filter(at => at > now - 1000 && at <= now).length, 0);
-      let oldest: bigint | undefined, missing = false;
+      let acquired: bigint | undefined, represented: bigint | undefined;
+      let missing = false, missingTarget = false;
       if (continuous) for (const sub of timed) {
+        // Use the same prediction selection and stale cutoff as the frame's
+        // values. Reusing a current snapshot advances these intervals; an idle
+        // period after it stops being used must not masquerade as sample use.
         const snapshot = selectedBundle(sub, 0);
         if (!snapshot || staleBundle(sub, 0, now)) { missing = true; continue; }
-        const represented = snapshot.packet.predictedFor;
-        if (represented === null) { missing = true; continue; }
-        if (oldest === undefined || represented < oldest) oldest = represented;
+        const packet = snapshot.packet;
+        if (acquired === undefined || packet.timestamp < acquired) acquired = packet.timestamp;
+        if (packet.predictedFor === null) missingTarget = true;
+        else if (represented === undefined || packet.predictedFor < represented) represented = packet.predictedFor;
       }
-      const age = !missing && oldest !== undefined ? session!.sampleAge(oldest, now) : undefined;
+      // Acquisition-to-compute and represented-time-to-effect have different
+      // endpoints. Only the latter includes the render-to-photon estimate.
+      const freshness = !missing && acquired !== undefined ? session!.sampleAge(acquired, now) : undefined;
+      const age = !missing && !missingTarget && represented !== undefined ? session!.sampleAge(represented, now, renderToPhotonMs) : undefined;
       groups.push({ group, key: `${group}:${membership}`, continuous, onChange: timed.length === 0,
         arrival, requested: timed.length ? timed.reduce((sum, s) => sum + publicationRate(s.request), 0) : undefined,
-        age, medianArrival: history.arrival.update(arrival, now), medianAge: history.age.update(age, now) });
+        age, freshness, medianArrival: history.arrival.update(arrival, now), medianAge: history.age.update(age, now),
+        medianFreshness: history.freshness.update(freshness, now) });
     }
     const continuous = groups.filter(group => group.continuous);
     return { groups, arrival: mean(continuous.map(g => g.medianArrival)), age: mean(continuous.map(g => g.medianAge)) };

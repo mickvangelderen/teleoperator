@@ -38,7 +38,7 @@ test("delivery time stays fixed until the next acquisition or a stall", () => {
   assert.equal(s.freshness(1410).status, "Fresh");
 });
 
-test("finished pose delivery and represented image age use independent endpoints", () => {
+test("delivery health, frame freshness and represented image age use independent endpoints", () => {
   const s = session(), origin = 9_007_199_254_740_993n;
   setClock(s, { offset: origin, delay: 2_000_000n, at: 0 });
   const bytes = Buffer.alloc(21);
@@ -52,11 +52,13 @@ test("finished pose delivery and represented image age use independent endpoints
   const metrics = new GroupMetrics();
   assert.equal(s.freshness(180).worst?.ageMs, 3);
   assert.equal(s.freshness(180).status, "Fresh");
-  assert.equal(metrics.update(s, 180).groups[0].age, 80);
+  assert.equal(metrics.update(s, 180, 20).groups[0].age, 100);
+  assert.equal(metrics.update(s, 180, 20).groups[0].freshness, 6);
   assert.ok(s.tracking(bytes, 195, 1, () => 197));
   s.consume(200);
   assert.equal(s.freshness(200).worst?.ageMs, 3);
   assert.equal(metrics.update(s, 200).groups[0].age, 100);
+  assert.equal(metrics.update(s, 200).groups[0].freshness, 26);
 });
 
 test("a queue of old packets cannot recover freshness or raise its own threshold", () => {

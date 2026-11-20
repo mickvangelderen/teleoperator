@@ -63,6 +63,9 @@ try {
   await page.evaluate(async () => {
     const { Connection } = await import("/src/connection.ts");
     const { timing } = await import("/src/protocol.ts");
+    const { GroupMetrics } = await import("/src/group-metrics.ts");
+    const measure = GroupMetrics.prototype.update;
+    GroupMetrics.prototype.update = function (...args) { return window.frameMetrics = measure.apply(this, args); };
     const connect = Connection.prototype.connect, close = Connection.prototype.close;
     Connection.prototype.connect = async function () {
       const session = this.session;
@@ -75,14 +78,14 @@ try {
         session.receive({ tag: 5, id: group + 1 });
       }
       let sequence = 0;
-      const fixture = window.dashboardFixture = { session, ages: [20, 80], paused: false };
+      const fixture = window.dashboardFixture = { session, ages: [20, 80], acquiredAges: [0, 0], missingTargets: [false, false], paused: false };
       const publish = () => {
         const now = performance.now();
         for (const group of [0, 1]) {
           if (group === 1 && fixture.paused) continue;
           const bytes = new Uint8Array(25), view = new DataView(bytes.buffer);
-          view.setUint32(0, group + 1, true); view.setBigUint64(4, BigInt(Math.round(now * 1e6)), true);
-          view.setBigUint64(12, BigInt(Math.round((now - fixture.ages[group]) * 1e6)), true); view.setUint32(20, sequence, true); bytes[24] = 1;
+          view.setUint32(0, group + 1, true); view.setBigUint64(4, BigInt(Math.round((now - fixture.acquiredAges[group]) * 1e6)), true);
+          view.setBigUint64(12, fixture.missingTargets[group] ? 0xffffffffffffffffn : BigInt(Math.round((now - fixture.ages[group]) * 1e6)), true); view.setUint32(20, sequence, true); bytes[24] = 1;
           session.tracking(bytes, now);
           session.active.get(group + 1).arrivals = Array(group ? 20 : 60).fill(now);
         }
@@ -93,7 +96,7 @@ try {
       this.state.status = "Connected"; this.state.detail = "UI metric fixture"; this.update(this.state);
     };
     Connection.prototype.close = function () { clearInterval(this.fixtureTimer); close.call(this); };
-    window.restoreDashboard = () => { Connection.prototype.connect = connect; Connection.prototype.close = close; };
+    window.restoreDashboard = () => { Connection.prototype.connect = connect; Connection.prototype.close = close; GroupMetrics.prototype.update = measure; };
   });
   await dialog.getByRole("button", { name: "Connect" }).click();
   await page.waitForFunction(() => document.querySelector("#arrival-rate").textContent === "40.0 Hz");
@@ -111,6 +114,32 @@ try {
   assert.match(await page.locator("#age-chart-tooltip").textContent(), /mean of available 2 s group medians/);
   await page.keyboard.press("Escape");
   await page.locator("header #connect").focus();
+  assert.equal(await page.locator("#freshness .metric-label").textContent(), "SAMPLE FRESHNESS");
+  await page.evaluate(() => {
+    window.dashboardFixture.acquiredAges = [20, 20]; window.dashboardFixture.ages = [10, 10];
+  });
+  for (const delay of [5, 0, 30]) {
+    await page.locator("#render-to-photon").fill(String(delay));
+    await page.waitForFunction(delay => window.frameMetrics.groups.slice(0, 2).every(g => Math.abs(g.age - g.freshness - (delay - 10)) < 0.00001), delay);
+    await page.waitForTimeout(2100);
+    const values = await page.evaluate(() => ({ freshness: parseFloat(document.querySelector("#freshness-age").textContent), age: parseFloat(document.querySelector("#sample-age").textContent) }));
+    assert.ok(Math.abs(values.age - values.freshness - (delay - 10)) < 0.1, `Actual displayed endpoints differ only by represented offset and photon delay: ${JSON.stringify(values)}`);
+  }
+  await page.locator("#freshness .metric-label").hover();
+  assert.match(await page.locator("#freshness-chart-tooltip").textContent(), /acquisition → use for frame computation/);
+  assert.match(await page.locator("#freshness-chart-tooltip").textContent(), /No render-to-photon delay/);
+  await page.screenshot({ path: fileURLToPath(new URL("../../.artifacts/viewer/dashboard/sample-freshness-tooltip.png", import.meta.url)) });
+  await page.locator("#age-metric .metric-label").hover();
+  assert.match(await page.locator("#age-chart-tooltip").textContent(), /Effect time = frame computation time \+ render-to-photon delay/);
+  await page.screenshot({ path: fileURLToPath(new URL("../../.artifacts/viewer/dashboard/sample-age-tooltip.png", import.meta.url)) });
+  await page.evaluate(() => { window.dashboardFixture.missingTargets[1] = true; });
+  await page.waitForFunction(() => window.frameMetrics.groups[1].medianAge === undefined && Number.isFinite(window.frameMetrics.groups[1].medianFreshness));
+  assert.equal(await page.locator('#age-chart-tooltip [data-group="1"] .group-median').textContent(), "—");
+  assert.match(await page.locator('#freshness-chart-tooltip [data-group="1"] .group-median').textContent(), /ms$/);
+  await page.locator("#render-to-photon").fill("0");
+  await page.evaluate(() => { window.dashboardFixture.missingTargets = [false, false]; window.dashboardFixture.acquiredAges = [0, 0]; window.dashboardFixture.ages = [20, 80]; });
+  await page.waitForTimeout(2100);
+  await page.mouse.move(0, 0); await page.locator("header #connect").focus();
   const pulse = await page.evaluate(async () => {
     const { GroupMetrics } = await import("/src/group-metrics.ts");
     const update = GroupMetrics.prototype.update, observed = [];
@@ -222,7 +251,7 @@ try {
   await dialog.getByRole("button", { name: /Use default/ }).click();
   assert.equal(await dialog.getByLabel("Operator address").inputValue(), "http://127.0.0.1:1");
   assert.deepEqual(errors, []);
-  console.log("PASS: compact header/footer cleanup, keyboard/connection/error controls, 0 ms default, grouped age/arrival headlines and raw traces, missing-data behavior, 1440/800/390/320 px layouts");
+  console.log("PASS: compact header/footer cleanup, keyboard/connection/error controls, 0 ms default, distinct sample freshness/effect age endpoints and photon delay, grouped age/arrival headlines and raw traces, missing-data behavior, 1440/800/390/320 px layouts");
 } finally {
   try { await browser?.close(); } finally {
     if (server.exitCode === null && server.signalCode === null) server.kill("SIGTERM");
