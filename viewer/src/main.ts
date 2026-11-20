@@ -1,7 +1,7 @@
 import { Connection, initialState } from "./connection";
 import { mountOperatorChooser, operatorPickerMarkup } from "./operator-chooser";
 import { operatorOrigin } from "./operator-address";
-import { spatialFrames, staleBundle } from "./tracking-view";
+import { spatialFrames, staleBundle, trackingQuality } from "./tracking-view";
 import { spaceNames } from "./protocol";
 import type { Session } from "./session";
 import { selectedBundle } from "./session";
@@ -51,7 +51,9 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <section class="panel workspace">
       <p class="visualization-note status-message" role="status" hidden></p><div id="controller-view"></div><div id="sample-inspector"></div>
       <div class="viewport"><div id="poses"></div><div id="empty-state" class="empty-state"><span class="empty-icon">${icon("head")}</span><h3 id="workspace-title">Ready to connect</h3><p id="workspace-note">Connect to inspect the device’s tracking data.</p></div></div>
-      <div class="view-controls control-row"><div class="spatial-controls"><label>Skeleton pose <select id="skeleton-view"><option value="live">From operator</option><option value="rest">Rest pose</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Meta upper-body skin, when matching live and rest poses are available"><input id="show-body-mesh" type="checkbox" checked> Body mesh</label><label title="Green: tracked · Orange: untracked · Grey: unknown/rest · Red: late"><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label></div><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="0" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><div class="prediction-timing" aria-label="Prediction timing"><span id="prediction-offset-label">Prediction timing</span><span id="requested-prediction-offset" title="Requested offset from the publication slot to the desired device target. This does not establish actual prediction.">Requested: unavailable</span><span id="measured-prediction-offset" title="Actual device target minus acquisition time (predicted_for − acquired_at), when the source reports a target. Publication time is not supplied, so this is not measured publication-to-consumption delay.">Device target − acquisition: unavailable</span></div><span id="body-quality">Body tracking unavailable</span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span></div></div>
+      <div class="view-controls control-row"><div class="spatial-controls"><label>Skeleton pose <select id="skeleton-view"><option value="live">From operator</option><option value="rest">Rest pose</option></select></label><label>Reference frame <select id="reference-frame"><option value="source">Source frame</option><option value="body" title="Origin between the shoulders, with torso heading and gravity up.">Body (forward-facing)</option></select></label><label>View <select id="view-angle"><option value="iso">Perspective</option><option value="front">Front</option><option value="side">Side</option></select></label><label>Zoom <input id="view-zoom" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><label title="Meta upper-body skin, when matching live and rest poses are available"><input id="show-body-mesh" type="checkbox" checked> Body mesh</label><label><input id="show-joints" type="checkbox" checked> Joint overlay</label><label><input id="continuous-render" type="checkbox" checked> Continuous rendering</label></div><label>Render-to-photon <input id="render-to-photon" type="number" min="0" max="1000" step="any" value="0" required aria-label="Render-to-photon latency in milliseconds"> ms</label><div class="view-status"><span id="body-quality" hidden></span><span id="graphics-status" class="status-message" role="status">Loading 3D view…</span>
+        <ul class="tracking-legend" aria-label="Tracking quality">${Object.values(trackingQuality).map(q => `<li style="--swatch: ${q.color}">${q.label}</li>`).join("")}</ul>
+      </div></div>
     </section>
     <section class="panel subscriptions-panel"><span id="sample-summary" class="tag" hidden></span><p id="subscription-prompt" class="subscriptions-empty">Connect to discover selectable samples.</p><div id="subscriptions"></div></section>
     <section class="panel performance-panel" id="performance" aria-label="Performance profiling"></section>
@@ -73,6 +75,8 @@ let current = initialState();
 let spatial: SpatialView | undefined;
 let spatialKey = "";
 let spatialSession: Session | undefined;
+const referenceFrame = element<HTMLSelectElement>("reference-frame");
+let preferBodyFrame = false;
 let trackingView = spatialFrames(undefined, 0);
 let mountedSession: Session | undefined;
 let subscriptionEditor: SubscriptionEditor | undefined;
@@ -93,14 +97,15 @@ const animate = (frameTime: number) => {
   connection?.frame(frameTime, now, renderToPhotonMs);
   const session = current.session;
   const rest = element<HTMLSelectElement>("skeleton-view").value === "rest";
+  const bodyFacing = preferBodyFrame && !rest;
   const subscriptions = [...(session?.active.values() ?? [])];
   const overlappingGroups = new Set(subscriptions.map(s => s.request.group)).size < subscriptions.length;
   const lateGenerations = new Set(current.freshness.streams.filter(stream => stream.status === "Late" || stream.status === "Stalled").map(stream => stream.generation));
-  const key = `${[...lateGenerations]}:${rest}:${overlappingGroups ? session?.consumptionTime : ""}:` + subscriptions.map(s => `${s.generation}:${s.version}:` + s.bundles.map((_, i) => { const p = selectedBundle(s, i)?.packet; return `${p?.timestamp}:${p?.predictedFor}:${staleBundle(s, i, now)}`; }).join(",")).join(";");
+  const key = `${[...lateGenerations]}:${rest}:${bodyFacing}:${overlappingGroups ? session?.consumptionTime : ""}:` + subscriptions.map(s => `${s.generation}:${s.version}:` + s.bundles.map((_, i) => { const p = selectedBundle(s, i)?.packet; return `${p?.timestamp}:${p?.predictedFor}:${staleBundle(s, i, now)}`; }).join(",")).join(";");
   if (session !== spatialSession || key !== spatialKey) {
     spatialSession = session;
     spatialKey = key;
-    trackingView = spatialFrames(session, now, rest, lateGenerations);
+    trackingView = spatialFrames(session, now, rest, lateGenerations, bodyFacing);
   }
   const activeView = visualization.update(session, trackingView.values, now);
   if (activeView === "spatial") spatial?.update(trackingView.poses, trackingView.sources, !rest && (current.freshness.status === "Late" || current.freshness.status === "Stalled"), trackingView.body, trackingView.hierarchy, trackingView.bodyMesh);
@@ -136,6 +141,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   }
   freshnessIndicator.update(state.freshness, state.session?.capabilities);
   text("graphics-status", graphicsStatus);
+  setAttribute(element("graphics-status"), "hidden", graphicsStatus ? null : "");
   if (recording) {
     const status = element("recording-status");
     setAttribute(status, "hidden", null);
@@ -165,8 +171,6 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
       : busy ? "Waiting for operator capabilities…" : "Connect to discover selectable samples.");
   }
   if (session?.capabilities && mountedSession !== session) mountCapabilities(session);
-  const subscriptions = [...session?.active.values() ?? []];
-  const received = subscriptions.filter(s => s.arrivedAt !== undefined);
   const metrics = groupMetrics.update(session, now);
   element<MetricDisplay>("arrival-metric").update(metrics.arrival);
   arrivalGroups(metrics.groups.map(g => ({ ...g, label: groupLabel(session?.capabilities, g.group), value: g.medianArrival })));
@@ -186,20 +190,19 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   const displayedFps = frameRateMedian.update(fps, now);
   element<MetricDisplay>("frame-metric").update(displayedFps);
   frameChart.update([{ key: "frames", value: fps, color: neutralColor }], now);
-  const timing = received.find(s => s.packet?.predictedFor != null)
-    ?? subscriptions[0];
-  const prediction = timing?.packet, schedule = timing?.request;
-  text("prediction-offset-label", timing ? `Prediction timing · Group ${timing.request.group}` : "Prediction timing");
-  text("requested-prediction-offset", schedule ? `Requested: ${(Number(schedule.predictionOffset) / 1e6).toFixed(1)} ms` : "Requested: unavailable");
-  text("measured-prediction-offset", prediction?.predictedFor == null ? "Device target − acquisition: unavailable" : `Device target − acquisition: ${(Number(prediction.predictedFor - prediction.timestamp) / 1e6).toFixed(1)} ms`);
-  const visiblePoses = view.poses.poses.length + (view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0);
-  const visibleJoints = view.body.active ? view.body.poses.filter(p => p.flags & 2).length : 0;
-  setAttribute(element("empty-state"), "hidden", visiblePoses && !view.mixedSpaces ? "" : null);
-  text("workspace-title", view.mixedSpaces ? "Mixed reference spaces" : live ? "No current poses" : busy ? "Connecting to operator…" : state.status === "Error" ? "Operator disconnected" : "Ready to connect");
-  text("workspace-note", view.mixedSpaces ? "Choose the same reference space for pose samples to display them together. Numerical values remain available below." : live ? "Select pose samples and start publication. Select the associated validity and tracking samples to see component quality." : "Connect to inspect the device’s tracking data.");
-  const bodyQuality = `${visibleJoints} current body joints · ${view.mixedSpaces ? "mixed spaces; overlay hidden" : view.space ? view.space < 0 ? "skeleton rest frame" : spaceNames[view.space] : "no current frame"} · ${view.outdated.size ? "rest revision pending" : view.rest ? "advertised rest poses" : `${view.trackedJoints} reported tracked${view.confidence === undefined ? "" : ` · confidence ${(100 * view.confidence).toFixed(0)}%`}`}`;
+  const source = view.space && view.space > 0 ? spaceNames[view.space] : undefined;
+  const label = view.space !== undefined && view.space < 0 ? "Skeleton rest frame" : source === "local_floor" ? "Local floor" : source ? source[0].toUpperCase() + source.slice(1) : "Source frame";
+  setText(referenceFrame.options[0], label);
+  referenceFrame.disabled = view.rest;
+  const frameValue = preferBodyFrame && !view.rest ? "body" : "source";
+  if (referenceFrame.value !== frameValue) referenceFrame.value = frameValue;
+  const waitingForBody = live && view.missingReference;
+  setAttribute(element("empty-state"), "hidden", view.poses.poses.length || view.body.active ? "" : null);
+  text("workspace-title", view.mixedSpaces ? "Mixed reference spaces" : waitingForBody ? "Body reference unavailable" : live ? "No current poses" : busy ? "Connecting to operator…" : state.status === "Error" ? "Operator disconnected" : "Ready to connect");
+  text("workspace-note", view.mixedSpaces ? "Choose the same reference space for the pose samples." : waitingForBody ? "Use the source frame until both live shoulder positions give a valid horizontal heading." : live ? "Select pose samples and start publication. Select the associated validity and tracking samples to see component quality." : "Connect to inspect the device’s tracking data.");
+  const bodyQuality = [view.outdated.size ? "Rest revision pending" : "", view.confidence === undefined ? "" : `Body confidence ${(100 * view.confidence).toFixed(0)}%`].filter(Boolean).join(" · ");
   text("body-quality", bodyQuality);
-  setAttribute(element("body-quality"), "title", bodyQuality);
+  setAttribute(element("body-quality"), "hidden", bodyQuality ? null : "");
   subscriptionEditor?.update(now);
 }
 
@@ -283,6 +286,10 @@ element<HTMLInputElement>("render-to-photon").oninput = () => {
   renderToPhotonMs = value;
 };
 
+referenceFrame.onchange = () => {
+  preferBodyFrame = referenceFrame.value === "body";
+  spatial?.reframe();
+};
 element("skeleton-view").onchange = () => spatial?.reframe();
 element("show-body-mesh").onchange = () => spatial?.showBodyMesh(element<HTMLInputElement>("show-body-mesh").checked);
 element("show-joints").onchange = () => spatial?.showJoints(element<HTMLInputElement>("show-joints").checked);

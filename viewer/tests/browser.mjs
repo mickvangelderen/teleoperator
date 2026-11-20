@@ -79,7 +79,7 @@ try {
   await page.locator('[data-action="discard"]').click();
   await page.locator("#skeleton-view").selectOption("rest");
   await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyJoints === "70" && document.querySelector("#poses").dataset.poseCount === "0");
-  assert.match(await page.locator("#body-quality").textContent(), /skeleton rest frame/);
+  assert.equal(await page.locator("#reference-frame option:checked").textContent(), "Skeleton rest frame");
   await page.locator("#skeleton-view").selectOption("live");
   await page.waitForFunction(() => document.querySelector("#poses").dataset.poseCount === "5");
   await selectGroup(page, 0);
@@ -87,8 +87,6 @@ try {
   await checkFrameRefresh(page);
   await checkTrackingColors(page, output);
   await checkFreshness(page, output);
-  assert.match(await page.locator("#requested-prediction-offset").textContent(), /^Requested: [\d.]+ ms$/);
-  assert.match(await page.locator("#measured-prediction-offset").textContent(), /^Device target − acquisition: (?:-?[\d.]+ ms|unavailable)$/);
   await checkMetricMedians(page);
   await checkXRVisualization(page);
   await checkEditor(page, output);

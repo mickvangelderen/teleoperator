@@ -7,6 +7,13 @@ import { selectedBundle } from "./session";
 import { width, publicationRate, bindings, restGroup, changedOnly } from "./protocol";
 import type { Capabilities, Packet, Value } from "./protocol";
 
+export const trackingQuality = {
+  tracked: { color: "#286b4c", label: "Tracked" },
+  untracked: { color: "#c87520", label: "Untracked" },
+  unknown: { color: "#78847d", label: "Tracking unknown" },
+  late: { color: "#c44235", label: "Invalid or stale" },
+};
+
 // Viewer conventions for the two operators that advertise a normalized gripper input.
 export const gripperTriggers = new Map([
   ["/phone/input/grip/pose", "/phone/input/trigger/value"],
@@ -76,10 +83,29 @@ function bodyJointMappings(c: Capabilities) {
   if (Object.isFrozen(c)) meshMappings.set(c, mappings);
   return mappings;
 }
-export function spatialFrames(session: Session | undefined, now: number, rest = false, lateGenerations: ReadonlySet<number> = new Set()) {
+// In the level body frame +X points from the left upper-arm pivot to the
+// right, +Y stays gravity-up, and forward is -Z. Only yaw is removed.
+function bodyReference(left?: LocatedPose, right?: LocatedPose) {
+  if (!left || !right || !(left.pose.flags & 2) || !(right.pose.flags & 2) ||
+      left.space !== right.space || ![2, 3, 4].includes(left.space)) return;
+  const a = new Vector3().fromArray(left.pose.position), b = new Vector3().fromArray(right.pose.position);
+  const dx = b.x - a.x, dz = b.z - a.z;
+  // Nearly coincident or vertical shoulder positions don't determine a stable heading.
+  if (Math.hypot(dx, dz) < 0.05) return;
+  const origin = a.lerp(b, 0.5);
+  const yawInverse = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.atan2(dz, dx));
+  const position = new Vector3(), orientation = new Quaternion();
+  return (pose: Pose) => {
+    pose.position = position.fromArray(pose.position).sub(origin).applyQuaternion(yawInverse).toArray();
+    pose.orientation = orientation.fromArray(pose.orientation).premultiply(yawInverse).toArray();
+  };
+}
+
+export function spatialFrames(session: Session | undefined, now: number, rest = false, lateGenerations: ReadonlySet<number> = new Set(), bodyFacing = false) {
   const poses: StandalonePose[] = [], sources: string[] = [], body: PoseFrame = { poses: [], active: false }, hierarchy: JointHierarchy = { joints: [] };
   let bodyMesh: BodyMeshFrame | undefined;
   let mappedSkeletons = 0;
+  let toBody: ReturnType<typeof bodyReference>;
   const current = currentValues(session, now), c = session?.capabilities, spaces = new Set<number>();
   const read = (index: number | null | undefined) => index == null || current.get(index)?.stale ? null : current.get(index)?.value ?? null;
   const mappings = c ? bodyJointMappings(c) : [];
@@ -178,6 +204,17 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
     const ids = mappings[skeletonIndex];
     if (ids) {
       mappedSkeletons++;
+      if (bodyFacing && !rest) {
+        const left = ids.indexOf(10), right = ids.indexOf(15); // XR_FB_body_tracking ARM_UPPER
+        if (left >= 0 && right >= 0) {
+          const leftIndex = skeleton.joints[left].pose_sample, rightIndex = skeleton.joints[right].pose_sample;
+          const a = current.get(leftIndex)?.packet, b = current.get(rightIndex)?.packet;
+          if (a && b && c.descriptors[leftIndex].group === c.descriptors[rightIndex].group &&
+              a.timestamp === b.timestamp && a.predictedFor === b.predictedFor) {
+            toBody = bodyReference(resolve(left), resolve(right));
+          }
+        }
+      }
       // Live skinning combines two acquisitions. Positive agreement is required
       // in both directions, even when the newer rest snapshot is already known.
       // A standalone rest view does not combine live data and needs no live revision.
@@ -238,8 +275,21 @@ export function spatialFrames(session: Session | undefined, now: number, rest = 
   const trackedJoints = body.poses.filter(p => (p.flags & 14) === 14).length;
   const mixedSpaces = spaces.size > 1;
   if (mixedSpaces) { poses.length = 0; sources.length = 0; body.active = false; }
-  if (mixedSpaces || !body.active || mappedSkeletons !== 1) bodyMesh = undefined;
-  return { values: current, poses: { poses }, sources, body, hierarchy, bodyMesh, mixedSpaces, space: spaces.size === 1 ? [...spaces][0] : undefined, outdated, confidence, trackedJoints, rest };
+  const needsBodyReference = bodyFacing && !rest;
+  const missingReference = needsBodyReference && (!toBody || mappedSkeletons !== 1 || mixedSpaces);
+  if (missingReference) { poses.length = 0; sources.length = 0; body.active = false; }
+  else if (needsBodyReference && toBody) {
+    // Mesh samples share the resolved live joint objects. Their rest calibration
+    // and the last-known standalone poses both stay in their original frames.
+    body.poses.forEach(toBody);
+    for (let i = 0; i < poses.length; i++) {
+      poses[i] = { ...poses[i] };
+      toBody(poses[i]);
+    }
+  }
+  if (!body.active || mappedSkeletons !== 1) bodyMesh = undefined;
+  return { values: current, poses: { poses }, sources, body, hierarchy, bodyMesh, mixedSpaces, missingReference,
+    space: spaces.size === 1 ? [...spaces][0] : undefined, outdated, confidence, trackedJoints, rest };
 }
 export function valueText(value: Value | null) {
   if (value === null) return "Unavailable";

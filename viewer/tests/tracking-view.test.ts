@@ -313,3 +313,59 @@ test("gripper closure uses its own subscribed and active trigger acquisition", (
     assert.equal(read(10_000), 0.25, "A quiet on-change control retains its last measurement");
   }
 });
+
+test("body-facing view cancels global yaw and translation for skeleton, mesh and controller", () => {
+  const s = metaSetup(), c = structuredClone(s.capabilities!);
+  c.descriptors[0].id = "/body/FB/10"; // left anatomical shoulder pivot
+  c.descriptors[1].id = "/body/FB/15"; // right; advertised first in this skeleton
+  c.descriptors[1].spaces = [2];
+  c.descriptors.push({ ...c.descriptors[1], id: "/user/hand/right/input/grip/pose" });
+  s.capabilities = c;
+  const sub = s.active.get(0)!;
+  sub.request.bundles[0][1].space = 2;
+  sub.request.bundles[0].push({ descriptor: 8, format: 10, space: 2 });
+  const relative = () => spatialFrames(s, 101, false, new Set(), true);
+  const identity = [0, 0, 0, 1], turn = [0, Math.SQRT1_2, 0, Math.SQRT1_2], roll = [0, 0, Math.SQRT1_2, Math.SQRT1_2];
+  // A +90° world yaw carries the anatomical right axis towards -Z.
+  const send = (left: number[], right: number[], grip: number[], valid = true) =>
+    publish(s, 0, BigInt(3 + sub.packets), [left, right, valid, true, 1, grip]);
+  const close = (actual: number[], expected: number[]) =>
+    actual.forEach((n, i) => assert.ok(Math.abs(n - expected[i]) < 1e-6, `${actual} vs ${expected}`));
+  send([-.2, 1.5, 0, ...identity], [.2, 1.7, 0, ...identity], [.4, 1.1, -.6, ...roll]);
+  const first = relative();
+  close(first.poses.poses[0].position, [.4, -.5, -.6]);
+  close(first.body.poses[0].position, [.2, .1, 0]);
+  const secondGrip = [2.4, 3.1, 3.6, .5, .5, .5, .5]; // world yaw × controller roll
+  send([3, 3.5, 4.2, ...turn], [3, 3.7, 3.8, ...turn], secondGrip);
+  const second = relative();
+  assert.equal(second.missingReference, false);
+  close(second.poses.poses[0].position, first.poses.poses[0].position);
+  close(second.poses.poses[0].orientation, roll);
+  for (const [i, p] of second.body.poses.entries()) {
+    close(p.position, first.body.poses[i].position);
+    close(p.orientation, identity);
+    close(second.bodyMesh!.sample.poses[i].position, p.position);
+  }
+  assert.deepEqual(second.bodyMesh!.skeleton, first.bodyMesh!.skeleton);
+  close(spatialFrames(s, 101).poses.poses[0].position, secondGrip.slice(0, 3));
+  const unavailable = () => {
+    const view = relative();
+    assert.equal(view.missingReference, true); assert.equal(view.body.active, false);
+    assert.equal(view.bodyMesh, undefined); assert.deepEqual(view.sources, []);
+  };
+  send([3, 3.5, 4.2, ...turn], [3, 3.7, 3.8, ...turn], secondGrip, false);
+  unavailable(); // invalid shoulder
+  send([1, 0, 0, ...turn], [1, .4, 0, ...turn], secondGrip);
+  unavailable(); // shoulder line vertical
+  send([1, 0, 0, ...turn], [2, 0, 0, ...turn], secondGrip);
+  assert.equal(relative().missingReference, false, "Valid tracking recovers automatically");
+  assert.equal(spatialFrames(s, 1000, false, new Set(), true).missingReference, true, "Stalled samples cannot provide a reference");
+  sub.request.bundles[0].at(-1)!.space = 3;
+  unavailable(); // controller in a different reference space
+  sub.request.bundles[0].at(-1)!.space = 2;
+  s.request({ ...sub.request, id: 5, bundles: [[sub.request.bundles[0][1]]] });
+  s.receive({ tag: 5, id: 5 });
+  publish(s, 5, 42n, [[2, 0, 0, ...turn]]);
+  unavailable(); // latest right position and left position describe different acquisitions
+  assert.equal(spatialFrames(s, 101, true, new Set(), true).body.active, true, "Rest keeps its own frame");
+});

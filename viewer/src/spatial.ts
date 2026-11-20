@@ -10,12 +10,15 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 import { BodyModel } from "./body-model";
 import type { PoseFrame, JointHierarchy, BodyMeshFrame } from "./body-model";
-import { gripperTriggers, type StandalonePose } from "./tracking-view";
+import { gripperTriggers, trackingQuality, type StandalonePose } from "./tracking-view";
 import { addGripper } from "./gripper";
 import { profiler } from "./performance";
 import { RollingRate } from "./statistics";
 
-const trackingColors = { tracked: new Color(0x286b4c), untracked: new Color(0xc87520), unknown: new Color(0x78847d), late: new Color(0xc44235) };
+const trackingColors = {
+  tracked: new Color(trackingQuality.tracked.color), untracked: new Color(trackingQuality.untracked.color),
+  unknown: new Color(trackingQuality.unknown.color), late: new Color(trackingQuality.late.color),
+};
 const jointColor = (tracked: boolean | undefined, late: boolean) => late ? trackingColors.late : tracked === false ? trackingColors.untracked : tracked === true ? trackingColors.tracked : trackingColors.unknown;
 
 export class SpatialView {
@@ -50,7 +53,7 @@ export class SpatialView {
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.scene.background = new Color(0xf0f3ef);
     this.surface.append(this.renderer.domElement);
-    this.renderer.domElement.setAttribute("aria-label", "3D view of received headset, controller and body tracking. The dot shows position quality and the shape shows orientation quality. Green means tracked, orange valid but untracked, grey unknown tracking, and red invalid or stale. Drag to orbit; scroll to zoom.");
+    this.renderer.domElement.setAttribute("aria-label", "3D view of received headset, controller and body tracking. Drag to orbit; scroll to zoom.");
     this.renderer.domElement.setAttribute("role", "img");
     this.renderer.domElement.tabIndex = 0;
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -122,7 +125,7 @@ export class SpatialView {
     if (this.disposed) return;
     const failed = results.filter(r => r.status === "rejected");
     this.surface.dataset.assets = failed.length ? "error" : "ready";
-    this.status(failed.length ? "3D assets could not load. Reload to retry." : "Dot: position · Shape: orientation · Green: tracked · Orange: untracked · Grey: tracking unknown · Red: invalid or stale");
+    this.status(failed.length ? "3D assets could not load. Reload to retry." : "");
     this.stateDirty = true;
     this.invalidate();
   }

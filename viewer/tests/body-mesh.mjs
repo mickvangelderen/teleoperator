@@ -52,6 +52,25 @@ try {
   assert.ok(live.lines > 100);
   assert.deepEqual(live.overlay, { points: true, lines: true });
   await page.locator("#poses").screenshot({ path: new URL("live-mesh-overlay.png", output).pathname });
+  await page.getByLabel("Reference frame").selectOption("body");
+  await page.waitForFunction(() => {
+    const sample = window.meshView.latest[5];
+    if (!sample || !window.meshView.body.root.visible) return false;
+    const pivots = [10, 15].map(id => sample.sample.poses[sample.skeleton.joints.findIndex(j => j.id === id)].position);
+    return pivots[0].every((v, i) => Math.abs(v + pivots[1][i]) < 1e-5) &&
+      Math.abs(pivots[0][2] - pivots[1][2]) < 1e-5 && pivots[0][0] < pivots[1][0];
+  });
+  const room = await page.evaluate(() => {
+    const v = window.meshView;
+    const grid = v.scene.children.find(object => object.type === "GridHelper");
+    return { target: v.controls.target.toArray(), grid: grid.position.toArray(), gripY: v.poses.get("left/grip").group.position.y };
+  });
+  assert.ok(Math.abs(room.target[1]) < 1 && Math.abs(room.gripY) < 1, "Camera and controller share the body-relative scene");
+  assert.deepEqual(room.grid, [0, 0, 0], "Grid stays at the display origin");
+  assert.deepEqual((await inspect()).devices, live.devices);
+  const legend = await page.locator(".tracking-legend li").evaluateAll(items => items.map(el => [el.textContent, getComputedStyle(el, "::before").backgroundColor]));
+  assert.deepEqual(legend, [["Tracked","rgb(40, 107, 76)"],["Untracked","rgb(200, 117, 32)"],["Tracking unknown","rgb(120, 132, 125)"],["Invalid or stale","rgb(196, 66, 53)"]]);
+  await page.locator("#poses").screenshot({ path: new URL("live-body-facing.png", output).pathname });
   await page.locator("#show-joints").uncheck();
   const meshOnly = await inspect();
   assert.deepEqual(meshOnly.overlay, { points: false, lines: false });
@@ -63,9 +82,13 @@ try {
   await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyMesh === "false");
   assert.equal((await inspect()).joints, "70", "Mesh toggle preserves joint markers");
   await page.locator("#poses").screenshot({ path: new URL("live-overlay-only.png", output).pathname });
+  await page.locator("#show-joints").uncheck();
+  assert.deepEqual((await inspect()).devices, live.devices, "The body reference works with mesh and overlays hidden");
+  await page.locator("#show-joints").check();
+  await page.getByLabel("Reference frame").selectOption("source");
   await page.locator("#show-body-mesh").check();
   await page.locator("#skeleton-view").selectOption("rest");
-  await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyMesh === "true" && document.querySelector("#body-quality").textContent.includes("advertised rest poses"));
+  await page.waitForFunction(() => document.querySelector("#poses").dataset.bodyMesh === "true" && document.querySelector("#reference-frame option:checked").textContent === "Skeleton rest frame");
   const rest = await inspect();
   assert.deepEqual(rest.geometry, live.geometry, "Rest view reuses geometry");
   await page.locator("#poses").screenshot({ path: new URL("rest-mesh-overlay.png", output).pathname });
