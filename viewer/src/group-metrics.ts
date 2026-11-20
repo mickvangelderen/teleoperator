@@ -16,15 +16,10 @@ const mean = (values: (number | undefined)[]) => values.length && values.every(v
 // One observation per render tick and acquisition group, independent of sample count.
 export class GroupMetrics {
   private session?: Session;
-  private photonMs?: number;
   private histories = new Map<number, History>();
 
-  update(session: Session | undefined, now: number, photonMs: number) {
+  update(session: Session | undefined, now: number) {
     if (session !== this.session) { this.histories.clear(); this.session = session; }
-    if (photonMs !== this.photonMs) {
-      for (const history of this.histories.values()) history.age.reset();
-      this.photonMs = photonMs;
-    }
     const subscriptions = new Map<number, Subscription[]>();
     for (const sub of session?.active.values() ?? []) {
       const group = sub.request.group, members = subscriptions.get(group) ?? [];
@@ -48,10 +43,11 @@ export class GroupMetrics {
       if (continuous) for (const sub of timed) {
         const snapshot = selectedBundle(sub, 0);
         if (!snapshot || staleBundle(sub, 0, now)) { missing = true; continue; }
-        const represented = snapshot.packet.predictedFor ?? snapshot.packet.timestamp;
+        const represented = snapshot.packet.predictedFor;
+        if (represented === null) { missing = true; continue; }
         if (oldest === undefined || represented < oldest) oldest = represented;
       }
-      const age = !missing && oldest !== undefined ? session!.sampleAge(oldest, now, photonMs) : undefined;
+      const age = !missing && oldest !== undefined ? session!.sampleAge(oldest, now) : undefined;
       groups.push({ group, key: `${group}:${membership}`, continuous, onChange: timed.length === 0,
         arrival, requested: timed.length ? timed.reduce((sum, s) => sum + publicationRate(s.request), 0) : undefined,
         age, medianArrival: history.arrival.update(arrival, now), medianAge: history.age.update(age, now) });

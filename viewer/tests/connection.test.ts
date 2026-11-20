@@ -134,11 +134,11 @@ test("freshness observers change during silence without disconnecting", async co
     now = 1007;
     c.frame(1002, now, 20);
     assert.equal(c.state.freshness.atMs, now);
-    assert.equal(c.state.freshness.worst?.ageMs, 17, "The frame ages the 990 ms acquisition even between notifications");
-    now = 1044; context.mock.timers.tick(48);
-    assert.equal(c.state.status, "Connected"); assert.equal(c.state.freshness.status, "Late");
-    assert.ok(updates.includes("Late"));
-    view.setBigUint64(5, 1_034_000_000n, true);
+    assert.equal(c.state.freshness.worst?.ageMs, 10, "Later frames retain the measured delivery latency");
+    now = 1544; context.mock.timers.tick(548);
+    assert.equal(c.state.status, "Connected"); assert.equal(c.state.freshness.status, "Stalled");
+    assert.ok(updates.includes("Stalled"));
+    view.setBigUint64(5, 1_534_000_000n, true);
     Peer.latest.tracking.onmessage!({ data: bytes.buffer });
     assert.equal(c.state.freshness.status, "Fresh");
     c.close();
@@ -244,7 +244,7 @@ test("retained acquisitions and skipped slots do not advance the automatic publi
       }
       c.frame(frame, frame, 0);
       const age = c.session.freshness(frame).worst!.ageMs!;
-      assert.ok(Math.abs(age - (frame - acquired / 1e6)) < 0.001);
+      assert.ok(Math.abs(age - 10) < 0.001, "Repeated and skipped slots preserve first delivery");
     }
     assert.equal(updates().length, 1, "Source age must not change the timing sent on the wire");
     assert.equal(initial.delay, 4_000_000n);

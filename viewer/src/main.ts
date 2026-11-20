@@ -44,7 +44,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <viewer-metric id="freshness" label="FRESHNESS" value-id="freshness-age" unit="ms" precision="1"></viewer-metric>
       <viewer-metric id="arrival-metric" label="ARRIVAL RATE" value-id="arrival-rate" unit="Hz" precision="1"></viewer-metric>
       <viewer-metric id="latency-metric" label="NETWORK LATENCY" value-id="estimated-latency" unit="ms" precision="2"></viewer-metric>
-      <viewer-metric id="age-metric" label="SAMPLE AGE AT PHOTON" value-id="sample-age" unit="ms" precision="2"></viewer-metric>
+      <viewer-metric id="age-metric" label="SAMPLE AGE" value-id="sample-age" unit="ms" precision="2"></viewer-metric>
       <viewer-metric id="frame-metric" label="VIEWER FRAME RATE" value-id="frame-rate" unit="fps" precision="0"></viewer-metric>
     </section>
     <section class="panel workspace">
@@ -94,7 +94,7 @@ const animate = (frameTime: number) => {
   const rest = element<HTMLSelectElement>("skeleton-view").value === "rest";
   const subscriptions = [...(session?.active.values() ?? [])];
   const overlappingGroups = new Set(subscriptions.map(s => s.request.group)).size < subscriptions.length;
-  const lateGenerations = new Set(current.freshness.streams.filter(stream => stream.status === "Late").map(stream => stream.generation));
+  const lateGenerations = new Set(current.freshness.streams.filter(stream => stream.status === "Late" || stream.status === "Stalled").map(stream => stream.generation));
   const key = `${[...lateGenerations]}:${rest}:${overlappingGroups ? session?.consumptionTime : ""}:` + subscriptions.map(s => `${s.generation}:${s.version}:` + s.bundles.map((_, i) => { const p = selectedBundle(s, i)?.packet; return `${p?.timestamp}:${p?.predictedFor}:${staleBundle(s, i, now)}`; }).join(",")).join(";");
   if (session !== spatialSession || key !== spatialKey) {
     spatialSession = session;
@@ -102,7 +102,7 @@ const animate = (frameTime: number) => {
     trackingView = spatialFrames(session, now, rest, lateGenerations);
   }
   const activeView = visualization.update(session, trackingView.values, now);
-  if (activeView === "spatial") spatial?.update(trackingView.poses, trackingView.sources, !rest && current.freshness.status === "Late", trackingView.body, trackingView.hierarchy, trackingView.bodyMesh);
+  if (activeView === "spatial") spatial?.update(trackingView.poses, trackingView.sources, !rest && (current.freshness.status === "Late" || current.freshness.status === "Stalled"), trackingView.body, trackingView.hierarchy, trackingView.bodyMesh);
   const started = profiler.begin();
   try { renderState(current, trackingView, now); } finally { profiler.end("ui", started); }
   if (activeView === "spatial") spatial?.renderFrame();
@@ -116,7 +116,7 @@ const arrivalChart = mountSparkline(element("arrival-metric"), "arrival-chart", 
 const arrivalGroups = mountGroupLegend(arrivalChart.tooltip);
 const latencyChart = mountSparkline(element("latency-metric"), "latency-chart", "Estimated one-way latency.");
 const frameChart = mountSparkline(element("frame-metric"), "frame-chart", "Frames rendered per second.");
-const ageChart = mountSparkline(element("age-metric"), "age-chart", "Age at photon by continuous dynamic group.\nHeadline: mean of 2 s group medians; unknown if any group is missing.\nNegative means the actual device target is ahead.");
+const ageChart = mountSparkline(element("age-metric"), "age-chart", "Age at frame consumption by continuous dynamic group.\nHeadline: mean of 2 s group medians; unknown if any group is missing.\nNegative means the actual device target is ahead.");
 const ageGroups = mountGroupLegend(ageChart.tooltip);
 let metricSession: Session | undefined;
 void import("./spatial").then(({ SpatialView }) => {
@@ -166,7 +166,7 @@ function renderState(state: State, view: ReturnType<typeof spatialFrames>, now: 
   if (session?.capabilities && mountedSession !== session) mountCapabilities(session);
   const subscriptions = [...session?.active.values() ?? []];
   const received = subscriptions.filter(s => s.arrivedAt !== undefined);
-  const metrics = groupMetrics.update(session, now, renderToPhotonMs);
+  const metrics = groupMetrics.update(session, now);
   element<MetricDisplay>("arrival-metric").update(metrics.arrival);
   arrivalGroups(metrics.groups);
   arrivalChart.update(metrics.groups.flatMap(group => [

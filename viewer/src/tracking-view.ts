@@ -1,3 +1,4 @@
+import { stalledAcquisition } from "./freshness";
 import { controlReading, descriptorIndices } from "./control-reading";
 import { Quaternion, Vector3 } from "three";
 import type { Pose, PoseFrame, JointHierarchy, BodyMeshFrame } from "./body-model";
@@ -24,7 +25,7 @@ export const staleBundle = (s: Subscription, index: number, now: number, retaine
   // New sequences with cached acquisitions and delayed per-bundle repairs cannot
   // extend it. Omitted bundles keep their own original acquisition timestamps.
   const progress = index === 0 ? b.acquiredAtArrival : s.acquiredAtArrival;
-  return progress === undefined || now - progress > Math.max(500, 3000 / publicationRate(s.request));
+  return progress === undefined || stalledAcquisition(progress, now, 1000 / publicationRate(s.request));
 };
 export type CurrentValue = { value: Value | null; stale: boolean; subscription: Subscription; selection: number; packet?: Packet };
 export function currentValues(session: Session | undefined, now: number) {

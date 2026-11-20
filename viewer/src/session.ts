@@ -1,6 +1,6 @@
 import { decodeServer, MAX_SERVER_MESSAGE, counterDelta, counterKind, decodeTracking, offer, subscribe, unsubscribe, updateSchedule, validateRequest, validateTiming, publicationRate, NON_MAX, width, acknowledge, sequencePosition, changedOnly } from "./protocol";
 import type { Capabilities, Packet, Request, Timing, ServerMessage, Value } from "./protocol";
-import { FreshnessBaseline, summarizeFreshness } from "./freshness";
+import { FreshnessBaseline, stalledAcquisition, summarizeFreshness } from "./freshness";
 import type { StreamFreshness } from "./freshness";
 
 import { SoftwareClock } from "./clock";
@@ -12,6 +12,7 @@ export type Subscription = {
   counters: Map<number, bigint>; deltas: Map<number, bigint>;
   arrivals: number[]; packets: number; bytes: number;
   freshness: FreshnessBaseline;
+  deliveryMs?: number;
 };
 export const selectedBundle = (s: Subscription, index: number) => s.bundles[index]?.consumed ?? s.bundles[index];
 export class Session {
@@ -70,9 +71,9 @@ export class Session {
     return bytes;
   }
   takeAcknowledgments() { const ready = this.acknowledgments; this.acknowledgments = []; return ready.map(a => a.bytes); }
-  control(bytes: Uint8Array, arrivedAt = performance.now()) {
+  control(bytes: Uint8Array, arrivedAt = performance.now(), consumerClock?: () => number) {
     // Publications have discard semantics even before discovery and on Reliable.
-    if (bytes[0] === 9) return this.tracking(bytes.subarray(1), arrivedAt, 2);
+    if (bytes[0] === 9) return this.tracking(bytes.subarray(1), arrivedAt, 2, consumerClock);
     this.receive(decodeServer(bytes)); return null;
   }
   // Every caller requests a mapping at its own monotonic time; no shared snapshot is mutated.
@@ -87,9 +88,9 @@ export class Session {
     bytes[0] = 10; new DataView(bytes.buffer).setUint32(1, id, true);
     this.clockRequests.set(id, { sent, at: now }); return bytes;
   }
-  unreliable(bytes: Uint8Array, arrivedAt: number): Packet | null {
+  unreliable(bytes: Uint8Array, arrivedAt: number, consumerClock?: () => number): Packet | null {
     if (!["capabilities", "ready"].includes(this.phase) || bytes.length > MAX_SERVER_MESSAGE) { this.discarded++; return null; }
-    if (bytes[0] === 9) return this.tracking(bytes.subarray(1), arrivedAt);
+    if (bytes[0] === 9) return this.tracking(bytes.subarray(1), arrivedAt, 1, consumerClock);
     if (bytes[0] !== 11 || bytes.length !== 21) { this.discarded++; return null; }
     const t4 = this.softwareClock.capture(arrivedAt);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), id = view.getUint32(1, true);
@@ -99,7 +100,15 @@ export class Session {
     const result = this.softwareClock.observe(request.sent, t2, t3, t4, arrivedAt);
     this.clockObservations = this.clockObservations.filter(o => arrivedAt - o.at <= 30_000).slice(-127);
     this.clockObservations.push(result.observation);
-    if (result.alignedNow || result.reinitialized) this.clockRequests.clear();
+    if (result.alignedNow || result.reinitialized) {
+      this.clockRequests.clear();
+      if (result.reinitialized) {
+        for (const sub of this.active.values()) {
+          sub.deliveryMs = undefined;
+          sub.freshness = new FreshnessBaseline();
+        }
+      }
+    }
     return null;
   }
   sampleAge(timestamp: bigint, now: number, renderToPhotonMs = 0) {
@@ -128,12 +137,9 @@ export class Session {
     const streams: StreamFreshness[] = [];
     for (const sub of this.active.values()) {
       if (changedOnly(sub.request)) continue;
-      const continuous = sub.bundles[0];
-      const age = continuous && this.sampleAge(continuous.packet.timestamp, now);
-      const ageMs = age !== undefined && age >= 0 ? age : undefined;
       const intervalMs = 1000 / publicationRate(sub.request);
-      // A rate change can reset the baseline while the source is stalled.
-      // Evaluate a known acquisition against the same probe bootstrap used on arrival.
+      const stalled = sub.acquiredAtArrival !== undefined && stalledAcquisition(sub.acquiredAtArrival, now, intervalMs);
+      const ageMs = stalled ? undefined : sub.deliveryMs;
       if (ageMs !== undefined && sub.freshness.thresholdMs === undefined) {
         const clock = this.clockEstimate(now);
         if (clock) sub.freshness.bootstrap(intervalMs, Number(clock.delay) / 2e6);
@@ -141,7 +147,7 @@ export class Session {
       const { thresholdMs, latencyMs, jitterMs } = sub.freshness;
       streams.push({ id: sub.request.id, group: sub.request.group, generation: sub.generation, intervalMs,
         ageMs, thresholdMs, latencyMs, jitterMs,
-        status: ageMs === undefined || thresholdMs === undefined ? "Unknown" : ageMs > thresholdMs ? "Late" : "Fresh" });
+        status: stalled ? "Stalled" : ageMs === undefined || thresholdMs === undefined ? "Unknown" : ageMs > thresholdMs ? "Late" : "Fresh" });
     }
     return summarizeFreshness(streams, now);
   }
@@ -201,7 +207,7 @@ export class Session {
     this.outcomes.delete(id); this.outcomes.set(id, { status, reason });
     if (this.outcomes.size > 128) this.outcomes.delete(this.outcomes.keys().next().value!);
   }
-  tracking(bytes: Uint8Array, arrivedAt: number, delivery = 1): Packet | null {
+  tracking(bytes: Uint8Array, arrivedAt: number, delivery = 1, consumerClock?: () => number): Packet | null {
     if (bytes.length < 20 || !this.capabilities || this.phase !== "ready") { this.discarded++; return null; }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), active = this.active.get(view.getUint32(0, true));
     if (!active || active.request.delivery !== delivery || (delivery === 1 && this.pending.has(active.request.id))) { this.discarded++; return null; }
@@ -219,7 +225,7 @@ export class Session {
       if (this.acknowledgments.length > 128) this.acknowledgments.shift();
     }
     active.deltas.clear();
-    let applied = false, flatIndex = 0;
+    let applied = false, newContinuous = false, flatIndex = 0;
     packet.bundles.forEach((values, index) => {
       const selections = active.request.bundles[index], previous = active.bundles[index];
       const start = flatIndex; flatIndex += selections.length;
@@ -247,7 +253,7 @@ export class Session {
       });
       if (index === 0 && acquired && selections.length) {
         active.acquiredAtArrival = arrivedAt;
-        active.freshness.observe(this.sampleAge(packet.timestamp, arrivedAt), arrivedAt, 1000 / publicationRate(active.request), Number(this.clockEstimate(arrivedAt)?.delay ?? 0n) / 2e6);
+        newContinuous = true;
       }
     });
     active.packets++; active.bytes += bytes.length; active.arrivals.push(arrivedAt);
@@ -255,6 +261,14 @@ export class Session {
     if (!applied) return null;
     if (!active.packet || packet.timestamp >= active.packet.timestamp) active.packet = packet;
     active.arrivedAt = arrivedAt; active.version++;
+    if (newContinuous) {
+      // The decoded values have reached the viewer's sample store. A repeated
+      // publication or a later render cannot change this first delivery.
+      const deliveredAt = consumerClock?.() ?? arrivedAt;
+      const elapsed = this.sampleAge(packet.timestamp, deliveredAt);
+      active.deliveryMs = elapsed !== undefined && elapsed >= 0 ? elapsed : undefined;
+      active.freshness.observe(active.deliveryMs, deliveredAt, 1000 / publicationRate(active.request), Number(this.clockEstimate(deliveredAt)?.delay ?? 0n) / 2e6);
+    }
     return packet;
   }
 }

@@ -64,8 +64,8 @@ try {
   await page.waitForFunction(() => document.querySelector("#poses").dataset.poseCount === "5" && document.querySelector("#poses").dataset.bodyJoints === "70");
   assert.match(await page.locator("#sample-summary").textContent(), /545 samples/);
   await page.waitForFunction(() => parseFloat(document.querySelector("#arrival-rate").textContent) > 40);
-  await page.waitForFunction(() => document.querySelector("#estimated-latency").textContent.endsWith(" ms") && document.querySelector("#sample-age").textContent.endsWith(" ms"));
-  assert.equal(await page.locator(".metric").filter({ has: page.locator("#sample-age") }).locator(".metric-label").textContent(), "SAMPLE AGE AT PHOTON");
+  await page.waitForFunction(() => document.querySelector("#estimated-latency").textContent.endsWith(" ms") && document.querySelector("#age-chart path")?.getAttribute("d")?.includes("L"));
+  assert.equal(await page.locator(".metric").filter({ has: page.locator("#sample-age") }).locator(".metric-label").textContent(), "SAMPLE AGE");
   assert.equal(await page.locator(".metric").filter({ has: page.locator("#estimated-latency") }).locator(".metric-label").textContent(), "NETWORK LATENCY");
   assert.equal(await page.getByRole("heading", { name: "Transport details" }).count(), 0);
   const workspace = await page.locator(".workspace").boundingBox(), metrics = await page.locator(".metrics").boundingBox();

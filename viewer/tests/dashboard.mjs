@@ -61,7 +61,7 @@ try {
   // synthetic input publications; the fixture never opens an operator connection.
   await page.evaluate(async () => {
     const { Connection } = await import("/src/connection.ts");
-    const { timing, NON_MAX } = await import("/src/protocol.ts");
+    const { timing } = await import("/src/protocol.ts");
     const connect = Connection.prototype.connect, close = Connection.prototype.close;
     Connection.prototype.connect = async function () {
       const session = this.session;
@@ -80,8 +80,8 @@ try {
         for (const group of [0, 1]) {
           if (group === 1 && fixture.paused) continue;
           const bytes = new Uint8Array(25), view = new DataView(bytes.buffer);
-          view.setUint32(0, group + 1, true); view.setBigUint64(4, BigInt(Math.round((now - fixture.ages[group]) * 1e6)), true);
-          view.setBigUint64(12, NON_MAX, true); view.setUint32(20, sequence, true); bytes[24] = 1;
+          view.setUint32(0, group + 1, true); view.setBigUint64(4, BigInt(Math.round(now * 1e6)), true);
+          view.setBigUint64(12, BigInt(Math.round((now - fixture.ages[group]) * 1e6)), true); view.setUint32(20, sequence, true); bytes[24] = 1;
           session.tracking(bytes, now);
           session.active.get(group + 1).arrivals = Array(group ? 20 : 60).fill(now);
         }

@@ -63,12 +63,10 @@ export async function checkMetricMedians(page) {
     const freshness = Session.prototype.freshness, latency = Session.prototype.latestNetworkLatency;
     const tracking = Session.prototype.tracking, frameRate = SpatialView.prototype.frameRate;
     const subscriptions = new Set();
-    let estimate = 50, usedOldFrameTime = false, latestArguments;
+    let estimate = 50, usedOldFrameTime = false;
     window.requestAnimationFrame = callback => requestFrame(time => callback(time - 250));
-    Session.prototype.sampleAge = function (_timestamp, now, renderToPhoton) {
-      if (renderToPhoton === undefined) return sampleAge.call(this, _timestamp, now);
+    Session.prototype.sampleAge = function (_timestamp, now) {
       if (performance.now() - now > 100) usedOldFrameTime = true;
-      latestArguments = { renderToPhoton };
       return estimate;
     };
     Session.prototype.latestNetworkLatency = () => estimate;
@@ -85,7 +83,12 @@ export async function checkMetricMedians(page) {
       const packet = tracking.apply(this, args);
       if (packet) {
         const sub = this.active.get(packet.id);
-        if (sub.request.bundles[0].length > 0) { sub.arrivals = Array(Math.max(0, estimate ?? 0)).fill(args[1]); subscriptions.add(sub); }
+        if (sub.request.bundles[0].length > 0) {
+          // This display fixture provides a represented instant for every group.
+          packet.predictedFor ??= packet.timestamp;
+          sub.arrivals = Array(Math.max(0, estimate ?? 0)).fill(args[1]);
+          subscriptions.add(sub);
+        }
       }
       return packet;
     };
@@ -106,15 +109,15 @@ export async function checkMetricMedians(page) {
       estimate = undefined; await wait(100);
       const missing = read();
       estimate = -3; await wait(100);
-      const ahead = read()["sample-age"], defaults = latestArguments;
+      const ahead = read()["sample-age"];
       const input = document.querySelector("#render-to-photon");
       input.value = "30"; input.dispatchEvent(new Event("input", { bubbles: true }));
       await wait(100);
-      const changed = latestArguments;
+      const changed = read()["sample-age"];
       input.value = "-1"; input.dispatchEvent(new Event("input", { bubbles: true }));
       await wait(100);
-      const invalid = latestArguments;
-      return { baseline, spike, graphSpikes, sustained, missing, ahead, defaults, changed, invalid, usedOldFrameTime };
+      const invalid = read()["sample-age"];
+      return { baseline, spike, graphSpikes, sustained, missing, ahead, changed, invalid, usedOldFrameTime };
     } finally {
       window.requestAnimationFrame = requestFrame; Session.prototype.sampleAge = sampleAge;
       Session.prototype.freshness = freshness; Session.prototype.latestNetworkLatency = latency;
@@ -131,8 +134,7 @@ export async function checkMetricMedians(page) {
   assert.deepEqual(result.sustained, expected(75), "All displayed values follow sustained changes within two seconds");
   for (const id of ["sample-age", "freshness-age", "estimated-latency", "freshness-threshold"]) assert.equal(result.missing[id], id === "freshness-threshold" ? "Late above —" : "—", "Missing estimates clear display history immediately");
   assert.equal(result.ahead, "-3.00 ms");
-  assert.deepEqual(result.defaults, { renderToPhoton: 0 });
-  assert.deepEqual(result.changed, { renderToPhoton: 30 });
+  assert.equal(result.changed, result.ahead, "Configured display delay does not change age at frame consumption");
   assert.deepEqual(result.invalid, result.changed, "Invalid display delays do not affect the calculation");
   assert.equal(result.usedOldFrameTime, false, "Sample age uses current time rather than the earlier frame timestamp");
 }

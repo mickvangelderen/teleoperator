@@ -125,7 +125,7 @@ export class Connection {
           this.recording?.packet("received", name === "control" ? "reliable" : "unreliable", bytes, arrivedAt);
           profiler.transfer("received", bytes.length, arrivedAt);
           if (name === "control") {
-            const packet = this.session.control(bytes, arrivedAt);
+            const packet = this.session.control(bytes, arrivedAt, () => performance.now());
             receivedPublication = packet !== null;
             if (packet) profiler.trackingArrival(packet.id, `${this.id}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
             for (const [id, previous] of this.replacements) {
@@ -154,7 +154,7 @@ export class Connection {
               }
             }
           } else {
-            const packet = this.session.unreliable(bytes, arrivedAt);
+            const packet = this.session.unreliable(bytes, arrivedAt, () => performance.now());
             receivedPublication = packet !== null;
             if (packet) profiler.trackingArrival(packet.id, `${this.id}:${this.session.active.get(packet.id)?.generation}`, bytes.length, arrivedAt);
           }

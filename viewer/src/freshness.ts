@@ -1,6 +1,6 @@
 import { median } from "./statistics";
 
-export type FreshnessStatus = "Inactive" | "Unknown" | "Fresh" | "Late";
+export type FreshnessStatus = "Inactive" | "Unknown" | "Fresh" | "Late" | "Stalled";
 export type StreamFreshness = {
   id: number; group: number; generation: number; status: Exclude<FreshnessStatus, "Inactive">;
   ageMs?: number; thresholdMs?: number; latencyMs?: number; jitterMs?: number;
@@ -9,6 +9,9 @@ export type StreamFreshness = {
 export type Freshness = {
   status: FreshnessStatus; atMs: number; streams: StreamFreshness[]; worst?: StreamFreshness;
 };
+
+export const stalledAcquisition = (lastAdvance: number, now: number, intervalMs: number) =>
+  now - lastAdvance > Math.max(500, 3 * intervalMs);
 
 export class FreshnessBaseline {
   private samples: { at: number; age: number }[] = [];
@@ -40,7 +43,7 @@ export class FreshnessBaseline {
 }
 
 export function summarizeFreshness(streams: StreamFreshness[], atMs: number): Freshness {
-  const rank = { Fresh: 0, Unknown: 1, Late: 2 };
+  const rank = { Fresh: 0, Unknown: 1, Late: 2, Stalled: 3 };
   let worst: StreamFreshness | undefined;
   for (const stream of streams) {
     if (!worst || rank[stream.status] > rank[worst.status] ||

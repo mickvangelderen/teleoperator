@@ -47,7 +47,15 @@ export async function checkFreshness(page, output) {
       return changeSchedule.call(this, id, current ? { ...schedule, interval: current.interval } : schedule);
     };
     Session.prototype.freshness = function (...args) { return window.testFreshness = freshness.apply(this, args); };
-    Session.prototype.tracking = () => null;
+    // Deliver valid samples with a measured transport delay, then exercise
+    // actual silence separately once the renderer has shown the late samples.
+    Session.prototype.tracking = function (bytes, ...args) {
+      const delayed = Uint8Array.from(bytes);
+      const view = new DataView(delayed.buffer);
+      view.setBigUint64(4, view.getBigUint64(4, true) - 180_000_000n, true);
+      return original.call(this, delayed, ...args);
+    };
+    window.pauseFreshnessTraffic = () => { Session.prototype.tracking = () => null; };
   });
   try {
     await page.waitForFunction(() => document.querySelector("#freshness").dataset.status === "Late");
@@ -66,7 +74,8 @@ export async function checkFreshness(page, output) {
     assert.ok(scene.models.length > 0 && scene.models.every(color => color === "c44235"), "Late freshness also makes headset and controllers red");
     await page.locator("#poses").screenshot({ path: output + "tracking-late.png" });
     const frozen = await page.evaluate(() => window.testFreshness.streams.map(s => ({ id: s.id, threshold: s.thresholdMs })));
-    await page.waitForFunction(() => parseFloat(document.querySelector("#freshness-age").textContent) > 400);
+    await page.evaluate(() => { window.pauseFreshnessTraffic(); delete window.pauseFreshnessTraffic; });
+    await page.waitForFunction(() => document.querySelector("#freshness").dataset.status === "Stalled" && document.querySelector("#freshness-age").textContent === "—");
     assert.equal(await page.locator("#status").textContent(), "Connected");
     assert.deepEqual(await page.evaluate(() => window.testFreshness.streams.map(s => ({ id: s.id, threshold: s.thresholdMs }))), frozen, "Silence must not relax the underlying freshness threshold");
     assert.notEqual(await page.locator(".freshness-age-line").first().getAttribute("d"), await page.locator(".freshness-threshold-line").first().getAttribute("d"));

@@ -7,7 +7,7 @@ import { formatMeasurement } from "./ui/format";
 import { TwoSecondMedian } from "./statistics";
 
 export function mountFreshnessIndicator(container: MetricDisplay) {
-  const chart = mountSparkline(container, "freshness-chart", "Solid: sample age. Dashed: late threshold.");
+  const chart = mountSparkline(container, "freshness-chart", "Solid: delivery time. Dashed: late threshold.");
   const threshold = document.createElement("strong"); threshold.id = "freshness-threshold";
   chart.tooltip.prepend(threshold);
   const groups = mountGroupLegend(chart.tooltip);
@@ -20,7 +20,7 @@ export function mountFreshnessIndicator(container: MetricDisplay) {
       const displayedAge = ageMedian.update(worst?.ageMs, now);
       const displayedThreshold = thresholdMedian.update(worst?.thresholdMs, now);
       container.update(displayedAge);
-      setText(threshold, `Late above ${formatMeasurement(displayedThreshold, "ms", 1)}`);
+      setText(threshold, worst?.status === "Stalled" ? `Group ${worst.group} · no new samples` : `Late above ${formatMeasurement(displayedThreshold, "ms", 1)}`);
       groups(streams);
       chart.update(streams.flatMap(s => [
         { key: `${s.id}:${s.generation}:threshold`, value: s.thresholdMs, color: groupColor(s.group), dashed: true, className: "freshness-threshold-line" },
