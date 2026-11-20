@@ -9,7 +9,7 @@ use jni::{
     objects::{GlobalRef, JObject},
 };
 use std::{
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
@@ -27,6 +27,7 @@ pub(super) struct Tracking {
     sensor_mask: i32,
     next_check: Option<Instant>,
     worker: Option<CameraWorker>,
+    clients: Option<Weak<()>>,
     hub: Arc<Hub>,
 }
 
@@ -40,6 +41,7 @@ impl Tracking {
             retry_action: None,
             prompts: CameraPrompts::restore(flags),
             worker: None,
+            clients: None,
             next_check: None,
         }
     }
@@ -85,6 +87,9 @@ impl Tracking {
         if self.worker.is_none() && self.selection.wants_camera(self.sensor_mask & 1 != 0) {
             self.next_check = Some(Instant::now());
         }
+    }
+    pub fn waiting_for_client(&self) -> bool {
+        self.clients.is_none() && self.selection.wants_camera(self.sensor_mask & 1 != 0)
     }
 
     pub fn retry(&mut self, env: &mut JNIEnv, activity: &JObject) -> Result<()> {
@@ -140,6 +145,24 @@ impl Tracking {
         Ok(())
     }
     pub fn update(&mut self, env: &mut JNIEnv, activity: &GlobalRef) -> Result<()> {
+        if !self.selection.wants_camera(self.sensor_mask & 1 != 0) {
+            return Ok(());
+        }
+        let Some(clients) = self.hub.camera_demand() else {
+            if self.clients.take().is_some() || self.next_check.is_some() {
+                self.without_camera("Camera idle", None);
+            }
+            return Ok(());
+        };
+        if self
+            .clients
+            .as_ref()
+            .is_none_or(|previous| !previous.ptr_eq(&clients))
+        {
+            self.without_camera("", None);
+            self.clients = Some(clients.clone());
+            self.check_soon();
+        }
         if let Some(failure) = self.worker.as_ref().and_then(CameraWorker::failure) {
             self.without_camera(&failure.message, Some(Retry::Service));
             if failure.transient {
@@ -152,11 +175,16 @@ impl Tracking {
                 return Ok(());
             }
             self.next_check = None;
-            self.try_camera(env, activity.as_obj())?;
+            self.try_camera(env, activity.as_obj(), clients)?;
         }
         Ok(())
     }
-    fn try_camera(&mut self, env: &mut JNIEnv, activity: &JObject) -> Result<()> {
+    fn try_camera(
+        &mut self,
+        env: &mut JNIEnv,
+        activity: &JObject,
+        clients: Weak<()>,
+    ) -> Result<()> {
         let mut availability = 0;
         // The native SDK borrows this thread's JNIEnv and the live Activity only for these calls.
         unsafe {
@@ -251,6 +279,7 @@ impl Tracking {
             context,
             self.hub.clone(),
             self.selection.camera(),
+            clients,
         ));
         self.message = "Starting ARCore".into();
         self.retry_action = None;

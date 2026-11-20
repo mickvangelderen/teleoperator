@@ -251,15 +251,20 @@ impl Peer {
         state.max_publication_rate_hz = RATE as f64;
         let deadline = tokio::time::sleep(Duration::from_secs(12));
         tokio::pin!(deadline);
+        let mut client = None;
         loop {
             let channels = incoming.channels.borrow_and_update().clone();
             let ready = channels.ready();
+            let established = state.negotiated && ready.into_iter().all(|open| open);
+            if established && client.is_none() {
+                client = Some(self.hub.connect_client());
+            }
             let next = next_publication(Some(&state), ready);
             let wait = next.map_or(Duration::from_secs(3600), |due| {
                 Duration::from_nanos(due.saturating_sub(self.hub.now() as u64))
             });
             tokio::select! {
-                _ = &mut deadline, if !state.negotiated || !ready.into_iter().all(|v|v) => return Err("Protocol setup timed out".into()),
+                _ = &mut deadline, if !established => return Err("Protocol setup timed out".into()),
                 changed = incoming.channels.changed() => { changed.map_err(|_| "Channel state closed")?; },
                 bytes = incoming.controls.recv() => {
                     let bytes = bytes.ok_or("Peer control receiver closed")?;
@@ -460,7 +465,7 @@ pub async fn serve(
         let at = crate::phone::now();
         let s = server.hub.handset_status(at);
         Json(serde_json::json!({
-            "application": "Experimental Phone Operator", "held": s.held, "input": s.input,
+            "application": "Experimental Phone Operator", "active_clients": server.hub.active_clients(), "held": s.held, "input": s.input,
             "trigger": s.trigger, "presses": s.presses, "releases": s.releases,
             "source": server.hub.source, "position": s.position_valid, "motion": format!("{:?}",s.motion),
             "prediction": false, "status": server.hub.status(at)

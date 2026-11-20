@@ -111,6 +111,8 @@ struct Demand {
     publication: Weak<Mutex<PublicationState>>,
 }
 struct State {
+    active_clients: usize,
+    camera_demand: Option<Arc<()>>,
     completion_clock: Option<fn() -> u64>,
     mode: TrackingMode,
     last_pose_from_camera: Option<bool>,
@@ -145,6 +147,28 @@ pub struct Hub {
     state: Arc<Mutex<State>>,
     pub updates: watch::Sender<u64>,
     pub source: &'static str,
+}
+
+/// Owned by a single negotiated peer's run future, including during cancellation.
+pub(crate) struct ActiveClient<'a>(&'a Hub);
+
+impl Drop for ActiveClient<'_> {
+    fn drop(&mut self) {
+        let hub = self.0;
+        let mut s = hub.state.lock().unwrap();
+        s.active_clients -= 1;
+        if s.active_clients == 0 {
+            // Retire this worker even if a new peer arrives before the UI refreshes.
+            s.camera_demand = None;
+            if let Some(camera) = &mut s.spatial {
+                camera.invalidate("Waiting for a client");
+                let at = s.transition_time(now());
+                s.release_for_reference_change(at, &hub.capabilities);
+                s.refresh_pose(at, &hub.capabilities);
+                hub.notify_subscribers(s.serial);
+            }
+        }
+    }
 }
 
 fn descriptor(
@@ -539,6 +563,8 @@ impl Hub {
         let c = Arc::new(catalog(available));
         let (updates, _) = watch::channel(0);
         let mut state = State {
+            active_clients: 0,
+            camera_demand: None,
             completion_clock,
             mode,
             last_pose_from_camera: None,
@@ -583,8 +609,44 @@ impl Hub {
             source,
         })
     }
-    pub fn set_tracking_mode(&self, mode: TrackingMode, at: u64) {
+    pub(crate) fn connect_client(&self) -> ActiveClient<'_> {
         let mut s = self.state.lock().unwrap();
+        if s.active_clients == 0 {
+            s.camera_demand = Some(Arc::new(()));
+        }
+        s.active_clients += 1;
+        ActiveClient(self)
+    }
+
+    pub(crate) fn active_clients(&self) -> usize {
+        self.state.lock().unwrap().active_clients
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    pub(crate) fn camera_demand(&self) -> Option<Weak<()>> {
+        self.state
+            .lock()
+            .unwrap()
+            .camera_demand
+            .as_ref()
+            .map(Arc::downgrade)
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    pub(crate) fn start_camera_mode(&self, mode: TrackingMode, at: u64, demand: &Weak<()>) -> bool {
+        let mut s = self.state.lock().unwrap();
+        if !s.foreground || !s.focused || demand.strong_count() == 0 {
+            return false;
+        }
+        self.change_mode(&mut s, mode, at);
+        true
+    }
+
+    pub fn set_tracking_mode(&self, mode: TrackingMode, at: u64) {
+        self.change_mode(&mut self.state.lock().unwrap(), mode, at);
+    }
+
+    fn change_mode(&self, s: &mut State, mode: TrackingMode, at: u64) {
         if s.mode == mode {
             return;
         }
@@ -1018,6 +1080,15 @@ mod tests {
         }
     }
     #[test]
+    fn imu_hold_survives_last_client_leaving() {
+        let h = hub();
+        h.action(Action::Hold, 3);
+        let peer = h.connect_client();
+        drop(peer);
+        assert!(h.handset_status(4).held);
+        assert!(bit(&h, 0, 2));
+    }
+    #[test]
     fn controls_do_not_reacquire_or_invalidate_pose_or_raw_samples() {
         let h = hub();
         h.sensor(1, 4, [1., 2., 3., 0.], 6);
@@ -1262,6 +1333,60 @@ mod spatial_tests {
             anchor: crate::spatial::FrameAnchor::Tracking(Pose::IDENTITY),
         }
     }
+    #[test]
+    fn connected_clients_resume_camera_only_in_the_focused_foreground() {
+        let hub = ready();
+        let mode = hub.state.lock().unwrap().mode;
+        let peer = hub.connect_client();
+        let demand = hub.camera_demand().unwrap();
+        hub.action(Action::Focus(false), 25);
+        assert!(!hub.start_camera_mode(mode, 26, &demand));
+        hub.action(Action::Pause, 27);
+        drop(peer);
+        let _returning = hub.connect_client();
+        let returning = hub.camera_demand().unwrap();
+        assert!(!hub.start_camera_mode(mode, 28, &returning));
+        hub.action(Action::Resume, 29);
+        assert!(!hub.start_camera_mode(mode, 30, &returning));
+        hub.action(Action::Focus(true), 31);
+        assert!(!hub.start_camera_mode(mode, 32, &demand));
+        assert!(hub.start_camera_mode(mode, 32, &returning));
+    }
+
+    #[test]
+    fn last_client_retires_camera_and_old_frames_even_across_fast_reconnect() {
+        let hub = ready();
+        let mode = hub.state.lock().unwrap().mode;
+        assert!(hub.camera_demand().is_none());
+        let first = hub.connect_client();
+        let demand = hub.camera_demand().unwrap();
+        let second = hub.connect_client();
+        assert!(demand.ptr_eq(&hub.camera_demand().unwrap()));
+        let old_frame = frame(&hub, 25);
+        drop(first);
+        assert_eq!(hub.active_clients(), 1);
+        assert!(hub.start_camera_mode(mode, 26, &demand));
+        assert!(hub.handset_status(26).held);
+        hub.spatial_frame(old_frame);
+        assert!(position_valid(&hub));
+
+        drop(second);
+        assert_eq!(hub.active_clients(), 0);
+        assert!(hub.camera_demand().is_none());
+        assert_eq!(demand.strong_count(), 0);
+        assert!(!hub.handset_status(now()).held);
+        let _returning = hub.connect_client();
+        let resumed = hub.camera_demand().unwrap();
+        assert!(!resumed.ptr_eq(&demand));
+        assert!(!hub.start_camera_mode(mode, now(), &demand));
+        hub.spatial_frame(old_frame);
+        assert!(!position_valid(&hub));
+        assert!(hub.start_camera_mode(mode, now(), &resumed));
+        hub.spatial_frame(frame(&hub, now()));
+        assert!(position_valid(&hub));
+        assert!(!hub.handset_status(now()).held);
+    }
+
     #[test]
     fn provider_changes_end_contact_and_reject_old_camera_frames() {
         let hub = ready();

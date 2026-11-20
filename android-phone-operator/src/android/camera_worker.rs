@@ -17,16 +17,22 @@ use jni::{
 };
 use std::{
     error::Error,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     thread,
 };
 
 static CAMERA: Mutex<()> = Mutex::new(());
 
-#[derive(Default)]
 struct State {
     stopped: bool,
+    clients: Weak<()>,
     failure: Option<Failure>,
+}
+
+impl State {
+    fn stopped(&self) -> bool {
+        self.stopped || self.clients.strong_count() == 0
+    }
 }
 
 #[derive(Clone)]
@@ -39,20 +45,30 @@ pub(super) struct CameraWorker {
 }
 
 impl CameraWorker {
-    pub(super) fn start(vm: JavaVM, context: GlobalRef, hub: Arc<Hub>, mode: TrackingMode) -> Self {
-        let state = Arc::new(Mutex::new(State::default()));
+    pub(super) fn start(
+        vm: JavaVM,
+        context: GlobalRef,
+        hub: Arc<Hub>,
+        mode: TrackingMode,
+        clients: Weak<()>,
+    ) -> Self {
+        let state = Arc::new(Mutex::new(State {
+            stopped: false,
+            clients,
+            failure: None,
+        }));
         let worker = state.clone();
         let spawned = thread::Builder::new()
             .name("ARCore camera".into())
             .spawn(move || {
                 let _camera = CAMERA.lock().unwrap();
-                if worker.lock().unwrap().stopped {
+                if worker.lock().unwrap().stopped() {
                     return;
                 }
                 let result = run(&vm, &context, &hub, &worker, mode);
                 if let Err(error) = result {
                     let mut state = worker.lock().unwrap();
-                    if !state.stopped {
+                    if !state.stopped() {
                         log::warn!("ARCore camera failed: {error}");
                         let busy = matches!(
                             error.downcast_ref::<arcore::Error>(),
@@ -114,7 +130,7 @@ fn run(
     let mut env = vm.attach_current_thread_as_daemon()?;
     let mut prefer_small_preview = true;
     let mut session = loop {
-        if worker.lock().unwrap().stopped {
+        if worker.lock().unwrap().stopped() {
             return Ok(());
         }
         let mut session = Session::new(&mut env, context.as_obj())?;
@@ -131,7 +147,7 @@ fn run(
             false
         };
         let configured = configure_camera(&mut session, &mut env, context.as_obj());
-        if worker.lock().unwrap().stopped {
+        if worker.lock().unwrap().stopped() {
             return Ok(());
         }
         match configured.and_then(|()| Ok(session.resume()?)) {
@@ -149,10 +165,9 @@ fn run(
         // Do not disturb the fallback's origin while an unavailable camera is
         // being retried. A retired worker must never switch the active source.
         let state = worker.lock().unwrap();
-        if state.stopped {
+        if state.stopped() || !hub.start_camera_mode(mode, phone::now(), &state.clients) {
             return Ok(());
         }
-        hub.set_tracking_mode(mode, phone::now());
     }
     let tracking = track(&mut session, hub, worker);
     let paused = session.pause();
@@ -268,7 +283,7 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), 
     let mut recovery = AnchorRecovery::default();
     let mut clock = ClockGate::default();
     let mut progress = CameraProgress::default();
-    while !worker.lock().unwrap().stopped {
+    while !worker.lock().unwrap().stopped() {
         let context = hub.spatial_context();
         let generation = context.generation;
         if !context.active {
@@ -375,7 +390,7 @@ fn track(session: &mut Session, hub: &Hub, worker: &Mutex<State>) -> Result<(), 
             }
         }
         let state = worker.lock().unwrap();
-        if state.stopped {
+        if state.stopped() {
             break;
         }
         sample.query_finished = phone::now();

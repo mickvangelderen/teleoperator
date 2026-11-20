@@ -38,7 +38,7 @@ pub(super) struct Ui {
     deadman_pointer: Option<i32>,
     gripper_pointer: Option<i32>,
     last_deadman: Option<(bool, bool)>,
-    last_motion: Option<(Motion, TrackingMode)>,
+    last_motion: Option<(Motion, TrackingMode, bool)>,
     last_progress: Option<i32>,
     last_source: String,
     last_address: String,
@@ -621,8 +621,14 @@ impl Ui {
             )?;
             self.last_progress = Some(progress);
         }
-        if self.last_motion != Some((state.motion, state.mode)) {
+        let waiting = self.tracking.waiting_for_client();
+        let motion = (state.motion, state.mode, waiting);
+        if self.last_motion != Some(motion) {
             let (title, hint) = match (state.motion, state.mode) {
+                (_, TrackingMode::Unavailable) if waiting => (
+                    "Waiting for a client",
+                    "Connect a viewer to start camera tracking.",
+                ),
                 (Motion::Unavailable, _) | (_, TrackingMode::Unavailable) => {
                     ("Tracking unavailable", "Choose another tracking source.")
                 }
@@ -676,7 +682,7 @@ impl Ui {
             };
             set_text(env, &self.status, title)?;
             set_text(env, &self.hint, hint)?;
-            self.last_motion = Some((state.motion, state.mode));
+            self.last_motion = Some(motion);
         }
         Ok(())
     }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {checkClientLifecycle} from './client-lifecycle.mjs';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {resolve,dirname} from 'node:path';
@@ -57,6 +58,10 @@ async function run(mode) {
     page.on('pageerror',e=>console.error('Viewer error',e));
     await page.goto(url);
     await page.getByRole('dialog').getByLabel('Operator address').fill(`http://127.0.0.1:${serverPort}`);
+    if (mode === 'spatial') {
+      const counts = await checkClientLifecycle(page);
+      console.log('PASS negotiated client lifecycle', counts.join(' → '));
+    }
     const normal=await page.evaluate(async mode=>{
       const {Connection}=await import('/src/connection.ts');
       const {currentValues,spatialFrames}=await import('/src/tracking-view.ts');
