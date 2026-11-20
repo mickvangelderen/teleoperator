@@ -9,7 +9,9 @@ export { groupColor, neutralColor } from "./ui/graph-style";
 
 type Series = { key: string; value?: number; color: string; dashed?: boolean; peak?: boolean; className?: string };
 
-// Bounded ten-second histories, updated at most 10 Hz; no per-frame chart snapshots.
+const historyMs = 10_000;
+const msPerXUnit = historyMs / 100;
+
 export function mountSparkline(container: HTMLElement, id: string, description: string) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.id = id; svg.classList.add("metric-chart");
@@ -44,7 +46,14 @@ export function mountSparkline(container: HTMLElement, id: string, description: 
         }
         line.history.add(now, item.value, item.peak);
       }
-      if (now - lastDraw < 100) return;
+      if (!lines.size) return;
+      // Scroll each frame between 10 Hz path redraws.
+      const elapsed = now - lastDraw;
+      if (elapsed < 100) {
+        setAttribute(svg, "viewBox", `${(elapsed / msPerXUnit).toFixed(3)} 0 100 48`);
+        return;
+      }
+      setAttribute(svg, "viewBox", "0 0 100 48");
       lastDraw = now;
       const values = [...lines.values()].flatMap(l => l.history.samples.flatMap(s => s.value === undefined ? [] : [s.value]));
       const min = Math.min(0, ...values), max = Math.max(1, ...values), range = max - min;
@@ -52,7 +61,7 @@ export function mountSparkline(container: HTMLElement, id: string, description: 
         let previous = -Infinity, data = "";
         for (const sample of history.samples) {
           if (sample.value === undefined) { previous = -Infinity; continue; }
-          data += `${sample.at - previous <= 100 ? "L" : "M"}${((sample.at - now + 10_000) / 100).toFixed(2)},${(46 - (sample.value - min) / range * 42).toFixed(2)}`;
+          data += `${sample.at - previous <= 100 ? "L" : "M"}${((sample.at - now + historyMs) / msPerXUnit).toFixed(2)},${(46 - (sample.value - min) / range * 42).toFixed(2)}`;
           previous = sample.at;
         }
         setAttribute(path, "d", data);

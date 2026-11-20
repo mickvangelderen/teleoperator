@@ -172,6 +172,27 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({ path: `${output}${width}.png`, fullPage: true });
   }
+  // Check the position of a retained observation between redraws and through the next redraw.
+  const scroll = await page.evaluate(() => {
+    const { chart } = window.componentsFixture, svg = document.querySelector("#example-chart");
+    const series = [{ key: "measured", color: "green", value: 3 }];
+    chart.reset();
+    chart.update(series, 1000);
+    chart.update(series, 1100);
+    const path = svg.querySelector("path");
+    const firstX = () => path.getPointAtLength(0).matrixTransform(path.getScreenCTM()).x;
+    const a = firstX();
+    chart.update(series, 1150);
+    const b = firstX();
+    chart.update(series, 1200);
+    const c = firstX();
+    return { distances: [a - b, b - c], expected: svg.getBoundingClientRect().width * 50 / 10000,
+      samePath: svg.querySelector("path") === path };
+  });
+  assert.ok(scroll.samePath);
+  for (const distance of scroll.distances) {
+    assert.ok(Math.abs(distance - scroll.expected) < 0.01, `A 50 ms step moved ${distance} px, expected ${scroll.expected} px`);
+  }
   assert.deepEqual(errors, []);
   await checkVisualizationChoices(page);
   console.log("PASS: shared controls, component isolation, stable drafts/focus, tooltip access, and HTML/SVG/Canvas theme consistency");
